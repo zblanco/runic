@@ -1,0 +1,4 @@
+%{
+  "libgraph": {:hex, :libgraph, "0.16.0", "3936f3eca6ef826e08880230f806bfea13193e49bf153f93edcf0239d4fd1d07", [:mix], [], "hexpm", "41ca92240e8a4138c30a7e06466acc709b0cbb795c643e9e17174a178982d6bf"},
+  "uniq": {:hex, :uniq, "0.5.4", "0602d0c75682f14863c1edea48920bd3d278b29ff7801d56e040e5f9f51ae0e2", [:mix], [{:ecto, "~> 3.0", [hex: :ecto, repo: "hexpm", optional: true]}], "hexpm", "856ec690d713f97373a3746afada340143c7e37a6488fca5afa720bfb08f0fe5"},
+}
