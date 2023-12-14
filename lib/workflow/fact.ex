@@ -10,16 +10,16 @@ defmodule Runic.Workflow.Fact do
           ancestry: {hash(), hash()}
         }
 
-        def new(params) do
-          struct!(__MODULE__, params)
-          |> maybe_set_hash()
-        end
+  def new(params) do
+    struct!(__MODULE__, params)
+    |> maybe_set_hash()
+  end
 
-        defp maybe_set_hash(%__MODULE__{value: value, hash: nil} = fact) do
-          %__MODULE__{fact | hash: Components.fact_hash(value)}
-        end
+  defp maybe_set_hash(%__MODULE__{value: value, hash: nil} = fact) do
+    %__MODULE__{fact | hash: Components.fact_hash(value)}
+  end
 
-        defp maybe_set_hash(%__MODULE__{hash: hash} = fact)
-             when not is_nil(hash),
-             do: fact
+  defp maybe_set_hash(%__MODULE__{hash: hash} = fact)
+       when not is_nil(hash),
+       do: fact
 end

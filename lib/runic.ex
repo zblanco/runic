@@ -50,6 +50,9 @@ defmodule Runic do
   to be composable and possible to evaluate at runtime with inputs.
   """
   alias Runic.Workflow.Step
+  alias Runic.Workflow.Condition
+  alias Runic.Workflow.Rule
+  alias Runic.Workflow.StateMachine
 
   def step(opts \\ [])
 
@@ -71,5 +74,9 @@ defmodule Runic do
 
   def step({m, f, a} = work, opts) when is_atom(m) and is_atom(f) and is_integer(a) do
     Step.new(Keyword.merge([work: work], opts))
+  end
+
+  def transmute(component) do
+    Runic.Component.to_workflow(component)
   end
 end

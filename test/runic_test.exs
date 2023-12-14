@@ -245,7 +245,7 @@ defmodule RunicTest do
   end
 
   describe "transmute/1" do
-    test "invokes the Transmutable protocol to return a workflow" do
+    test "invokes the Component protocol to return a workflow of the component" do
       # construct and invoke the Flowable protocol on each component type and common data types like lists of steps and rules
       step = Runic.step(fn x -> x * x end, name: "squarifier")
       rule = Runic.rule(fn :potato -> :tomato end, name: "tomato when potato")
