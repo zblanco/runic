@@ -168,7 +168,7 @@ defmodule Runic.Workflow do
       ) do
     merged_graph =
       Graph.Reducers.Bfs.reduce(g2, g1, fn
-        fn v, g ->
+        v, g ->
           g = Graph.add_vertex(g, v, v.hash)
 
           out_edges = Enum.uniq(Graph.out_edges(g, v) ++ Graph.out_edges(g2, v))
@@ -200,7 +200,6 @@ defmodule Runic.Workflow do
             %{v1: _v1, v2: _v2} = memory2_edge, mem ->
               Graph.add_edge(mem, memory2_edge)
           end)
-        end
       end)
 
     %__MODULE__{
