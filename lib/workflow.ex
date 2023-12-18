@@ -40,8 +40,6 @@ defmodule Runic.Workflow do
 
   @type runnable() :: {fun(), term()}
 
-  @enforce_keys [:name]
-
   @typedoc """
   A discrimination network of conditions, and steps, built from composites such as rules and accumulations.
   """
@@ -102,7 +100,8 @@ defmodule Runic.Workflow do
       | graph:
           g
           |> Graph.add_vertex(child_step, child_step.hash)
-          |> Graph.add_edge(%Root{}, child_step, label: :flow)
+          |> Graph.add_edge(%Root{}, child_step, label: :flow, weight: 0),
+        components: Map.put(workflow.components, child_step.name, child_step.hash)
     }
   end
 
@@ -112,7 +111,7 @@ defmodule Runic.Workflow do
       | graph:
           g
           |> Graph.add_vertex(child_step, to_string(child_step.hash))
-          |> Graph.add_edge(parent_step, child_step, label: :flow)
+          |> Graph.add_edge(parent_step, child_step, label: :flow, weight: 0)
     }
   end
 
