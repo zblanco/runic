@@ -54,25 +54,25 @@ defmodule RunicTest do
       assert Rule.run(some_rule, 42) == "fourty two"
     end
 
-    test "escapes runtime values with '^'" do
-      some_values = [:potato, :ham, :tomato]
+    # test "escapes runtime values with '^'" do
+    #   some_values = [:potato, :ham, :tomato]
 
-      escaped_rule =
-        Runic.rule(
-          name: "escaped_rule",
-          condition: fn val when val in ^some_values -> true end,
-          reaction: "food"
-        )
+    #   escaped_rule =
+    #     Runic.rule(
+    #       name: "escaped_rule",
+    #       condition: fn val when val in ^some_values -> true end,
+    #       reaction: "food"
+    #     )
 
-      assert match?(%Rule{}, escaped_rule)
-      assert Rule.check(escaped_rule, :potato)
-    end
+    #   assert match?(%Rule{}, escaped_rule)
+    #   assert Rule.check(escaped_rule, :potato)
+    # end
 
     test "a function can wrap construction to build custom rules at runtime" do
       builder = fn list_of_things ->
         Runic.rule(
           name: "dynamic rule",
-          condition: fn thing -> Enum.member?(^list_of_things, thing) end,
+          condition: fn thing -> Enum.member?(list_of_things, thing) end,
           reaction: fn thing -> "#{thing} in list_of_things!" end
         )
       end

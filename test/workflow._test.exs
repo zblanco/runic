@@ -7,13 +7,13 @@ defmodule WorkflowTest do
   describe "mergeability" do
     test "merge/2 combines two workflows and their memory" do
       wrk =
-        Dagger.workflow(
+        Runic.workflow(
           name: "merge test",
           steps: [
-            {Dagger.step(fn num -> num + 1 end),
+            {Runic.step(fn num -> num + 1 end),
              [
-               Dagger.step(fn num -> num + 2 end),
-               Dagger.step(fn num -> num + 4 end)
+               Runic.step(fn num -> num + 2 end),
+               Runic.step(fn num -> num + 4 end)
              ]}
           ]
         )
