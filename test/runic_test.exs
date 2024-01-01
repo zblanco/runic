@@ -6,6 +6,7 @@ defmodule RunicTest do
   alias Runic.Workflow.Step
   alias Runic.Workflow.Rule
   alias Runic.Workflow.StateMachine
+  alias Runic.Workflow.Condition
   alias Runic.Workflow
   require Runic
 
@@ -54,6 +55,22 @@ defmodule RunicTest do
       assert Rule.run(some_rule, 42) == "fourty two"
     end
 
+    test "a valid rule can be created from functions of arity > 1" do
+      rule =
+        Runic.rule(fn num, other_num when is_integer(num) and is_integer(other_num) ->
+          num * other_num
+        end)
+
+      assert match?(%Rule{}, rule)
+      assert Rule.check(rule, :potato) == false
+      assert Rule.check(rule, 10) == false
+      assert Rule.check(rule, 1) == false
+      assert Rule.check(rule, [1, 2]) == true
+      assert Rule.check(rule, [:potato, "tomato"]) == false
+      assert Rule.run(rule, [10, 2]) == 20
+      assert Rule.run(rule, [2, 90]) == 180
+    end
+
     # test "escapes runtime values with '^'" do
     #   some_values = [:potato, :ham, :tomato]
 
@@ -83,6 +100,24 @@ defmodule RunicTest do
       assert Rule.check(dynamic_rule, :potato)
       refute Rule.check(dynamic_rule, :yam)
     end
+
+    # test "supports `if` macro as a valid rule" do
+    #   rule = Runic.rule(if(true, do: "true"))
+
+    #   assert match?(%Rule{}, rule)
+    #   assert Rule.check(rule, true)
+    #   refute Rule.check(rule, false)
+    # end
+
+    # test "rule does not support if statement's `else` clause and raises recommending to use a `workflow/1` constructor instead" do
+    #   assert_raise Runic.Rule.InvalidRuleError, fn ->
+    #     Runic.rule(if(true, do: "true", else: "false"))
+    #   end
+    # end
+
+    # test "supports `unless` macro as a valid rule" do
+
+    # end
   end
 
   describe "Runic.step constructors" do
@@ -112,6 +147,14 @@ defmodule RunicTest do
     end
   end
 
+  describe "Runic.condition/1" do
+    test "conditions can be made from kinds of elixir functions that return a boolean" do
+      assert match?(%Condition{}, Runic.condition(fn :potato -> true end))
+      assert match?(%Condition{}, Runic.condition(&Examples.is_potato/1))
+      assert match?(%Condition{}, Runic.condition({Examples, :is_potato, 1}))
+    end
+  end
+
   describe "Runic.state_machine/1" do
     test "constructs a Flowable %StateMachine{} given a name, init, and a reducer expression" do
       state_machine =
@@ -128,7 +171,7 @@ defmodule RunicTest do
 
       assert match?(%StateMachine{}, state_machine)
 
-      wrk = Runic.Flowable.to_workflow(state_machine)
+      wrk = Runic.transmute(state_machine)
 
       assert match?(%Workflow{}, wrk)
     end
@@ -246,7 +289,7 @@ defmodule RunicTest do
 
   describe "transmute/1" do
     test "invokes the Component protocol to return a workflow of the component" do
-      # construct and invoke the Flowable protocol on each component type and common data types like lists of steps and rules
+      # construct and invoke the Component protocol on each component type and common data types like lists of steps and rules
       step = Runic.step(fn x -> x * x end, name: "squarifier")
       rule = Runic.rule(fn :potato -> :tomato end, name: "tomato when potato")
 

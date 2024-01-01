@@ -21,6 +21,13 @@ defmodule Runic.Workflow.Components do
   def work_hash(work) when is_function(work),
     do: fact_hash(:erlang.term_to_binary(work))
 
+  def arity_of({:fn, _, [{:->, _, [[{:when, _when_meta, lhs}] | _rhs]}]}) do
+    Enum.count(lhs, fn
+      {_, _, child_ast} when is_list(child_ast) -> false
+      {_, _, _} -> true
+    end)
+  end
+
   def arity_of({:fn, _, [{:->, _, [lhs, _rhs]}]}), do: Enum.count(lhs)
 
   def arity_of(fun) when is_function(fun), do: Function.info(fun, :arity) |> elem(1)
@@ -38,6 +45,16 @@ defmodule Runic.Workflow.Components do
   def arity_of(args) when is_list(args), do: length(args)
 
   def arity_of(_term), do: 1
+
+  def is_of_arity?(arity) do
+    fn
+      args when is_list(args) ->
+        if(arity == 1, do: true, else: false)
+
+      args ->
+        arity_of(args) == arity
+    end
+  end
 
   def run({m, f}, fact_value) when is_list(fact_value), do: run({m, f}, fact_value, 1)
 

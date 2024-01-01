@@ -5,7 +5,7 @@ defmodule Runic.Workflow do
 
   You can think of Runic Workflows as a recipe of rules that when fed a stream of facts may react.
 
-  The Runic.Flowable protocol facilitates a `to_workflow` transformation so expressions like a
+  The Runic.Component protocol facilitates a `to_workflow` transformation so expressions like a
     Rule or an Accumulator may become a Workflow we can evaluate and compose with other workflows.
 
   Any Workflow can be merged into another Workflow and evaluated together. This gives us a lot of flexibility
@@ -24,9 +24,11 @@ defmodule Runic.Workflow do
   GenServer, with cluster-aware registration for a given workflow, then execute conditionals eagerly, but
   execute actual steps with side effects lazily as a GenStage pipeline with backpressure has availability.
   """
+  alias Runic.Component
   alias Runic.Workflow.Components
   alias Runic.Workflow.Root
   alias Runic.Workflow.Step
+  alias Runic.Workflow.Condition
   alias Runic.Workflow.Fact
   alias Runic.Workflow.Rule
 
@@ -50,6 +52,8 @@ defmodule Runic.Workflow do
             hash: nil,
             graph: nil,
             components: %{}
+
+  def new(), do: new([])
 
   @doc """
   Constructs a new Runic Workflow.
@@ -94,6 +98,16 @@ defmodule Runic.Workflow do
 
   If you're just building a pipeline, dependent steps can be sufficient, however you might want Rules for conditional branching logic.
   """
+  def add_step(%__MODULE__{graph: g} = workflow, %Root{}, %Condition{} = child_step) do
+    %__MODULE__{
+      workflow
+      | graph:
+          g
+          |> Graph.add_vertex(child_step, child_step.hash)
+          |> Graph.add_edge(%Root{}, child_step, label: :flow, weight: 0)
+    }
+  end
+
   def add_step(%__MODULE__{graph: g} = workflow, %Root{}, %{} = child_step) do
     %__MODULE__{
       workflow
@@ -207,8 +221,30 @@ defmodule Runic.Workflow do
     }
   end
 
-  defp edges_to_add(v, into_g, from_g) do
-    (Graph.out_edges(into_g, v) ++ Graph.out_edges(from_g, v))
-    |> Enum.uniq()
+  def merge(%__MODULE__{} = workflow, flowable) do
+    merge(workflow, Component.to_workflow(flowable))
   end
+
+  def merge(flowable_1, flowable_2) do
+    merge(Component.to_workflow(flowable_1), Component.to_workflow(flowable_2))
+  end
+
+  @doc """
+  Lists all steps in the workflow.
+  """
+  def steps(%__MODULE__{graph: g}) do
+    Enum.filter(Graph.vertices(g), &match?(%Step{}, &1))
+  end
+
+  @doc """
+  Lists all conditions in the workflow.
+  """
+  def conditions(%__MODULE__{graph: g}) do
+    Enum.filter(Graph.vertices(g), &match?(%Condition{}, &1))
+  end
+
+  # defp edges_to_add(v, into_g, from_g) do
+  #   (Graph.out_edges(into_g, v) ++ Graph.out_edges(from_g, v))
+  #   |> Enum.uniq()
+  # end
 end
