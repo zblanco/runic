@@ -24,11 +24,21 @@ And since steps are composable, you can connect them together in a workflow:
 workflow = Runic.workflow(
   name: "example pipeline workflow",
   steps: [
-    Runic.step(fn x -> x + 1 end),
-    Runic.step(fn x -> x * 2 end),
-    Runic.step(fn x -> x - 1 end)
+    Runic.step(fn x -> x + 1 end), #A
+    Runic.step(fn x -> x * 2 end), #B
+    Runic.step(fn x -> x - 1 end) #C
   ]
 )
+```
+
+This produces a workflow graph like the following:
+
+```mermaid
+  graph TD;
+      R-->A;
+      A-->B;
+      B-->C;
+      B-->D;
 ```
 
 Inputs fed through a workflow are called "Facts". During workflow evaluation various steps are traversed to and invoked producing more Facts.
