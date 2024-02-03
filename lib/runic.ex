@@ -40,11 +40,15 @@ defmodule Runic do
   But if you do have complex user defined workflow, a database of things such as "rules" that have context-dependent
   composition at runtime - Runic may be the right tool for you.
   """
+  alias Runic.Workflow.StateCondition
+  alias Runic.Workflow.Accumulator
+  alias Runic.Workflow.StateMachine
+  alias Runic.Workflow.StateReaction
+  alias Runic.Workflow.MemoryAssertion
   alias Runic.Workflow
   alias Runic.Workflow.Step
   alias Runic.Workflow.Condition
   alias Runic.Workflow.Rule
-  # alias Runic.Workflow.StateMachine
   alias Runic.Workflow.Components
   alias Runic.Workflow.Conjunction
 
@@ -163,6 +167,226 @@ defmodule Runic do
     end
   end
 
+  defmacro rule(expression, opts) when is_list(opts) do
+    name = opts[:name]
+
+    arity = Components.arity_of(expression)
+
+    workflow = workflow_of_rule(expression, arity)
+
+    quote bind_quoted: [
+            name: name,
+            expression: Macro.escape(expression),
+            arity: arity,
+            workflow: workflow
+          ] do
+      %Rule{
+        name: name,
+        arity: arity,
+        workflow: workflow,
+        expression: expression
+      }
+    end
+  end
+
+  defmacro state_machine(opts) do
+    init = opts[:init] || raise ArgumentError, "An `init` function or state is required"
+
+    reducer =
+      Keyword.get(opts, :reducer) ||
+        raise ArgumentError, "A reducer function is required"
+
+    reactors = opts[:reactors]
+
+    name = opts[:name]
+
+    workflow = workflow_of_state_machine(init, reducer, reactors)
+
+    quote do
+      %StateMachine{
+        name: unquote(name),
+        init: unquote(init),
+        reducer: unquote(reducer),
+        reactors: unquote(reactors),
+        workflow: unquote(workflow)
+      }
+    end
+  end
+
+  defp workflow_of_state_machine(init, reducer, reactors) do
+    accumulator = accumulator_of_state_machine(init, reducer)
+
+    workflow_ast =
+      reducer
+      |> build_reducer_workflow_ast(accumulator)
+      |> maybe_add_reactors(reactors, accumulator)
+
+    quote generated: true do
+      unquote(workflow_ast)
+    end
+  end
+
+  defp accumulator_of_state_machine({:fn, _, _} = init, reducer) do
+    quote do
+      %Accumulator{
+        init: unquote(init),
+        reducer: unquote(reducer),
+        hash: unquote(Components.fact_hash({init, reducer}))
+      }
+    end
+  end
+
+  defp accumulator_of_state_machine({:&, _, _} = init, reducer) do
+    quote do
+      %Accumulator{
+        init: unquote(init),
+        reducer: unquote(reducer),
+        hash: unquote(Components.fact_hash({init, reducer}))
+      }
+    end
+  end
+
+  defp accumulator_of_state_machine({:{}, _, _} = init, reducer) do
+    init_fun =
+      quote do
+        {m, f, a} = unquote(init)
+        Function.capture(m, f, a)
+      end
+
+    quote do
+      %Accumulator{
+        init: unquote(init_fun),
+        reducer: unquote(reducer),
+        hash: unquote(Components.fact_hash({init, reducer}))
+      }
+    end
+  end
+
+  defp accumulator_of_state_machine(literal_init, reducer) do
+    literal_init_ast =
+      quote do
+        fn -> unquote(literal_init) end
+      end
+
+    quote do
+      %Accumulator{
+        init: unquote(literal_init_ast),
+        reducer: unquote(reducer),
+        hash: unquote(Components.fact_hash({literal_init_ast, reducer}))
+      }
+    end
+  end
+
+  defp build_reducer_workflow_ast({:fn, _, clauses} = _reducer, accumulator) do
+    Enum.reduce(
+      clauses,
+      quote do
+        Workflow.new()
+      end,
+      fn
+        {:->, _meta, _} = clause, wrk ->
+          state_cond_fun =
+            case clause do
+              {:->, _, [[{:when, _, _} = lhs], _rhs]} ->
+                quote generated: true do
+                  fn
+                    unquote(lhs) -> true
+                    _, _ -> false
+                  end
+                end
+
+              {:->, _meta, [lhs, _rhs]} ->
+                quote generated: true do
+                  fn
+                    unquote_splicing(lhs) -> true
+                    _, _ -> false
+                  end
+                end
+            end
+
+          Macro.to_string(clause)
+          |> dbg(limit: :infinity, printable_limit: :infinity, pretty: true)
+
+          Macro.to_string(state_cond_fun)
+          |> dbg(limit: :infinity, printable_limit: :infinity, pretty: true)
+
+          state_condition =
+            quote do
+              StateCondition.new(
+                unquote(state_cond_fun),
+                Map.get(unquote(accumulator), :hash),
+                Components.fact_hash(
+                  {unquote(state_cond_fun), Map.get(unquote(accumulator), :hash)}
+                )
+              )
+            end
+
+          arity_check =
+            quote do
+              Condition.new(Components.is_of_arity?(1))
+            end
+
+          quote do
+            unquote(wrk)
+            |> Workflow.add_step(unquote(arity_check))
+            |> Workflow.add_step(unquote(arity_check), unquote(state_condition))
+            |> Workflow.add_step(unquote(state_condition), unquote(accumulator))
+          end
+      end
+    )
+  end
+
+  defp maybe_add_reactors(workflow_ast, nil, _accumulator), do: workflow_ast
+
+  defp maybe_add_reactors(workflow_ast, reactors, accumulator) do
+    Enum.reduce(reactors, workflow_ast, fn
+      {:fn, _meta, [{:->, _, [lhs, _rhs]}]} = reactor, wrk ->
+        memory_assertion =
+          quote do
+            MemoryAssertion.new(
+              fn workflow ->
+                last_known_state = StateMachine.last_known_state(unquote(accumulator), workflow)
+
+                check = fn
+                  unquote(lhs) -> true
+                  _ -> false
+                end
+
+                check.(last_known_state)
+              end,
+              Map.get(unquote(accumulator), :hash)
+            )
+          end
+
+        state_reaction = reactor_ast_of(reactor, accumulator, Components.arity_of(reactor))
+
+        quote do
+          unquote(wrk)
+          |> Workflow.add_step(unquote(memory_assertion))
+          |> Workflow.add_step(unquote(memory_assertion), unquote(state_reaction))
+        end
+    end)
+  end
+
+  defp reactor_ast_of({:fn, _meta, [{:->, _, [lhs, rhs]}]}, accumulator, 1 = _arity) do
+    reactor_ast =
+      quote do
+        fn
+          unquote(lhs) -> unquote(rhs)
+          _otherwise -> {:error, :no_match_of_lhs_in_reactor_fn}
+        end
+      end
+
+    quote do
+      StateReaction.new(
+        work: unquote(reactor_ast),
+        state_hash: Map.get(unquote(accumulator), :hash),
+        arity: 1,
+        ast: unquote(Macro.escape(reactor_ast))
+      )
+    end
+  end
+
   defp add_steps(workflow, steps) when is_list(steps) do
     # root level pass
     Enum.reduce(steps, workflow, fn
@@ -223,10 +447,22 @@ defmodule Runic do
     end)
   end
 
-  defp workflow_of_rule({condition, reaction}, _arity) do
-    reaction = quote(do: step(unquote(reaction)))
+  defp workflow_of_rule({condition, reaction}, arity) do
+    reaction_ast_hash = Components.fact_hash(reaction)
 
-    condition = quote(do: Condition.new(unquote(condition)))
+    reaction = quote(do: Step.new(work: unquote(reaction), hash: unquote(reaction_ast_hash)))
+
+    condition_ast_hash = Components.fact_hash(condition)
+
+    condition =
+      quote(
+        do:
+          Condition.new(
+            work: unquote(condition),
+            hash: unquote(condition_ast_hash),
+            arity: unquote(arity)
+          )
+      )
 
     quote do
       import Runic
@@ -238,7 +474,9 @@ defmodule Runic do
   end
 
   defp workflow_of_rule({:fn, _, [{:->, _, [[], _rhs]}]} = expression, 0 = _arity) do
-    reaction = quote(do: step(unquote(expression)))
+    reaction_ast_hash = Components.fact_hash(expression)
+
+    reaction = quote(do: Step.new(work: unquote(expression), hash: unquote(reaction_ast_hash)))
 
     quote do
       import Runic
@@ -252,17 +490,26 @@ defmodule Runic do
          {:fn, _meta, [{:->, _, [[{:when, _, _} = lhs], _rhs]}]} = expression,
          arity
        ) do
-    reaction = quote(do: step(unquote(expression)))
+    reaction_ast_hash = Components.fact_hash(expression)
+
+    reaction =
+      quote(
+        do:
+          Step.new(
+            work: unquote(expression),
+            hash: unquote(reaction_ast_hash)
+          )
+      )
 
     arity_condition =
       quote do
-        Condition.new(Components.is_of_arity?(unquote(arity)))
+        Condition.new(Components.is_of_arity?(unquote(arity)), unquote(arity))
       end
 
     workflow_with_arity_check_quoted =
       quote do
         Workflow.new()
-        |> Workflow.add_step(Condition.new(Components.is_of_arity?(unquote(arity))))
+        |> Workflow.add_step(unquote(arity_condition))
       end
 
     component_ast_graph =
@@ -272,7 +519,8 @@ defmodule Runic do
           |> Macro.postwalker()
           |> Enum.reduce(
             %{
-              component_ast_graph: Graph.new() |> Graph.add_vertex(:root),
+              component_ast_graph:
+                Graph.new() |> Graph.add_vertex(:root) |> Graph.add_edge(:root, arity_condition),
               arity: arity,
               arity_condition: arity_condition,
               binds: binds_of_guarded_anonymous(expression, arity),
@@ -301,22 +549,16 @@ defmodule Runic do
               quoted_workflow =
                 Enum.reduce(parents, quoted_workflow, fn
                   :root, quoted_workflow ->
-                    Macro.pipe(
-                      quoted_workflow,
-                      quote do
-                        Workflow.add_step(unquote(ast_vertex))
-                      end,
-                      0
-                    )
+                    quote do
+                      unquote(quoted_workflow)
+                      |> Workflow.add_step(unquote(ast_vertex))
+                    end
 
                   parent, quoted_workflow ->
-                    Macro.pipe(
-                      quoted_workflow,
-                      quote do
-                        Workflow.add_step(unquote(parent), unquote(ast_vertex))
-                      end,
-                      0
-                    )
+                    quote do
+                      unquote(quoted_workflow)
+                      |> Workflow.add_step(unquote(parent), unquote(ast_vertex))
+                    end
                 end)
 
               {:next, quoted_workflow}
@@ -445,7 +687,7 @@ defmodule Runic do
     lhs_child_cond = Map.fetch!(possible_children, lhs_of_and)
     rhs_child_cond = Map.fetch!(possible_children, rhs_of_and)
 
-    conditions = [lhs_child_cond, rhs_child_cond]
+    conditions = [lhs_child_cond, rhs_child_cond] |> List.flatten()
 
     conjunction = quote(do: Conjunction.new(unquote(conditions)))
 
@@ -486,13 +728,20 @@ defmodule Runic do
            {:->, [], [Enum.map(binds, fn {_bind, _meta, cont} -> {:_, [], cont} end), false]}
          ]}
 
-      condition = quote(do: Condition.new(unquote(match_fun_ast), unquote(arity)))
+      ast_hash = Components.fact_hash(match_fun_ast)
+
+      condition =
+        quote(
+          do:
+            Condition.new(
+              work: unquote(match_fun_ast),
+              arity: unquote(arity),
+              hash: unquote(ast_hash)
+            )
+        )
 
       wrapped_wrk
-      |> Map.put(
-        :component_ast_graph,
-        g |> Graph.add_edge(:root, arity_condition) |> Graph.add_edge(arity_condition, condition)
-      )
+      |> Map.put(:component_ast_graph, Graph.add_edge(g, arity_condition, condition))
       |> Map.put(:conditions, [condition | wrapped_wrk.conditions])
       |> Map.put(
         :possible_children,
@@ -525,15 +774,12 @@ defmodule Runic do
   defp leaf_to_reaction_edges(g, arity_condition, reaction) do
     Graph.Reducers.Dfs.reduce(g, [], fn
       ^arity_condition, leaf_edges ->
-        Graph.out_degree(g, arity_condition)
         {:next, leaf_edges}
 
       :root, leaf_edges ->
         {:next, leaf_edges}
 
       v, leaf_edges ->
-        Graph.out_degree(g, v)
-
         if Graph.out_degree(g, v) == 0 do
           {:next, [Graph.Edge.new(v, reaction) | leaf_edges]}
         else

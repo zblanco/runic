@@ -2,7 +2,7 @@ defmodule WorkflowTest do
   use ExUnit.Case
   require Runic
   alias Runic.Workflow
-  alias Runic.Workflow.Activation
+  alias Runic.Workflow.Invokable
 
   describe "mergeability" do
     test "merge/2 combines two workflows and their memory" do
@@ -21,8 +21,8 @@ defmodule WorkflowTest do
 
       [{step_1, fact_1}, {step_2, fact_2} | _] = Workflow.next_runnables(wrk)
 
-      new_wrk_1 = Activation.activate(step_1, wrk, fact_1)
-      new_wrk_2 = Activation.activate(step_2, wrk, fact_2)
+      new_wrk_1 = Invokable.invoke(step_1, wrk, fact_1)
+      new_wrk_2 = Invokable.invoke(step_2, wrk, fact_2)
 
       merged_wrk = Workflow.merge(new_wrk_1, new_wrk_2)
 

@@ -6,6 +6,10 @@ defmodule Runic.Workflow.Condition do
     new(work, Function.info(work, :arity) |> elem(1))
   end
 
+  def new(opts) do
+    struct!(__MODULE__, opts)
+  end
+
   def new(work, arity) when is_function(work) do
     %__MODULE__{
       work: work,
