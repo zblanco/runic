@@ -34,10 +34,9 @@ defmodule Runic do
   ```elixir
   alias Runic.Workflow
 
-  outputs =
-    workflow
-    |> Workflow.react_until_satisfied(2)
-    |> Worfklow.raw_productions()
+  workflow
+  |> Workflow.react_until_satisfied(2)
+  |> Worfklow.raw_productions()
 
   > [3, 4, 1]
   ```
