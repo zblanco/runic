@@ -99,14 +99,6 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Condition do
   defp run_work(work, fact_value, _arity) do
     Components.run(work, fact_value)
   end
-
-  # defp satisfied_fact(%Condition{} = condition, %Fact{} = fact) do
-  #   Fact.new(
-  #     value: :satisfied,
-  #     ancestry: {condition.hash, fact.hash},
-  #     runnable: {condition, fact}
-  #   )
-  # end
 end
 
 defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Step do
@@ -381,6 +373,7 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Join do
 
       workflow.graph
       |> Graph.in_edges(join)
+      |> Enum.filter(&(&1.label in [:runnable, :joined]))
       |> Enum.reduce(workflow, fn
         %{v1: v1, label: :runnable}, wrk ->
           Workflow.mark_runnable_as_ran(wrk, join, v1)
@@ -397,14 +390,6 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Join do
       workflow
     end
   end
-
-  # defp from_same_ancestor(memory, parent_hash, %Graph.Edge{label: :produced} = produced_edge) do
-  #   memory
-  #   |> Graph.in_edges(produced_edge.v1)
-  #   |> Enum.any?(&(&1.label == :ran and &1.v2 == parent_hash))
-  # end
-  # def runnable_connection(_state_condition), do: :runnable
-  # def resolved_connection(_state_condition), do: :join_satisfied
 
   def match_or_execute(_join), do: :execute
 end
