@@ -8,7 +8,7 @@ Runic components can be integrated into a Runic.Workflow and evaluated lazily in
 
 Runic Workflows are a decorated dataflow graph (a DAG - "directed acyclic graph") capable of modeling rules, pipelines, and state machines and more.
 
-Basic data flow dependencies such as in a pipeline are modeled as %Step{} structs (nodes/vertices) in the graph with directed edges (arrows) between steps.
+Basic data flow dependencies such as in a pipeline are modeled as `%Step{}` structs (nodes/vertices) in the graph with directed edges (arrows) between steps.
 
 A step can be thought of as a simple input -> output lambda function. e.g.
 
@@ -31,7 +31,7 @@ workflow = Runic.workflow(
 )
 ```
 
-This produces a workflow graph like the following:
+This produces a workflow graph like the following where R is the entrypoint or "root" of the tree:
 
 ```mermaid
   graph TD;
@@ -50,6 +50,91 @@ workflow
 |> Worfklow.raw_productions()
 
 > [3, 4, 1]
+```
+
+However we can go further with this dataflow idea and make pipelines with Runic that aren't just linear. We'll start by defining some functions. 
+
+```elixir
+defmodule TextProcessing do
+  def tokenize(text) do
+    text
+    |> String.downcase()
+    |> String.split(~R/[^[:alnum:]\-]/u, trim: true)
+  end
+
+  def count_words(list_of_words) do
+    list_of_words
+    |> Enum.reduce(Map.new(), fn word, map ->
+      Map.update(map, word, 1, &(&1 + 1))
+    end)
+  end
+
+  def count_uniques(word_count) do
+    Enum.count(word_count)
+  end
+
+  def first_word(list_of_words) do
+    List.first(list_of_words)
+  end
+
+  def last_word(list_of_words) do
+    List.last(list_of_words)
+  end
+end
+```
+
+Notice that we have 3 functions here that all expect a `list_of_words`. If we were to simply evaluate each output in a linear fashion such as the tried and true Elixir `|>` expression...
+
+```elixir
+import TextProcessing
+
+word_count = 
+  "anybody want a peanut?"
+  |> tokenize()
+  |> count_words()
+
+first_word = 
+  "anybody want a peanut?"
+  |> tokenize()
+  |> first_word()
+
+last_word = 
+  "anybody want a peanut?"
+  |> tokenize()
+  |> last_word()
+```
+
+We've used the common `tokenize/1` function 3 times for the same input text.
+
+With Runic we can compose all of these steps into one workflow and evaluate them.
+
+```elixir
+text_processing_workflow = 
+  Runic.workflow(
+    name: "basic text processing example",
+    steps: [
+      {Runic.step(&tokenize/1),
+        [
+          {Runic.step(&count_words/1),
+          [
+            Runic.step(&count_uniques/1)
+          ]},
+          Runic.step(&first_word/1),
+          Runic.step(&last_word/1)
+        ]}
+    ]
+  )
+```
+
+Our text processing workflow graph now looks something like this:
+
+```mermaid
+  graph TD;
+      R-->tokenize;
+      tokenize-->first_word;
+      tokenize-->last_word;
+      tokenize-->count_words;
+      count_words-->count_uniques;
 ```
 
 Beyond steps, Runic has support for Rules, Joins, and State Machines for more complex control flow and stateful evaluation.
