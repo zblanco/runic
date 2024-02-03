@@ -38,7 +38,6 @@ This produces a workflow graph like the following:
       R-->A;
       A-->B;
       B-->C;
-      B-->D;
 ```
 
 Inputs fed through a workflow are called "Facts". During workflow evaluation various steps are traversed to and invoked producing more Facts.
