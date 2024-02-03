@@ -49,7 +49,7 @@ workflow
 |> Workflow.react_until_satisfied(2)
 |> Worfklow.raw_productions()
 
-> [3, 4, 1]
+[3, 4, 1]
 ```
 
 However we can go further with this dataflow idea and make pipelines with Runic that aren't just linear. We'll start by defining some functions. 
@@ -135,6 +135,24 @@ Our text processing workflow graph now looks something like this:
       tokenize-->last_word;
       tokenize-->count_words;
       count_words-->count_uniques;
+```
+
+Now Runic can traverse over the graph of dataflow connections only evaluating `tokenize/1` once for all three dependent steps.
+
+```elixir
+alias Runic.Workflow
+
+text_processing_workflow 
+|> Workflow.react_until_satisfied("anybody want a peanut?") 
+|> Workflow.raw_productions()
+
+[
+  ["anybody", "want", "a", "peanut"], 
+  "anybody", 
+  "peanut", 
+  4,
+  %{"a" => 1, "anybody" => 1, "peanut" => 1, "want" => 1}
+]
 ```
 
 Beyond steps, Runic has support for Rules, Joins, and State Machines for more complex control flow and stateful evaluation.
