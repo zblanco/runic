@@ -2,43 +2,66 @@ defmodule Runic do
   @moduledoc """
   Runic is a tool for modeling your workflows as data that can be composed together at runtime.
 
-  Runic constructs can be integrated into a Runic.Workflow and evaluated lazily in concurrent contexts.
+  Runic components can be integrated into a Runic.Workflow and evaluated lazily in concurrent contexts.
 
-  Runic Workflows are a decorated dataflow graph (a DAG - "directed acyclic graph") of your code that can model your rules, pipelines, and state machines.
+  Runic Workflows are a decorated dataflow graph (a DAG - "directed acyclic graph") capable of modeling rules, pipelines, and state machines and more.
 
   Basic data flow dependencies such as in a pipeline are modeled as %Step{} structs (nodes/vertices) in the graph with directed edges (arrows) between steps.
 
-  Steps can be thought of as a simple input -> output lambda function.
+  A step can be thought of as a simple input -> output lambda function. e.g.
 
-  As Facts are fed through a workflow, various steps are traversed to as needed and activated producing more Facts.
+  ```elixir
+  require Runic
 
-  Beyond steps, Runic has support for Rules and Accumulators for conditional and stateful evaluation.
+  step = Runic.step(fn x -> x + 1 end)
+  ```
 
-  Together this enables Runic to express complex decision trees, finite state machines, data pipelines, and more.
+  And since steps are composable, you can connect them together in a workflow:
 
-  The Runic.Flowable protocol is what allows for extension of Runic and composability of structures like Workflows, Steps, Rules, and Accumulators by allowing user defined structures to be integrated into a `Runic.Workflow`.
+  ```elixir
+  workflow = Runic.workflow(
+    name: "example pipeline workflow",
+    steps: [
+      Runic.step(fn x -> x + 1 end),
+      Runic.step(fn x -> x * 2 end),
+      Runic.step(fn x -> x - 1 end)
+    ]
+  )
+  ```
 
-  See the Runic.Workflow module for more information.
+  Inputs fed through a workflow are called "Facts". During workflow evaluation various steps are traversed to and invoked producing more Facts.
 
-  This top level module provides high level functions and macros for building Runic Flowables
+  ```elixir
+  alias Runic.Workflow
+
+  outputs =
+    workflow
+    |> Workflow.react_until_satisfied(2)
+    |> Worfklow.raw_productions()
+
+  > [3, 4, 1]
+  ```
+
+  Beyond steps, Runic has support for Rules, Joins, and State Machines for more complex control flow and stateful evaluation.
+
+  The Runic.Workflow.Invokable protocol is what allows for extension of Runic and composability
+    of structures like Workflows, Steps, Rules, and Accumulators by allowing user defined structures to be integrated into a `Runic.Workflow`.
+
+  See the Runic.Workflow module for more information about evaluation APIs.
+
+  This top level module provides high level functions and macros for building Runic Components
     such as Steps, Rules, Workflows, and Accumulators.
-
-  This core library is responsible for modeling Workflows with Steps, enforcing contracts of Step functions,
-    and defining the contract of Runners used to execute Workflows.
 
   Runic was designed to be used with custom process topologies and/or libraries such as GenStage, Broadway, and Flow.
 
-  Runic is meant for dynamic runtime modification of a workflow where you might want to compose pieces of a workflow together.
+  Runic is meant for dynamic runtime modification of a workflow where you might want to compose pieces of a workflow together at runtime.
 
   These sorts of use cases are common in expert systems, user DSLs (e.g. Excel, low-code tools) where a developer cannot know
     upfront the logic or data flow to be expressed in compiled code.
 
-  If the runtime modification of a workflow isn't something your use case requires - don't use Runic.
+  If the runtime modification of a workflow or complex parallel dataflow evaluation isn't something your use case requires you might not need Runic and vanilla compiled Elixir code will be faster and simpler.
 
-  There are performance trade-offs in doing highly optimized things such as pattern matching and compilation at runtime.
-
-  But if you do have complex user defined workflow, a database of things such as "rules" that have context-dependent
-  composition at runtime - Runic may be the right tool for you.
+  Runic Workflows are essentially a dataflow based virtual machine running within Elixir and will not be faster than compiled Elixir code.
   """
   alias Runic.Workflow.StateCondition
   alias Runic.Workflow.Accumulator
@@ -65,20 +88,6 @@ defmodule Runic do
     not
     =~
   )a
-
-  # defp maybe_expand(condition, context) when is_list(condition) do
-  #   Enum.map(condition, &maybe_expand(&1, context))
-  # end
-
-  # defp maybe_expand({:&, _, [{:/, _, _}]} = captured_function_ast, context) do
-  #   Macro.prewalk(captured_function_ast, fn
-  #     {:__aliases__, _meta, _aliases} = alias_ast ->
-  #       Macro.expand(alias_ast, context)
-
-  #     ast_otherwise ->
-  #       ast_otherwise
-  #   end)
-  # end
 
   @doc """
   Creates a %Step{}: a basic lambda expression that can be added to a workflow.
