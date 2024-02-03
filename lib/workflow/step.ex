@@ -7,7 +7,7 @@ defmodule Runic.Workflow.Step do
 
   def new(params) do
     struct!(__MODULE__, params)
-    |> hash_work()
+    |> maybe_hash_work()
     |> maybe_set_name()
   end
 
@@ -21,7 +21,10 @@ defmodule Runic.Workflow.Step do
 
   defp maybe_set_name(%__MODULE__{name: name} = step) when not is_nil(name), do: step
 
-  defp hash_work(%Step{work: work} = step), do: Map.put(step, :hash, Components.work_hash(work))
+  defp maybe_hash_work(%Step{work: work, hash: nil} = step),
+    do: Map.put(step, :hash, Components.work_hash(work))
+
+  defp maybe_hash_work(%Step{work: _work, hash: _} = step), do: step
 
   def run(%__MODULE__{} = step, input) when not is_struct(input, Fact) do
     Components.run(step.work, input)

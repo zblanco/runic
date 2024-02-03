@@ -60,6 +60,7 @@ defmodule RunicTest do
         Runic.rule(fn num, other_num when is_integer(num) and is_integer(other_num) ->
           num * other_num
         end)
+        |> dbg()
 
       assert match?(%Rule{}, rule)
       assert Rule.check(rule, :potato) == false
@@ -307,11 +308,11 @@ defmodule RunicTest do
 
       condition = Runic.condition(fn :potato -> true end)
 
-      assert %Workflow{} == Runic.transmute(step)
-      assert %Workflow{} == Runic.transmute(rule)
-      assert %Workflow{} == Runic.transmute(state_machine)
-      assert %Workflow{} == Runic.transmute(condition)
-      assert %Workflow{} == Runic.transmute([step, rule, state_machine, condition])
+      assert %Workflow{} = Runic.transmute(step)
+      assert %Workflow{} = Runic.transmute(rule)
+      assert %Workflow{} = Runic.transmute(state_machine)
+      assert %Workflow{} = Runic.transmute(condition)
+      assert %Workflow{} = Runic.transmute([step, rule, state_machine, condition])
     end
   end
 end

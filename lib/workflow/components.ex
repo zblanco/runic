@@ -49,7 +49,7 @@ defmodule Runic.Workflow.Components do
   def is_of_arity?(arity) do
     fn
       args when is_list(args) ->
-        if(arity == 1, do: true, else: false)
+        if(arity == 1, do: true, else: length(args) == arity)
 
       args ->
         arity_of(args) == arity
