@@ -181,7 +181,14 @@ defmodule Runic.Workflow do
       ) do
     merged_graph =
       Graph.Reducers.Bfs.reduce(g2, g1, fn
-        %Root{}, g ->
+        %Root{} = root, g ->
+          out_edges = Enum.uniq(Graph.out_edges(g, root) ++ Graph.out_edges(g2, root))
+
+          g =
+            Enum.reduce(out_edges, Graph.add_vertex(g, root), fn edge, g ->
+              Graph.add_edge(g, edge)
+            end)
+
           {:next, g}
 
         generation, g when is_integer(generation) ->
@@ -591,6 +598,9 @@ defmodule Runic.Workflow do
       workflow = prepare_next_generation(workflow, Map.values(state_produced_facts_by_ancestor))
 
       Graph.Reducers.Bfs.reduce(graph, workflow, fn
+        node, wrk when is_integer(node) ->
+          {:next, wrk}
+
         node, wrk ->
           if node.__struct__ in stateful_matching_impls do
             state_hash = Runic.Workflow.StatefulMatching.matches_on(node)
@@ -675,8 +685,10 @@ defmodule Runic.Workflow do
 
   @doc false
   def last_known_state(%__MODULE__{} = workflow, state_reaction) do
+    accumulator = Map.get(workflow.graph.vertices, state_reaction.state_hash)
+
     state_from_memory =
-      for edge <- Graph.out_edges(workflow.graph, state_reaction),
+      for edge <- Graph.out_edges(workflow.graph, accumulator),
           edge.label == :state_produced do
         edge
       end

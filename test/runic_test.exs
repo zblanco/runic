@@ -60,7 +60,6 @@ defmodule RunicTest do
         Runic.rule(fn num, other_num when is_integer(num) and is_integer(other_num) ->
           num * other_num
         end)
-        |> dbg()
 
       assert match?(%Rule{}, rule)
       assert Rule.check(rule, :potato) == false
@@ -208,7 +207,7 @@ defmodule RunicTest do
         |> Workflow.react()
         |> Workflow.productions()
 
-      assert Enum.count(productions_from_1_cycles) == 2
+      assert Enum.count(productions_from_1_cycles) == 3
 
       workflow_after_2_cycles =
         potato_lock.workflow

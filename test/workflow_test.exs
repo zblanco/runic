@@ -5,7 +5,6 @@ defmodule WorkflowTest do
   alias Runic.Workflow.Invokable
   alias Runic.Workflow.Step
   alias Runic.Workflow.Fact
-  require Runic
 
   defmodule TextProcessing do
     require Runic
@@ -262,7 +261,7 @@ defmodule WorkflowTest do
 
     wrk = Workflow.plan_eagerly(workflow, :potato)
 
-    assert Enum.count(Workflow.next_runnables(wrk) |> dbg(label: "next_runnables")) == 1
+    assert Enum.count(Workflow.next_runnables(wrk)) == 1
     assert not is_nil(Workflow.matches(wrk))
 
     next_facts =
@@ -274,7 +273,7 @@ defmodule WorkflowTest do
     wrk = Workflow.plan_eagerly(workflow, 42)
     assert Enum.count(Workflow.next_runnables(wrk)) == 1
 
-    [%{value: result_value} | _rest] =
+    [result_value] =
       Workflow.next_runnables(wrk)
       |> Enum.map(fn {step, fact} -> Runic.Workflow.Components.run(step.work, fact.value) end)
 

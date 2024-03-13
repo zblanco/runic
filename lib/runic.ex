@@ -252,20 +252,14 @@ defmodule Runic do
                 end
             end
 
-          Macro.to_string(clause)
-          |> dbg(limit: :infinity, printable_limit: :infinity, pretty: true)
-
-          Macro.to_string(state_cond_fun)
-          |> dbg(limit: :infinity, printable_limit: :infinity, pretty: true)
+          hash_of_ast = Components.fact_hash({state_cond_fun, accumulator})
 
           state_condition =
             quote do
               StateCondition.new(
                 unquote(state_cond_fun),
                 Map.get(unquote(accumulator), :hash),
-                Components.fact_hash(
-                  {unquote(state_cond_fun), Map.get(unquote(accumulator), :hash)}
-                )
+                unquote(hash_of_ast)
               )
             end
 
@@ -288,21 +282,29 @@ defmodule Runic do
 
   defp maybe_add_reactors(workflow_ast, reactors, accumulator) do
     Enum.reduce(reactors, workflow_ast, fn
-      {:fn, _meta, [{:->, _, [lhs, _rhs]}]} = reactor, wrk ->
+      {:fn, _meta, [{:->, _, [[lhs], _rhs]}]} = reactor, wrk ->
+        memory_assertion_fun =
+          quote do
+            fn workflow ->
+              last_known_state = StateMachine.last_known_state(unquote(accumulator), workflow)
+
+              check = fn
+                unquote(lhs) -> true
+                _ -> false
+              end
+
+              check.(last_known_state)
+            end
+          end
+
+        memory_assertion_ast_hash = Components.fact_hash(memory_assertion_fun)
+
         memory_assertion =
           quote do
             MemoryAssertion.new(
-              fn workflow ->
-                last_known_state = StateMachine.last_known_state(unquote(accumulator), workflow)
-
-                check = fn
-                  unquote(lhs) -> true
-                  _ -> false
-                end
-
-                check.(last_known_state)
-              end,
-              Map.get(unquote(accumulator), :hash)
+              memory_assertion: unquote(memory_assertion_fun),
+              state_hash: Map.get(unquote(accumulator), :hash),
+              hash: unquote(memory_assertion_ast_hash)
             )
           end
 
@@ -316,7 +318,7 @@ defmodule Runic do
     end)
   end
 
-  defp reactor_ast_of({:fn, _meta, [{:->, _, [lhs, rhs]}]}, accumulator, 1 = _arity) do
+  defp reactor_ast_of({:fn, _meta, [{:->, _, [[lhs], rhs]}]}, accumulator, 1 = _arity) do
     reactor_ast =
       quote do
         fn
@@ -540,7 +542,7 @@ defmodule Runic do
 
   defp workflow_of_rule(
          {:fn, head_meta, [{:->, clause_meta, [[lhs], _rhs]}]} = expression,
-         1 = _arity
+         1 = arity
        ) do
     condition =
       {:fn, head_meta,
@@ -549,16 +551,22 @@ defmodule Runic do
          {:->, clause_meta, [[{:_otherwise, [if_undefined: :apply], Elixir}], false]}
        ]}
 
+    condition_ast_hash = Components.fact_hash(condition)
+
     condition =
       quote do
-        Condition.new(unquote(condition))
+        Condition.new(
+          work: unquote(condition),
+          hash: unquote(condition_ast_hash),
+          arity: unquote(arity)
+        )
       end
 
     reaction = quote(do: step(unquote(expression)))
 
     arity_condition =
       quote do
-        Condition.new(Components.is_of_arity?(1))
+        Condition.new(Components.is_of_arity?(unquote(arity)), unquote(arity))
       end
 
     quote do
