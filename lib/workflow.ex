@@ -309,9 +309,7 @@ defmodule Runic.Workflow do
   Lists facts produced in the workflow so far.
   """
   def facts(%__MODULE__{graph: graph}) do
-    for v <- Graph.vertices(graph), match?(%Fact{}, v) do
-      v
-    end
+    for v <- Graph.vertices(graph), match?(%Fact{}, v), do: v
   end
 
   @doc false
@@ -321,11 +319,6 @@ defmodule Runic.Workflow do
       edge.v2
     end
   end
-
-  # defp edges_to_add(v, into_g, from_g) do
-  #   (Graph.out_edges(into_g, v) ++ Graph.out_edges(from_g, v))
-  #   |> Enum.uniq()
-  # end
 
   @doc """
   Cycles eagerly through a prepared agenda in the match phase.
@@ -406,6 +399,9 @@ defmodule Runic.Workflow do
           Graph.Reducers.Bfs.reduce(wrk.graph, wrk.graph, fn
             %Fact{} = fact, g ->
               {:next, Graph.delete_vertex(g, fact)}
+
+            generation, g when is_integer(generation) ->
+              {:next, Graph.delete_vertex(g, generation)}
 
             _node, g ->
               {:next, g}
