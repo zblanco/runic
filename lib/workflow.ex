@@ -399,6 +399,20 @@ defmodule Runic.Workflow do
 
   defp do_react_until_satisfied(%__MODULE__{} = workflow, false = _is_runnable?), do: workflow
 
+  def purge_memory(%__MODULE__{} = wrk) do
+    %__MODULE__{
+      wrk
+      | graph:
+          Graph.Reducers.Bfs.reduce(wrk.graph, wrk.graph, fn
+            %Fact{} = fact, g ->
+              {:next, Graph.delete_vertex(g, fact)}
+
+            _node, g ->
+              {:next, g}
+          end)
+    }
+  end
+
   @doc """
   For a new set of inputs, `plan/2` prepares the workflow agenda for the next set of reactions by
   matching through left-hand-side conditions in the workflow network.

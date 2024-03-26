@@ -279,4 +279,25 @@ defmodule WorkflowTest do
 
     assert is_integer(result_value)
   end
+
+  describe "purge_memory/1" do
+    test "purges memory from a workflow" do
+      wrk =
+        Runic.workflow(
+          name: "purge test",
+          steps: [
+            {Runic.step(fn num -> num + 1 end),
+             [
+               Runic.step(fn num -> num + 2 end),
+               Runic.step(fn num -> num + 4 end)
+             ]}
+          ]
+        )
+        |> Workflow.react(2)
+
+      wrk = Workflow.purge_memory(wrk)
+
+      assert Enum.empty?(Workflow.reactions(wrk))
+    end
+  end
 end
