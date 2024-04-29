@@ -331,47 +331,51 @@ defmodule WorkflowTest do
   #   end
   # end
 
-  # describe "map" do
-  #   test "applies the function for every item in the enumerable" do
-  #     wrk =
-  #       Runic.workflow(
-  #         name: "map test",
-  #         steps: [
-  #           {Runic.step(fn num -> Enum.map(0..3, &(&1 + num)) end),
-  #            [
-  #              Runic.map(fn num -> num * 2 end)
-  #            ]}
-  #         ]
-  #       )
+  describe "map" do
+    test "applies the function for every item in the enumerable" do
+      wrk =
+        Runic.workflow(
+          name: "map test",
+          steps: [
+            {Runic.step(fn num -> Enum.map(0..3, &(&1 + num)) end),
+             [
+               Runic.map(fn num -> num * 2 end)
+             ]}
+          ]
+        )
 
-  #     wrk = Workflow.react_until_satisfied(wrk, 1)
+      wrk = Workflow.react_until_satisfied(wrk, 1)
 
-  #     assert Enum.count(Workflow.reactions(wrk)) == 4
-  #   end
+      for reaction <- Workflow.raw_productions(wrk) do
+        assert reaction in [0, 2, 4, 6, [1, 2, 3, 4], 8]
+      end
+    end
 
-  #   test "map can apply pipelines of steps" do
-  #     wrk =
-  #       Runic.workflow(
-  #         name: "map test",
-  #         steps: [
-  #           {Runic.step(fn num -> Enum.map(0..3, &(&1 + num)) end),
-  #            [
-  #              Runic.map(
-  #                {Runic.step(fn num -> num * 2 end),
-  #                 [
-  #                   Runic.step(fn num -> num + 1 end),
-  #                   Runic.step(fn num -> num + 4 end)
-  #                 ]}
-  #              )
-  #            ]}
-  #         ]
-  #       )
+    test "map can apply pipelines of steps" do
+      wrk =
+        Runic.workflow(
+          name: "map test",
+          steps: [
+            {Runic.step(fn num -> Enum.map(0..3, &(&1 + num)) end),
+             [
+               Runic.map(
+                 {Runic.step(fn num -> num * 2 end),
+                  [
+                    Runic.step(fn num -> num + 1 end),
+                    Runic.step(fn num -> num + 4 end)
+                  ]}
+               )
+             ]}
+          ]
+        )
 
-  #     wrk = Workflow.react_until_satisfied(wrk, 1)
+      wrk = Workflow.react_until_satisfied(wrk, 1)
 
-  #     Enum.count(Workflow.reactions(wrk))
-  #   end
-  # end
+      Workflow.raw_productions(wrk)
+
+      Enum.count(Workflow.reactions(wrk))
+    end
+  end
 
   # describe "continuations" do
   #   test "continuations can add additional steps and runnables to a workflow after a step has been run in order to continue a computation" do

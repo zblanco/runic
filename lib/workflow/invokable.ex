@@ -408,17 +408,18 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.FanOut do
         %Fact{} = source_fact
       ) do
     unless is_nil(Enumerable.impl_for(source_fact.value)) do
-      Enum.map_reduce(source_fact.value, workflow, fn value, wrk ->
-        fact = Fact.new(value: value, ancestry: {fan_out.hash, source_fact.hash})
+      Enum.reduce(source_fact.value, workflow, fn value, wrk ->
+        fact =
+          Fact.new(value: value, ancestry: {fan_out.hash, source_fact.hash})
 
         wrk
         |> Workflow.log_fact(fact)
         |> Workflow.prepare_next_runnables(fan_out, fact)
-        |> Workflow.draw_connection(fact, fan_out, :produced)
-        |> Workflow.mark_runnable_as_ran(fan_out, source_fact)
+        |> Workflow.draw_connection(fact, fan_out, :fan_out)
       end)
+      |> Workflow.mark_runnable_as_ran(fan_out, source_fact)
     else
-      workflow
+      Workflow.mark_runnable_as_ran(workflow, fan_out, source_fact)
     end
   end
 
