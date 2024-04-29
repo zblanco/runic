@@ -13,6 +13,7 @@ defmodule Runic do
   alias Runic.Workflow.Rule
   alias Runic.Workflow.Components
   alias Runic.Workflow.Conjunction
+  alias Runic.Workflow.FanOut
 
   @boolean_expressions ~w(
     ==
@@ -159,6 +160,129 @@ defmodule Runic do
         workflow: unquote(workflow)
       }
     end
+  end
+
+  @doc """
+  map/1 applies the expression to each element in the enumerable.
+
+  A map expression can be a function, a list, or a nested pipeline expression of steps.
+
+  The input fact to the map expression must implement the Enumerable protocol so that during workflow evaluation
+  the map expression can be applied to each element as a runnable.
+
+  A Runic map expression must be inside a Runic workflow to be evaluated.
+
+  ## Examples
+
+  ```elixir
+  Runic.map(fn x -> x * 2 end)
+
+  Runic.map(
+    {Runic.step(fn num -> num * 2 end),
+    [
+      Runic.step(fn num -> num + 1 end),
+      Runic.step(fn num -> num + 4 end)
+    ]}
+  )
+  ```
+  """
+  defmacro map(expression) do
+    quote do
+      unquote(pipeline_of_map_expression(expression))
+    end
+  end
+
+  defp pipeline_of_map_expression({:fn, _, _} = expression) do
+    fan_out =
+      quote do
+        %FanOut{
+          hash: unquote(Components.fact_hash({:fan_out, expression}))
+        }
+      end
+
+    step = pipeline_step(expression)
+
+    quote do
+      {unquote(fan_out), [unquote(step)]}
+    end
+  end
+
+  defp pipeline_of_map_expression(
+         {step_expression, [_ | _] = dependent_steps} = pipeline_expression
+       ) do
+    fan_out =
+      quote do
+        %FanOut{
+          hash: unquote(Components.fact_hash({:fan_out, pipeline_expression}))
+        }
+      end
+
+    step = pipeline_step(step_expression)
+
+    dependent_pipeline = pipeline_of_expression(dependent_steps)
+
+    quote do
+      {unquote(fan_out), [{unquote(step), unquote(dependent_pipeline)}]}
+    end
+  end
+
+  defp pipeline_of_map_expression({:&, _, _} = expression) do
+    fan_out =
+      quote do
+        %FanOut{
+          hash: unquote(Components.fact_hash({:fan_out, expression}))
+        }
+      end
+
+    step = pipeline_step(expression)
+
+    quote do
+      {unquote(fan_out), [unquote(step)]}
+    end
+  end
+
+  defp pipeline_of_expression(dependent_steps) when is_list(dependent_steps) do
+    Enum.map(dependent_steps, &pipeline_of_expression/1)
+  end
+
+  defp pipeline_of_expression({{:fn, _, _} = anonymous_step_expression, dependent_steps}) do
+    {pipeline_step(anonymous_step_expression), pipeline_of_expression(dependent_steps)}
+  end
+
+  defp pipeline_of_expression({{:., _, [_, :map]}, _, [expression]}) do
+    pipeline_of_map_expression(expression)
+  end
+
+  defp pipeline_of_expression({{:., _, [_, :step]}, _, _} = expression) do
+    expression
+  end
+
+  defp pipeline_of_expression({:map, _, [expression]}) do
+    pipeline_of_map_expression(expression)
+  end
+
+  defp pipeline_step({:&, _, _} = expression) do
+    step_ast_hash = Components.fact_hash(expression)
+
+    quote do
+      Step.new(work: unquote(expression), hash: unquote(step_ast_hash))
+    end
+  end
+
+  defp pipeline_step({:fn, _, _} = expression) do
+    step_ast_hash = Components.fact_hash(expression)
+
+    quote do
+      Step.new(work: unquote(expression), hash: unquote(step_ast_hash))
+    end
+  end
+
+  defp pipeline_step({{:., _, [_, :step]}, _, _} = expression) do
+    expression
+  end
+
+  defp pipeline_step({:step, _, _} = expression) do
+    expression
   end
 
   defp workflow_of_state_machine(init, reducer, reactors) do

@@ -29,7 +29,7 @@ defmodule WorkflowTest do
     def tokenize(text) do
       text
       |> String.downcase()
-      |> String.split(~R/[^[:alnum:]\-]/u, trim: true)
+      |> String.split(~r/[^[:alnum:]\-]/u, trim: true)
     end
 
     def count_words(list_of_words) do
@@ -300,4 +300,119 @@ defmodule WorkflowTest do
       assert Enum.empty?(Workflow.reactions(wrk))
     end
   end
+
+  # describe "named components" do
+  #   test "workflow components that are given a named can be retrieved by their name" do
+
+  #   end
+
+  #   test "component names can be used in construction" do
+
+  #   end
+
+  #   test "adding a component with a name that is already in use raises an error" do
+
+  #   end
+
+  #   test "components can be removed by name" do
+
+  #   end
+
+  #   test "removing a component that does not exist raises an error" do
+
+  #   end
+
+  #   test "components can be replaced by name" do
+
+  #   end
+
+  #   test "component_of/3 can access a sub component by name of parent and the kind of sub component" do
+
+  #   end
+  # end
+
+  # describe "map" do
+  #   test "applies the function for every item in the enumerable" do
+  #     wrk =
+  #       Runic.workflow(
+  #         name: "map test",
+  #         steps: [
+  #           {Runic.step(fn num -> Enum.map(0..3, &(&1 + num)) end),
+  #            [
+  #              Runic.map(fn num -> num * 2 end)
+  #            ]}
+  #         ]
+  #       )
+
+  #     wrk = Workflow.react_until_satisfied(wrk, 1)
+
+  #     assert Enum.count(Workflow.reactions(wrk)) == 4
+  #   end
+
+  #   test "map can apply pipelines of steps" do
+  #     wrk =
+  #       Runic.workflow(
+  #         name: "map test",
+  #         steps: [
+  #           {Runic.step(fn num -> Enum.map(0..3, &(&1 + num)) end),
+  #            [
+  #              Runic.map(
+  #                {Runic.step(fn num -> num * 2 end),
+  #                 [
+  #                   Runic.step(fn num -> num + 1 end),
+  #                   Runic.step(fn num -> num + 4 end)
+  #                 ]}
+  #              )
+  #            ]}
+  #         ]
+  #       )
+
+  #     wrk = Workflow.react_until_satisfied(wrk, 1)
+
+  #     Enum.count(Workflow.reactions(wrk))
+  #   end
+  # end
+
+  # describe "continuations" do
+  #   test "continuations can add additional steps and runnables to a workflow after a step has been run in order to continue a computation" do
+  #     wrk =
+  #       Runic.workflow(
+  #         name: "continuation test",
+  #         steps: [
+  #           Runic.step(fn num -> Enum.map(0..3, fn _ -> num end) end,
+  #             after: fn step, wrk, fact ->
+  #               # we shouldn't expose complexity of internal invokables to user
+  #               # instead we should return a workflow with an input fact to add as a runnable
+  #               # the continuation must be a runnable pair of a component and a fact
+  #               # we can merge the workflows together but once all steps resolve we should
+  #               # remove the continuation components from the workflow with trust that memory
+  #               # will be maintained with ancestry to the original step which produced the continuation
+
+  #               # it's important to avoid running continuation workflows for new facts unless the after function wants to
+  #               # in which case it should happen at runtime again because the prior continuation is invalid in the next runtime context
+
+  #               Runic.workflow(steps: Enum.map(fact.value, &Runic.step(fn num -> &1 + 1 end)))
+  #             end
+  #           )
+  #         ]
+  #       )
+  #       |> Workflow.react(2)
+
+  #     Runic.workflow(
+  #       name: "continuation test",
+  #       steps: [
+  #         {Runic.step(fn num -> Enum.map(0..3, fn _ -> num end) end),
+  #          [
+  #            {Runic.map(fn num -> num + 1 end),
+  #             [
+  #               Runic.reduce(0, fn num, acc -> num + acc end)
+  #             ]}
+  #          ]}
+  #       ]
+  #     )
+  #   end
+
+  #   test "continuations aren't present for separate generation / external fact" do
+  #   end
+  # end
 end

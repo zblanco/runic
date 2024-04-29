@@ -393,3 +393,85 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Join do
 
   def match_or_execute(_join), do: :execute
 end
+
+defimpl Runic.Workflow.Invokable, for: Runic.Workflow.FanOut do
+  alias Runic.Workflow
+
+  alias Runic.Workflow.{
+    Fact,
+    FanOut
+  }
+
+  def invoke(
+        %FanOut{} = fan_out,
+        %Workflow{} = workflow,
+        %Fact{} = source_fact
+      ) do
+    unless is_nil(Enumerable.impl_for(source_fact.value)) do
+      Enum.map_reduce(source_fact.value, workflow, fn value, wrk ->
+        fact = Fact.new(value: value, ancestry: {fan_out.hash, source_fact.hash})
+
+        wrk
+        |> Workflow.log_fact(fact)
+        |> Workflow.prepare_next_runnables(fan_out, fact)
+        |> Workflow.draw_connection(fact, fan_out, :produced)
+        |> Workflow.mark_runnable_as_ran(fan_out, source_fact)
+      end)
+    else
+      workflow
+    end
+  end
+
+  def match_or_execute(_fan_out), do: :execute
+end
+
+# defimpl Runic.Workflow.Invokable, for: Runic.Workflow.FanIn do
+#   alias Runic.Workflow
+
+#   alias Runic.Workflow.{
+#     Fact,
+#     FanIn
+#   }
+
+#   @spec invoke(%Runic.Workflow.FanIn{}, Runic.Workflow.t(), Runic.Workflow.Fact.t()) ::
+#           Runic.Workflow.t()
+#   def invoke(
+#         %FanIn{} = fan_in,
+#         %Workflow{} = workflow,
+#         %Fact{} = fact
+#       ) do
+#     # a fan_in has n parents that must have produced a fact
+#     # check if all parents have produced a fact
+
+#     # get to parent steps, then get to the facts they produced that are of the same generation
+
+#     latest_state = fan_in.reducer.(fact.value, )
+
+#     outputs_of_parents =
+#       workflow.graph
+#       |> Graph.in_edges(fan_in)
+#       |> Stream.filter(&(&1.label == :flow))
+#       |> Stream.map(& &1.v1)
+#       |> Stream.flat_map(fn step ->
+#         workflow.graph
+#         |> Graph.out_edges(step)
+#         |> Enum.filter(&(&1.label == :produced))
+#         |> Enum.map(& &1.v2.hash)
+#       end)
+#       |> MapSet.new()
+#       |> MapSet.put(fact.hash)
+
+#     if Enum.all?(fan_in.fan_ins, &(&1 in outputs_of_parents)) do
+#       result_fact = Fact.new(value: outputs_of_parents, ancestry: {fan_in.hash, fact.hash})
+
+#     end
+#   end
+
+#   defp last_known_state(workflow, accumulator) do
+#     workflow.graph
+#     |> Graph.out_edges(accumulator)
+#     |> Enum.filter(&(&1.label == :state_produced))
+#     |> List.first(%{})
+#     |> Map.get(:v2)
+#   end
+# end

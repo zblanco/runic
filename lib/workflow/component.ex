@@ -4,7 +4,7 @@ defprotocol Runic.Component do
     by implementing the `to_workflow/1` transformation.
   """
   @fallback_to_any true
-  def to_workflow(flowable)
+  def to_workflow(component)
 end
 
 defimpl Runic.Component, for: List do

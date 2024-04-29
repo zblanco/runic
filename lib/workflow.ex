@@ -729,4 +729,13 @@ defmodule Runic.Workflow do
       :execute -> :runnable
     end
   end
+
+  # def component_of(
+  #       %__MODULE__{} = wrk,
+  #       parent_component_name,
+  #       sub_component
+  #     )
+  #     when sub_component in @sub_components do
+  #   Map.get(wrk.components, parent_component_name)
+  # end
 end
