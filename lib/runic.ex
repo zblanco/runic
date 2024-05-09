@@ -149,7 +149,7 @@ defmodule Runic do
 
     name = opts[:name]
 
-    workflow = workflow_of_state_machine(init, reducer, reactors)
+    workflow = workflow_of_state_machine(init, reducer, reactors, name)
 
     quote do
       %StateMachine{
@@ -157,7 +157,7 @@ defmodule Runic do
         init: unquote(init),
         reducer: unquote(reducer),
         reactors: unquote(reactors),
-        workflow: unquote(workflow)
+        workflow: unquote(workflow) |> Map.put(:name, unquote(name))
       }
     end
   end
@@ -285,12 +285,12 @@ defmodule Runic do
     expression
   end
 
-  defp workflow_of_state_machine(init, reducer, reactors) do
+  defp workflow_of_state_machine(init, reducer, reactors, name) do
     accumulator = accumulator_of_state_machine(init, reducer)
 
     workflow_ast =
       reducer
-      |> build_reducer_workflow_ast(accumulator)
+      |> build_reducer_workflow_ast(accumulator, name)
       |> maybe_add_reactors(reactors, accumulator)
 
     quote generated: true do
@@ -349,11 +349,11 @@ defmodule Runic do
     end
   end
 
-  defp build_reducer_workflow_ast({:fn, _, clauses} = _reducer, accumulator) do
+  defp build_reducer_workflow_ast({:fn, _, clauses} = _reducer, accumulator, name) do
     Enum.reduce(
       clauses,
       quote generated: true do
-        Workflow.new()
+        Workflow.new(unquote(name))
       end,
       fn
         {:->, _meta, _} = clause, wrk ->

@@ -23,7 +23,9 @@ defimpl Runic.Component, for: Runic.Workflow do
 end
 
 defimpl Runic.Component, for: Runic.Workflow.Rule do
-  def to_workflow(rule), do: rule.workflow
+  def to_workflow(rule) do
+    rule.workflow |> Map.put(:components, Map.put(rule.workflow.components, rule.name, rule))
+  end
 end
 
 defimpl Runic.Component, for: Runic.Workflow.Step do
@@ -66,6 +68,6 @@ end
 
 defimpl Runic.Component, for: Runic.Workflow.StateMachine do
   def to_workflow(%Runic.Workflow.StateMachine{} = fsm) do
-    fsm.workflow
+    fsm.workflow |> Map.put(:components, Map.put(fsm.workflow.components, fsm.name, fsm))
   end
 end

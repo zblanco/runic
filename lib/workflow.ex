@@ -38,18 +38,13 @@ defmodule Runic.Workflow do
           graph: Graph.t(),
           hash: binary(),
           generations: integer(),
-          # name -> hash
+          # name -> component struct
           components: map(),
           # name -> %{before: list(fun), after: list(fun)}
           hooks: map()
         }
 
   @type runnable() :: {fun(), term()}
-
-  @typedoc """
-  A discrimination network of conditions, and steps, built from composites such as rules and accumulations.
-  """
-  @type flow() :: Graph.t()
 
   defstruct name: nil,
             generations: 0,
@@ -143,33 +138,27 @@ defmodule Runic.Workflow do
   end
 
   def add_step(%__MODULE__{} = workflow, parent_step_name, child_step) do
-    add_step(workflow, get_step(workflow, parent_step_name), child_step)
+    add_step(workflow, get_component!(workflow, parent_step_name), child_step)
   end
 
   def maybe_put_component(%__MODULE__{} = workflow, %{name: name} = step) do
-    Map.put(workflow, :components, Map.put(workflow.components, name, step.hash))
+    Map.put(workflow, :components, Map.put(workflow.components, name, step))
   end
 
   def maybe_put_component(%__MODULE__{} = workflow, %{} = _step), do: workflow
 
-  defp get_step(%__MODULE__{components: components, graph: g}, name) do
-    step_hash = Map.get(components, name)
-
-    Map.get(g.vertices, step_hash)
-  end
-
-  def get_component(wrk, name) do
-    get_step(wrk, name)
+  def get_component(%__MODULE__{components: components}, name) do
+    Map.get(components, name)
   end
 
   def get_component!(wrk, name) do
-    get_step(wrk, name) || raise(KeyError, "No component found with name #{name}")
+    get_component(wrk, name) || raise(KeyError, "No component found with name #{name}")
   end
 
-  def fetch_component(wrk, name) do
-    case get_step(wrk, name) do
-      nil -> {:error, :no_component_by_name}
-      step -> {:ok, step}
+  def fetch_component(%__MODULE__{components: components}, name) do
+    case Map.fetch(components, name) do
+      :error -> {:error, :no_component_by_name}
+      {:ok, component} -> {:ok, component}
     end
   end
 
@@ -203,8 +192,8 @@ defmodule Runic.Workflow do
   Merges the second workflow into the first maintaining the name of the first.
   """
   def merge(
-        %__MODULE__{graph: g1} = workflow,
-        %__MODULE__{graph: g2} = _workflow2
+        %__MODULE__{graph: g1, components: c1} = workflow,
+        %__MODULE__{graph: g2, components: c2} = _workflow2
       ) do
     merged_graph =
       Graph.Reducers.Bfs.reduce(g2, g1, fn
@@ -261,7 +250,8 @@ defmodule Runic.Workflow do
 
     %__MODULE__{
       workflow
-      | graph: merged_graph
+      | graph: merged_graph,
+      components: Map.merge(c1, c2)
     }
   end
 
