@@ -352,7 +352,7 @@ defmodule Runic do
   defp build_reducer_workflow_ast({:fn, _, clauses} = _reducer, accumulator) do
     Enum.reduce(
       clauses,
-      quote do
+      quote generated: true do
         Workflow.new()
       end,
       fn
@@ -379,7 +379,7 @@ defmodule Runic do
           hash_of_ast = Components.fact_hash({state_cond_fun, accumulator})
 
           state_condition =
-            quote do
+            quote generated: true do
               StateCondition.new(
                 unquote(state_cond_fun),
                 Map.get(unquote(accumulator), :hash),
@@ -392,7 +392,7 @@ defmodule Runic do
               Condition.new(Components.is_of_arity?(1))
             end
 
-          quote do
+          quote generated: true do
             unquote(wrk)
             |> Workflow.add_step(unquote(arity_check))
             |> Workflow.add_step(unquote(arity_check), unquote(state_condition))
@@ -408,7 +408,7 @@ defmodule Runic do
     Enum.reduce(reactors, workflow_ast, fn
       {:fn, _meta, [{:->, _, [[lhs], _rhs]}]} = reactor, wrk ->
         memory_assertion_fun =
-          quote do
+          quote generated: true do
             fn workflow ->
               last_known_state = StateMachine.last_known_state(unquote(accumulator), workflow)
 
@@ -424,7 +424,7 @@ defmodule Runic do
         memory_assertion_ast_hash = Components.fact_hash(memory_assertion_fun)
 
         memory_assertion =
-          quote do
+          quote generated: true do
             MemoryAssertion.new(
               memory_assertion: unquote(memory_assertion_fun),
               state_hash: Map.get(unquote(accumulator), :hash),
@@ -434,7 +434,7 @@ defmodule Runic do
 
         state_reaction = reactor_ast_of(reactor, accumulator, Components.arity_of(reactor))
 
-        quote do
+        quote generated: true do
           unquote(wrk)
           |> Workflow.add_step(unquote(memory_assertion))
           |> Workflow.add_step(unquote(memory_assertion), unquote(state_reaction))

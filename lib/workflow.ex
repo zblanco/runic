@@ -38,7 +38,10 @@ defmodule Runic.Workflow do
           graph: Graph.t(),
           hash: binary(),
           generations: integer(),
-          components: map()
+          # name -> hash
+          components: map(),
+          # name -> %{before: list(fun), after: list(fun)}
+          hooks: map()
         }
 
   @type runnable() :: {fun(), term()}
@@ -52,7 +55,8 @@ defmodule Runic.Workflow do
             generations: 0,
             hash: nil,
             graph: nil,
-            components: %{}
+            components: %{},
+            hooks: %{}
 
   def new(), do: new([])
 
@@ -117,6 +121,7 @@ defmodule Runic.Workflow do
           |> Graph.add_vertex(child_step, child_step.hash)
           |> Graph.add_edge(%Root{}, child_step, label: :flow, weight: 0)
     }
+    |> maybe_put_component(child_step)
   end
 
   def add_step(%__MODULE__{graph: g} = workflow, %{} = parent_step, %{} = child_step) do
@@ -127,6 +132,7 @@ defmodule Runic.Workflow do
           |> Graph.add_vertex(child_step, to_string(child_step.hash))
           |> Graph.add_edge(parent_step, child_step, label: :flow, weight: 0)
     }
+    |> maybe_put_component(child_step)
   end
 
   def add_step(%__MODULE__{} = workflow, parent_steps, %{} = child_step)
@@ -140,10 +146,31 @@ defmodule Runic.Workflow do
     add_step(workflow, get_step(workflow, parent_step_name), child_step)
   end
 
-  defp get_step(%__MODULE__{components: components, graph: g}, name) do
-    parent_step_hash = Map.get(components, name)
+  def maybe_put_component(%__MODULE__{} = workflow, %{name: name} = step) do
+    Map.put(workflow, :components, Map.put(workflow.components, name, step.hash))
+  end
 
-    Map.get(g.vertices, parent_step_hash)
+  def maybe_put_component(%__MODULE__{} = workflow, %{} = _step), do: workflow
+
+  defp get_step(%__MODULE__{components: components, graph: g}, name) do
+    step_hash = Map.get(components, name)
+
+    Map.get(g.vertices, step_hash)
+  end
+
+  def get_component(wrk, name) do
+    get_step(wrk, name)
+  end
+
+  def get_component!(wrk, name) do
+    get_step(wrk, name) || raise(KeyError, "No component found with name #{name}")
+  end
+
+  def fetch_component(wrk, name) do
+    case get_step(wrk, name) do
+      nil -> {:error, :no_component_by_name}
+      step -> {:ok, step}
+    end
   end
 
   @doc """

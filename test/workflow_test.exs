@@ -301,35 +301,115 @@ defmodule WorkflowTest do
     end
   end
 
-  # describe "named components" do
-  #   test "workflow components that are given a named can be retrieved by their name" do
+  describe "named components" do
+    test "workflow components that are given a named can be retrieved by their name" do
+      wrk =
+        Workflow.new()
+        |> Workflow.add_step(Runic.step(name: "step 1", work: fn num -> num + 1 end))
 
-  #   end
+      refute is_nil(Workflow.get_component(wrk, "step 1"))
+    end
 
-  #   test "component names can be used in construction" do
+    test "workflow components that are not given a name cannot be retrieved by their name" do
+      wrk =
+        Workflow.new()
+        |> Workflow.add_step(Runic.step(work: fn num -> num + 1 end))
 
-  #   end
+      assert is_nil(Workflow.get_component(wrk, "step 1"))
+    end
 
-  #   test "adding a component with a name that is already in use raises an error" do
+    test "get_component!/2 raises an error if the component is not present" do
+      wrk =
+        Workflow.new()
+        |> Workflow.add_step(Runic.step(name: "step 1", work: fn num -> num + 1 end))
 
-  #   end
+      refute is_nil(Workflow.get_component(wrk, "step 1"))
+      assert_raise KeyError, fn -> Workflow.get_component!(wrk, "a step that isn't present") end
+    end
 
-  #   test "components can be removed by name" do
+    test "fetch_component/2 returns an {:ok, step} or {:error, :no_component_by_name}" do
+      wrk =
+        Workflow.new()
+        |> Workflow.add_step(Runic.step(name: "step 1", work: fn num -> num + 1 end))
 
-  #   end
+      return = Workflow.fetch_component(wrk, "step 1")
+      assert match?({:ok, %Step{}}, return)
 
-  #   test "removing a component that does not exist raises an error" do
+      assert Workflow.fetch_component(wrk, "a step that isn't present") ==
+               {:error, :no_component_by_name}
+    end
 
-  #   end
+    test "component retrieval can return complex components in their original form" do
+      state_machine =
+        Runic.state_machine(
+          name: "state_machine_test",
+          init: 0,
+          reducer: fn
+            num, state when is_integer(num) and state >= 0 and state < 10 -> state + num * 1
+            num, state when is_integer(num) and state >= 10 and state < 20 -> state + num * 2
+            num, state when is_integer(num) and state >= 20 and state < 30 -> state + num * 3
+            _num, state -> state
+          end
+        )
 
-  #   test "components can be replaced by name" do
+      rule =
+        Runic.rule(
+          fn num when is_integer(num) and num > 0 -> num * 2 end,
+          name: "rule1"
+        )
 
-  #   end
+      wrk =
+        Runic.workflow(
+          name: "combined workflow",
+          rules: [rule]
+        )
+        |> Workflow.merge(state_machine)
+        |> Workflow.add_step(Runic.step(name: "step 1", work: fn num -> num + 1 end))
 
-  #   test "component_of/3 can access a sub component by name of parent and the kind of sub component" do
+      assert Workflow.get_component(wrk, "state_machine_test") == state_machine
+      assert Workflow.get_component(wrk, "rule1") == rule
+      assert match?(%Step{}, Workflow.get_component(wrk, "step 1"))
+    end
 
-  #   end
-  # end
+    test "component names can be used in construction" do
+    end
+
+    test "adding a component with a name that is already in use raises an error" do
+    end
+
+    test "components can be removed by name" do
+      wrk =
+        Workflow.new()
+        |> Workflow.add_step(Runic.step(name: "step 1", work: fn num -> num + 1 end))
+
+      refute is_nil(Workflow.get_component(wrk, "step 1"))
+      wrk = Workflow.remove_component(wrk, "step 1")
+      assert Workflow.get_component(wrk, "step 1") == nil
+    end
+
+    test "removing a component that does not exist raises an error when using remove_component!/2" do
+      wrk =
+        Workflow.new()
+        |> Workflow.add_step(Runic.step(name: "step 1", work: fn num -> num + 1 end))
+
+      assert_raise KeyError, fn ->
+        Workflow.remove_component!(wrk, "a step that isn't present")
+      end
+    end
+
+    # test "components can be replaced by name" do
+    #   wrk =
+    #     Workflow.new()
+    #     |> Workflow.add_step(Runic.step(name: "step 1", work: fn num -> num + 1 end))
+
+    #   assert Workflow.get_component(wrk, "step 1") == %Step{}
+    #   wrk = Workflow.replace_component(wrk, "step 1", Runic.step(name: "step 1", work: fn num -> num + 2 end))
+    #   assert Workflow.get_component(wrk, "step 1").work.(1) == 3
+    # end
+
+    test "component_of/3 can access a sub component by name of parent and the kind of sub component" do
+    end
+  end
 
   describe "map" do
     test "applies the function for every item in the enumerable" do
