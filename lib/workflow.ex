@@ -24,7 +24,7 @@ defmodule Runic.Workflow do
   GenServer, with cluster-aware registration for a given workflow, then execute conditionals eagerly, but
   execute actual steps with side effects lazily as a GenStage pipeline with backpressure has availability.
   """
-  alias Runic.Component
+  alias Runic.Transmutable
   alias Runic.Workflow.Components
   alias Runic.Workflow.Root
   alias Runic.Workflow.Step
@@ -66,7 +66,6 @@ defmodule Runic.Workflow do
     struct!(__MODULE__, params)
     |> Map.put(:graph, new_graph())
     |> Map.put_new(:name, Uniq.UUID.uuid4())
-    # a map of name -> hash | g(hash --params (flow_edges()) --> hash)
     |> Map.put(:components, %{})
   end
 
@@ -137,7 +136,8 @@ defmodule Runic.Workflow do
     end)
   end
 
-  def add_step(%__MODULE__{} = workflow, parent_step_name, child_step) do
+  def add_step(%__MODULE__{} = workflow, parent_step_name, child_step)
+      when is_atom(parent_step_name) or is_binary(parent_step_name) do
     add_step(workflow, get_component!(workflow, parent_step_name), child_step)
   end
 
@@ -184,7 +184,7 @@ defmodule Runic.Workflow do
         %__MODULE__{} = workflow,
         %Rule{} = rule
       ) do
-    workflow_of_rule = Runic.Component.to_workflow(rule)
+    workflow_of_rule = Runic.Transmutable.transmute(rule)
     merge(workflow, workflow_of_rule)
   end
 
@@ -251,16 +251,16 @@ defmodule Runic.Workflow do
     %__MODULE__{
       workflow
       | graph: merged_graph,
-      components: Map.merge(c1, c2)
+        components: Map.merge(c1, c2)
     }
   end
 
   def merge(%__MODULE__{} = workflow, flowable) do
-    merge(workflow, Component.to_workflow(flowable))
+    merge(workflow, Transmutable.transmute(flowable))
   end
 
   def merge(flowable_1, flowable_2) do
-    merge(Component.to_workflow(flowable_1), Component.to_workflow(flowable_2))
+    merge(Transmutable.transmute(flowable_1), Transmutable.transmute(flowable_2))
   end
 
   @doc """

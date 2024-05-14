@@ -371,7 +371,30 @@ defmodule WorkflowTest do
       assert match?(%Step{}, Workflow.get_component(wrk, "step 1"))
     end
 
-    test "component names can be used in construction" do
+    test "component names can be used in construction for adding steps" do
+      wrk =
+        Runic.workflow(
+          name: "named components",
+          steps: [
+            {Runic.step(name: "step 1", work: fn num -> num + 1 end),
+             [
+               Runic.step(name: "step 2", work: fn num -> num + 2 end),
+               Runic.step(name: "step 3", work: fn num -> num + 3 end)
+             ]}
+          ]
+        )
+
+      wrk =
+        Workflow.add_step(wrk, "step 2", Runic.step(name: "step 4", work: fn num -> num + 4 end))
+
+      assert not is_nil(Workflow.get_component(wrk, "step 4"))
+
+      results =
+        wrk
+        |> Workflow.react_until_satisfied(1)
+        |> Workflow.raw_productions()
+
+      assert 8 in results
     end
 
     test "adding a component with a name that is already in use raises an error" do
@@ -407,7 +430,66 @@ defmodule WorkflowTest do
     #   assert Workflow.get_component(wrk, "step 1").work.(1) == 3
     # end
 
-    test "component_of/3 can access a sub component by name of parent and the kind of sub component" do
+    test "components can be connected and composed by name in a workflow" do
+      wrk =
+        Runic.workflow(
+          name: "test workflow",
+          rules: [
+            Runic.rule(
+              fn
+                :potato -> "potato!"
+              end,
+              name: "rule1"
+            ),
+            Runic.rule(
+              fn item when is_integer(item) and item > 41 and item < 43 ->
+                item * Enum.random(1..10)
+              end,
+              name: "rule2"
+            )
+          ]
+        )
+        |> Workflow.merge(
+          Runic.state_machine(
+            name: "state_machine",
+            init: 0,
+            reducer: fn num, state -> state + num end
+          )
+        )
+
+      # connection API should allow compatible components to be connected to eachother in the workflow
+      # it should delegate to the component protocol for how to connect and if its possible
+
+      wrk =
+        Workflow.add(
+          wrk,
+          Runic.step(fn state -> state * 4 end),
+          # name and kind of subcomponent?
+          to: {"state_machine", :reducer},
+          as: "reaction2"
+        )
+
+      # The component impl should know how to attach common components to each other
+      wrk =
+        Workflow.add(
+          wrk,
+          Runic.step(fn state -> state * 4 end),
+          to: "state_machine",
+          as: "reaction3"
+        )
+
+      wrk =
+        Workflow.add(
+          wrk,
+          Runic.step(fn n -> n + 1 end),
+          to: "rule2",
+          as: "reaction4"
+        )
+
+      # assert %Step{} = Runic.component_of(wrk, "rule1", :reaction)
+      # assert %Workflow.Condition{} = Workflow.component_of(wrk, "rule1", :condition)
+      # assert not is_nil Workflow.component_of(wrk, "state_machine", :init)
+      # assert not is_nil Workflow.component_of(wrk, "state_machine", :reducer)
     end
   end
 
@@ -454,6 +536,54 @@ defmodule WorkflowTest do
       Workflow.raw_productions(wrk)
 
       Enum.count(Workflow.reactions(wrk))
+    end
+  end
+
+  describe "reduce" do
+    test "reduces the enumerable with the function" do
+      wrk =
+        Runic.workflow(
+          name: "reduce test",
+          steps: [
+            {Runic.step(fn num -> Enum.map(0..3, &(&1 + num)) end),
+             [
+               {Runic.map(fn num -> num * 2 end),
+                [
+                  Runic.reduce(0, fn num, acc -> num + acc end)
+                ]}
+             ]}
+          ]
+        )
+
+      wrk = Workflow.react_until_satisfied(wrk, 1)
+
+      for reaction <- Workflow.raw_productions(wrk) do
+        assert reaction in [0, 2, 4, 6, 12]
+      end
+    end
+
+    test "named map expressions can be reduced using the named components API" do
+      wrk =
+        Runic.workflow(
+          name: "reduce test",
+          steps: [
+            {Runic.step(fn num -> Enum.map(0..3, &(&1 + num)) end),
+             [
+               Runic.map(fn num -> num * 2 end, name: "map")
+             ]}
+          ]
+        )
+
+      wrk =
+        Workflow.add(wrk, Runic.reduce(0, fn num, acc -> num + acc end), to: "map", as: "reduce")
+
+      refute is_nil(Workflow.get_component(wrk, "reduce"))
+
+      wrk = Workflow.react_until_satisfied(wrk, 1)
+
+      for reaction <- Workflow.raw_productions(wrk) do
+        assert reaction in [0, 2, 4, 6, 12]
+      end
     end
   end
 

@@ -102,7 +102,7 @@ defmodule RunicTest do
     end
 
     # test "supports `if` macro as a valid rule" do
-    #   rule = Runic.rule(if(true, do: "true"))
+    #   rule = Runic.rule :potato -> :is_potato end
 
     #   assert match?(%Rule{}, rule)
     #   assert Rule.check(rule, true)

@@ -68,7 +68,7 @@ defmodule Runic do
   end
 
   def transmute(component) do
-    Runic.Component.to_workflow(component)
+    Runic.Transmutable.transmute(component)
   end
 
   def workflow(opts \\ []) do
