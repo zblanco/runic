@@ -192,6 +192,14 @@ defmodule Runic do
     end
   end
 
+  def reduce(acc, reducer_fun) do
+    %Accumulator{
+      init: acc,
+      reducer: reducer_fun,
+      hash: Components.fact_hash({acc, reducer_fun})
+    }
+  end
+
   defp pipeline_of_map_expression({:fn, _, _} = expression) do
     fan_out =
       quote do

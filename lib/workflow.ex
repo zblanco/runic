@@ -24,6 +24,7 @@ defmodule Runic.Workflow do
   GenServer, with cluster-aware registration for a given workflow, then execute conditionals eagerly, but
   execute actual steps with side effects lazily as a GenStage pipeline with backpressure has availability.
   """
+  alias Runic.Workflow.FanOut
   alias Runic.Transmutable
   alias Runic.Workflow.Components
   alias Runic.Workflow.Root
@@ -116,6 +117,26 @@ defmodule Runic.Workflow do
           |> Graph.add_edge(%Root{}, child_step, label: :flow, weight: 0)
     }
     |> maybe_put_component(child_step)
+  end
+
+  def add_step(
+        %__MODULE__{} = workflow,
+        %{} = parent_step,
+        {child_step, grand_child_steps}
+      ) do
+    Enum.reduce(
+      grand_child_steps,
+      add_step(workflow, parent_step, child_step),
+      fn grand_child_step, wrk -> add_step(wrk, child_step, grand_child_step) end
+    )
+  end
+
+  def add_step(
+        %__MODULE__{} = workflow,
+        {%FanOut{}, [%Step{} = map_step]},
+        child_step
+      ) do
+    add_step(workflow, map_step, child_step)
   end
 
   def add_step(%__MODULE__{graph: g} = workflow, %{} = parent_step, %{} = child_step) do
