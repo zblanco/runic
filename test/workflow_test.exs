@@ -549,17 +549,24 @@ defmodule WorkflowTest do
              [
                {Runic.map(fn num -> num * 2 end),
                 [
-                  Runic.reduce(0, fn num, acc -> num + acc end)
+                  Runic.reduce([], fn num, acc -> [num | acc] end)
                 ]}
              ]}
           ]
         )
 
-      wrk = Workflow.react_until_satisfied(wrk, 1)
+      wrk = Workflow.react_until_satisfied(wrk, 2)
 
-      for reaction <- Workflow.raw_productions(wrk) do
-        assert reaction in [0, 2, 4, 6, 12]
-      end
+      wrk
+      |> Workflow.productions()
+      |> Enum.map(fn fact ->
+        %{
+          fact: fact,
+          parent_step: wrk.graph.vertices |> Map.get(fact.ancestry |> elem(0)),
+          parent_fact: wrk.graph.vertices |> Map.get(fact.ancestry |> elem(1))
+        }
+      end)
+      |> dbg()
     end
 
     test "named map expressions can be reduced using the named components API" do

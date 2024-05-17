@@ -14,6 +14,7 @@ defmodule Runic do
   alias Runic.Workflow.Components
   alias Runic.Workflow.Conjunction
   alias Runic.Workflow.FanOut
+  alias Runic.Workflow.FanIn
 
   @boolean_expressions ~w(
     ==
@@ -192,12 +193,14 @@ defmodule Runic do
     end
   end
 
-  def reduce(acc, reducer_fun) do
-    %Accumulator{
-      init: acc,
-      reducer: reducer_fun,
-      hash: Components.fact_hash({acc, reducer_fun})
-    }
+  defmacro reduce(acc, reducer_fun) do
+    quote do
+      %FanIn{
+        init: fn -> unquote(acc) end,
+        reducer: unquote(reducer_fun),
+        hash: unquote(Components.fact_hash({:acc, reducer_fun}))
+      }
+    end
   end
 
   defp pipeline_of_map_expression({:fn, _, _} = expression) do
