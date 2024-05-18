@@ -441,30 +441,19 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.FanIn do
         %Workflow{} = workflow,
         %Fact{} = fact
       ) do
-    # a fan_in has n parents that must have produced a fact
-    # check if all parents have produced a fact
+    # produce a new state by applying the reducer to each fact assuming its already been enumerated as separate runnables
+    # we may need to produce a separate fact once all the facts have been enumerated for the parent input of its parent fan_out
+    last_known_state = last_known_state(workflow, fan_in)
 
-    # get to parent steps, then get to the facts they produced that are of the same generation
+    acc = last_known_state || fan_in.init.()
 
-    latest_state = fan_in.reducer.(fact.value, )
+    next_reduce_state = fan_in.reducer.(fact.value, acc)
 
-    outputs_of_parents =
-      workflow.graph
-      |> Graph.in_edges(fan_in)
-      |> Stream.filter(&(&1.label == :flow))
-      |> Stream.map(& &1.v1)
-      |> Stream.flat_map(fn step ->
-        workflow.graph
-        |> Graph.out_edges(step)
-        |> Enum.filter(&(&1.label == :produced))
-        |> Enum.map(& &1.v2.hash)
-      end)
-      |> MapSet.new()
-      |> MapSet.put(fact.hash)
+    for edge <- Graph.in_edges(workflow.graph, fan_in), edge.label == :flow do
+      for out_edges_of_parent <- Graph.out_edges(workflow.graph, edge.v1),
+        edge.label == :state_accumulated or edge.label == :state_reduced do
 
-    if Enum.all?(fan_in.fan_ins, &(&1 in outputs_of_parents)) do
-      result_fact = Fact.new(value: outputs_of_parents, ancestry: {fan_in.hash, fact.hash})
-
+      end
     end
   end
 
@@ -475,4 +464,11 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.FanIn do
     |> List.first(%{})
     |> Map.get(:v2)
   end
+
+  defp init_fact(%{init: init, hash: hash}) do
+    init = init.()
+    Fact.new(value: init, ancestry: {hash, Components.fact_hash(init)})
+  end
+
+  def match_or_execute(_fan_in), do: :execute
 end
