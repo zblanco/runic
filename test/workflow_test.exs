@@ -566,7 +566,6 @@ defmodule WorkflowTest do
           parent_fact: wrk.graph.vertices |> Map.get(fact.ancestry |> elem(1))
         }
       end)
-      |> dbg()
     end
 
     test "named map expressions can be reduced using the named components API" do
@@ -574,7 +573,7 @@ defmodule WorkflowTest do
         Runic.workflow(
           name: "reduce test",
           steps: [
-            {Runic.step(fn num -> Enum.map(0..3, &(&1 + num)) end),
+            {Runic.step(fn _input -> 0..3 end),
              [
                Runic.map(fn num -> num * 2 end, name: "map")
              ]}
@@ -582,15 +581,33 @@ defmodule WorkflowTest do
         )
 
       wrk =
-        Workflow.add(wrk, Runic.reduce(0, fn num, acc -> num + acc end), to: "map", as: "reduce")
+        Workflow.add(wrk, Runic.reduce(0, fn num, acc -> num + acc end, name: "reduce"),
+          to: "map"
+        )
 
       refute is_nil(Workflow.get_component(wrk, "reduce"))
 
-      wrk = Workflow.react_until_satisfied(wrk, 1)
+      wrk = Workflow.react_until_satisfied(wrk, "potato")
 
       for reaction <- Workflow.raw_productions(wrk) do
-        assert reaction in [0, 2, 4, 6, 12]
+        assert reaction in [0..3, 0, 2, 4, 6, 12]
       end
+    end
+
+    test "reduce can be used outside of the map expression inside a pipeline with a name" do
+      wrk =
+        Runic.workflow(
+          name: "reduce test",
+          steps: [
+            {Runic.step(fn -> 0..3 end),
+             [
+               {Runic.map(fn num -> num + 1 end, name: "map"),
+                [
+                  Runic.reduce(0, fn num, acc -> num + acc end, map: "map")
+                ]}
+             ]}
+          ]
+        )
     end
   end
 
