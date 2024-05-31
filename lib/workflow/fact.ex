@@ -16,7 +16,7 @@ defmodule Runic.Workflow.Fact do
   end
 
   defp maybe_set_hash(%__MODULE__{value: value, hash: nil} = fact) do
-    %__MODULE__{fact | hash: Components.fact_hash(value)}
+    %__MODULE__{fact | hash: Components.fact_hash({value, fact.ancestry})}
   end
 
   defp maybe_set_hash(%__MODULE__{hash: hash} = fact)

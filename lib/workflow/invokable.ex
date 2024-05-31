@@ -548,6 +548,10 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.FanIn do
           |> Workflow.prepare_next_runnables(fan_in, fact)
           |> Workflow.draw_connection(fan_in, fact, :reduced)
           |> Workflow.mark_runnable_as_ran(fan_in, fact)
+          |> Map.put(
+            :mapped,
+            Map.delete(workflow.mapped, {workflow.generations, parent_step_hash})
+          )
         else
           workflow
           |> Workflow.mark_runnable_as_ran(fan_in, fact)

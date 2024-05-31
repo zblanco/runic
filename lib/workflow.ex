@@ -212,7 +212,7 @@ defmodule Runic.Workflow do
 
   def add_steps(workflow, nil), do: workflow
 
-  def add_dependent_steps(workflow, {parent_step, dependent_steps} = to_add) do
+  def add_dependent_steps(workflow, {parent_step, dependent_steps}) do
     Enum.reduce(dependent_steps, workflow, fn
       {[_step | _] = parent_steps, dependent_steps}, wrk ->
         wrk =

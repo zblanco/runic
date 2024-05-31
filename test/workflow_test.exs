@@ -183,7 +183,7 @@ defmodule WorkflowTest do
         join_with_1_dependency
         |> Workflow.plan_eagerly(2)
 
-      assert Enum.count(Workflow.next_runnables(j_1)) == 2
+      assert Enum.count(Workflow.next_runnables(j_1)) == 3
 
       j_1_runnables_after_reaction =
         j_1
@@ -473,17 +473,15 @@ defmodule WorkflowTest do
       wrk =
         Workflow.add(
           wrk,
-          Runic.step(fn state -> state * 4 end),
-          to: "state_machine",
-          as: "reaction3"
+          Runic.step(fn state -> state * 4 end, name: "reaction3"),
+          to: "state_machine"
         )
 
       wrk =
         Workflow.add(
           wrk,
-          Runic.step(fn n -> n + 1 end),
-          to: "rule2",
-          as: "reaction4"
+          Runic.step(fn n -> n + 1 end, name: "reaction4"),
+          to: "rule2"
         )
 
       # assert %Step{} = Runic.component_of(wrk, "rule1", :reaction)
@@ -557,15 +555,17 @@ defmodule WorkflowTest do
 
       wrk = Workflow.react_until_satisfied(wrk, 2)
 
-      wrk
-      |> Workflow.productions()
-      |> Enum.map(fn fact ->
-        %{
-          fact: fact,
-          parent_step: wrk.graph.vertices |> Map.get(fact.ancestry |> elem(0)),
-          parent_fact: wrk.graph.vertices |> Map.get(fact.ancestry |> elem(1))
-        }
-      end)
+      for num <- [4, 6, 8, 10] do
+        assert num in Workflow.raw_productions(wrk)
+      end
+
+      assert Enum.any?(Workflow.raw_productions(wrk), fn value ->
+               set_value = MapSet.new(value)
+
+               MapSet.member?(set_value, 4) and
+                 MapSet.member?(set_value, 6) and MapSet.member?(set_value, 8) and
+                 MapSet.member?(set_value, 10)
+             end)
     end
 
     test "named map expressions can be reduced using the named components API" do
