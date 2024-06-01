@@ -87,11 +87,22 @@ defmodule Runic.Workflow do
   def root(), do: %Root{}
 
   def add(%__MODULE__{} = workflow, component, opts \\ []) do
-    parent_step = get_component(workflow, opts[:to]) || root()
+    parent_step =
+      get_component(workflow, opts[:to]) ||
+        get_by_hash(workflow, opts[:to]) ||
+        root()
 
     component
     |> Component.connect(parent_step, workflow)
     |> maybe_put_component(component)
+  end
+
+  defp get_by_hash(%__MODULE__{graph: g}, %{hash: hash}) do
+    Map.get(g.vertices, hash)
+  end
+
+  defp get_by_hash(_, _hash) do
+    nil
   end
 
   @doc """
@@ -228,6 +239,10 @@ defmodule Runic.Workflow do
         wrk = add_step(wrk, parent_steps, join)
 
         add_dependent_steps(wrk, {join, dependent_steps})
+
+      {%Join{} = step, _dependent_steps} = parent_and_children, wrk ->
+        wrk = add_step(wrk, parent_step, step)
+        add_dependent_steps(wrk, parent_and_children)
 
       {step, _dependent_steps} = parent_and_children, wrk ->
         wrk = add(wrk, step, to: parent_step)
