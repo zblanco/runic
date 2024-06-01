@@ -29,7 +29,7 @@ defmodule WorkflowTest do
     def tokenize(text) do
       text
       |> String.downcase()
-      |> String.split(~R/[^[:alnum:]\-]/u, trim: true)
+      |> String.split(~r/[^[:alnum:]\-]/u, trim: true)
     end
 
     def count_words(list_of_words) do
@@ -183,7 +183,7 @@ defmodule WorkflowTest do
         join_with_1_dependency
         |> Workflow.plan_eagerly(2)
 
-      assert Enum.count(Workflow.next_runnables(j_1)) == 2
+      assert Enum.count(Workflow.next_runnables(j_1)) == 3
 
       j_1_runnables_after_reaction =
         j_1
@@ -300,4 +300,357 @@ defmodule WorkflowTest do
       assert Enum.empty?(Workflow.reactions(wrk))
     end
   end
+
+  describe "named components" do
+    test "workflow components that are given a named can be retrieved by their name" do
+      wrk =
+        Workflow.new()
+        |> Workflow.add_step(Runic.step(name: "step 1", work: fn num -> num + 1 end))
+
+      refute is_nil(Workflow.get_component(wrk, "step 1"))
+    end
+
+    test "workflow components that are not given a name cannot be retrieved by their name" do
+      wrk =
+        Workflow.new()
+        |> Workflow.add_step(Runic.step(work: fn num -> num + 1 end))
+
+      assert is_nil(Workflow.get_component(wrk, "step 1"))
+    end
+
+    test "get_component!/2 raises an error if the component is not present" do
+      wrk =
+        Workflow.new()
+        |> Workflow.add_step(Runic.step(name: "step 1", work: fn num -> num + 1 end))
+
+      refute is_nil(Workflow.get_component(wrk, "step 1"))
+      assert_raise KeyError, fn -> Workflow.get_component!(wrk, "a step that isn't present") end
+    end
+
+    test "fetch_component/2 returns an {:ok, step} or {:error, :no_component_by_name}" do
+      wrk =
+        Workflow.new()
+        |> Workflow.add_step(Runic.step(name: "step 1", work: fn num -> num + 1 end))
+
+      return = Workflow.fetch_component(wrk, "step 1")
+      assert match?({:ok, %Step{}}, return)
+
+      assert Workflow.fetch_component(wrk, "a step that isn't present") ==
+               {:error, :no_component_by_name}
+    end
+
+    test "component retrieval can return complex components in their original form" do
+      state_machine =
+        Runic.state_machine(
+          name: "state_machine_test",
+          init: 0,
+          reducer: fn
+            num, state when is_integer(num) and state >= 0 and state < 10 -> state + num * 1
+            num, state when is_integer(num) and state >= 10 and state < 20 -> state + num * 2
+            num, state when is_integer(num) and state >= 20 and state < 30 -> state + num * 3
+            _num, state -> state
+          end
+        )
+
+      rule =
+        Runic.rule(
+          fn num when is_integer(num) and num > 0 -> num * 2 end,
+          name: "rule1"
+        )
+
+      wrk =
+        Runic.workflow(
+          name: "combined workflow",
+          rules: [rule]
+        )
+        |> Workflow.merge(state_machine)
+        |> Workflow.add_step(Runic.step(name: "step 1", work: fn num -> num + 1 end))
+
+      assert Workflow.get_component(wrk, "state_machine_test") == state_machine
+      assert Workflow.get_component(wrk, "rule1") == rule
+      assert match?(%Step{}, Workflow.get_component(wrk, "step 1"))
+    end
+
+    test "component names can be used in construction for adding steps" do
+      wrk =
+        Runic.workflow(
+          name: "named components",
+          steps: [
+            {Runic.step(name: "step 1", work: fn num -> num + 1 end),
+             [
+               Runic.step(name: "step 2", work: fn num -> num + 2 end),
+               Runic.step(name: "step 3", work: fn num -> num + 3 end)
+             ]}
+          ]
+        )
+
+      wrk =
+        Workflow.add_step(wrk, "step 2", Runic.step(name: "step 4", work: fn num -> num + 4 end))
+
+      assert not is_nil(Workflow.get_component(wrk, "step 4"))
+
+      results =
+        wrk
+        |> Workflow.react_until_satisfied(1)
+        |> Workflow.raw_productions()
+
+      assert 8 in results
+    end
+
+    test "adding a component with a name that is already in use raises an error" do
+    end
+
+    test "components can be removed by name" do
+      wrk =
+        Workflow.new()
+        |> Workflow.add_step(Runic.step(name: "step 1", work: fn num -> num + 1 end))
+
+      refute is_nil(Workflow.get_component(wrk, "step 1"))
+      wrk = Workflow.remove_component(wrk, "step 1")
+      assert Workflow.get_component(wrk, "step 1") == nil
+    end
+
+    test "removing a component that does not exist raises an error when using remove_component!/2" do
+      wrk =
+        Workflow.new()
+        |> Workflow.add_step(Runic.step(name: "step 1", work: fn num -> num + 1 end))
+
+      assert_raise KeyError, fn ->
+        Workflow.remove_component!(wrk, "a step that isn't present")
+      end
+    end
+
+    # test "components can be replaced by name" do
+    #   wrk =
+    #     Workflow.new()
+    #     |> Workflow.add_step(Runic.step(name: "step 1", work: fn num -> num + 1 end))
+
+    #   assert Workflow.get_component(wrk, "step 1") == %Step{}
+    #   wrk = Workflow.replace_component(wrk, "step 1", Runic.step(name: "step 1", work: fn num -> num + 2 end))
+    #   assert Workflow.get_component(wrk, "step 1").work.(1) == 3
+    # end
+
+    test "components can be connected and composed by name in a workflow" do
+      wrk =
+        Runic.workflow(
+          name: "test workflow",
+          rules: [
+            Runic.rule(
+              fn
+                :potato -> "potato!"
+              end,
+              name: "rule1"
+            ),
+            Runic.rule(
+              fn item when is_integer(item) and item > 41 and item < 43 ->
+                item * Enum.random(1..10)
+              end,
+              name: "rule2"
+            )
+          ]
+        )
+        |> Workflow.merge(
+          Runic.state_machine(
+            name: "state_machine",
+            init: 0,
+            reducer: fn num, state -> state + num end
+          )
+        )
+
+      # connection API should allow compatible components to be connected to eachother in the workflow
+      # it should delegate to the component protocol for how to connect and if its possible
+
+      wrk =
+        Workflow.add(
+          wrk,
+          Runic.step(fn state -> state * 4 end),
+          # name and kind of subcomponent?
+          to: {"state_machine", :reducer},
+          as: "reaction2"
+        )
+
+      # The component impl should know how to attach common components to each other
+      wrk =
+        Workflow.add(
+          wrk,
+          Runic.step(fn state -> state * 4 end, name: "reaction3"),
+          to: "state_machine"
+        )
+
+      wrk =
+        Workflow.add(
+          wrk,
+          Runic.step(fn n -> n + 1 end, name: "reaction4"),
+          to: "rule2"
+        )
+
+      # assert %Step{} = Runic.component_of(wrk, "rule1", :reaction)
+      # assert %Workflow.Condition{} = Workflow.component_of(wrk, "rule1", :condition)
+      # assert not is_nil Workflow.component_of(wrk, "state_machine", :init)
+      # assert not is_nil Workflow.component_of(wrk, "state_machine", :reducer)
+    end
+  end
+
+  describe "map" do
+    test "applies the function for every item in the enumerable" do
+      wrk =
+        Runic.workflow(
+          name: "map test",
+          steps: [
+            {Runic.step(fn num -> Enum.map(0..3, &(&1 + num)) end),
+             [
+               Runic.map(fn num -> num * 2 end)
+             ]}
+          ]
+        )
+
+      wrk = Workflow.react_until_satisfied(wrk, 1)
+
+      for reaction <- Workflow.raw_productions(wrk) do
+        assert reaction in [0, 2, 4, 6, [1, 2, 3, 4], 8]
+      end
+    end
+
+    test "map can apply pipelines of steps" do
+      wrk =
+        Runic.workflow(
+          name: "map test",
+          steps: [
+            {Runic.step(fn num -> Enum.map(0..3, &(&1 + num)) end),
+             [
+               Runic.map(
+                 {Runic.step(fn num -> num * 2 end),
+                  [
+                    Runic.step(fn num -> num + 1 end),
+                    Runic.step(fn num -> num + 4 end)
+                  ]}
+               )
+             ]}
+          ]
+        )
+
+      wrk = Workflow.react_until_satisfied(wrk, 1)
+
+      Workflow.raw_productions(wrk)
+
+      Enum.count(Workflow.reactions(wrk))
+    end
+  end
+
+  describe "reduce" do
+    test "reduces the enumerable with the function" do
+      wrk =
+        Runic.workflow(
+          name: "reduce test",
+          steps: [
+            {Runic.step(fn num -> Enum.map(0..3, &(&1 + num)) end),
+             [
+               {Runic.map(fn num -> num * 2 end),
+                [
+                  Runic.reduce([], fn num, acc -> [num | acc] end)
+                ]}
+             ]}
+          ]
+        )
+
+      wrk = Workflow.react_until_satisfied(wrk, 2)
+
+      for num <- [4, 6, 8, 10] do
+        assert num in Workflow.raw_productions(wrk)
+      end
+
+      assert Enum.any?(Workflow.raw_productions(wrk), fn value ->
+               set_value = MapSet.new(value)
+
+               MapSet.member?(set_value, 4) and
+                 MapSet.member?(set_value, 6) and MapSet.member?(set_value, 8) and
+                 MapSet.member?(set_value, 10)
+             end)
+    end
+
+    test "named map expressions can be reduced using the named components API" do
+      wrk =
+        Runic.workflow(
+          name: "reduce test",
+          steps: [
+            {Runic.step(fn _input -> 0..3 end),
+             [
+               Runic.map(fn num -> num * 2 end, name: "map")
+             ]}
+          ]
+        )
+
+      wrk =
+        Workflow.add(wrk, Runic.reduce(0, fn num, acc -> num + acc end, name: "reduce"),
+          to: "map"
+        )
+
+      refute is_nil(Workflow.get_component(wrk, "reduce"))
+
+      wrk = Workflow.react_until_satisfied(wrk, "potato")
+
+      for reaction <- Workflow.raw_productions(wrk) do
+        assert reaction in [0..3, 0, 2, 4, 6, 12]
+      end
+    end
+
+    test "reduce can be used outside of the map expression inside a pipeline with a name" do
+      wrk =
+        Runic.workflow(
+          name: "reduce test",
+          steps: [
+            {Runic.step(fn -> 0..3 end),
+             [
+               {Runic.map(fn num -> num + 1 end, name: "map"),
+                [
+                  Runic.reduce(0, fn num, acc -> num + acc end, map: "map")
+                ]}
+             ]}
+          ]
+        )
+    end
+  end
+
+  # describe "continuations" do
+  #   test "continuations can add additional steps and runnables to a workflow after a step has been run in order to continue a computation" do
+  #     wrk =
+  #       Runic.workflow(
+  #         name: "continuation test",
+  #         steps: [
+  #           Runic.step(fn num -> Enum.map(0..3, fn _ -> num end) end,
+  #             after: fn step, wrk, fact ->
+  #               # we shouldn't expose complexity of internal invokables to user
+  #               # instead we should return a workflow with an input fact to add as a runnable
+  #               # the continuation must be a runnable pair of a component and a fact
+  #               # we can merge the workflows together but once all steps resolve we should
+  #               # remove the continuation components from the workflow with trust that memory
+  #               # will be maintained with ancestry to the original step which produced the continuation
+
+  #               # it's important to avoid running continuation workflows for new facts unless the after function wants to
+  #               # in which case it should happen at runtime again because the prior continuation is invalid in the next runtime context
+
+  #               Runic.workflow(steps: Enum.map(fact.value, &Runic.step(fn num -> &1 + 1 end)))
+  #             end
+  #           )
+  #         ]
+  #       )
+  #       |> Workflow.react(2)
+
+  #     Runic.workflow(
+  #       name: "continuation test",
+  #       steps: [
+  #         {Runic.step(fn num -> Enum.map(0..3, fn _ -> num end) end),
+  #          [
+  #            {Runic.map(fn num -> num + 1 end),
+  #             [
+  #               Runic.reduce(0, fn num, acc -> num + acc end)
+  #             ]}
+  #          ]}
+  #       ]
+  #     )
+  #   end
+
+  #   test "continuations aren't present for separate generation / external fact" do
+  #   end
+  # end
 end

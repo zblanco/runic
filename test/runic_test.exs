@@ -102,7 +102,7 @@ defmodule RunicTest do
     end
 
     # test "supports `if` macro as a valid rule" do
-    #   rule = Runic.rule(if(true, do: "true"))
+    #   rule = Runic.rule :potato -> :is_potato end
 
     #   assert match?(%Rule{}, rule)
     #   assert Rule.check(rule, true)
@@ -216,7 +216,7 @@ defmodule RunicTest do
         |> Workflow.plan()
         |> Workflow.react()
 
-      assert Enum.count(Workflow.productions(workflow_after_2_cycles)) == 3
+      assert Enum.count(Workflow.productions(workflow_after_2_cycles)) == 4
 
       assert "ham" in Workflow.raw_reactions(workflow_after_2_cycles)
     end

@@ -126,6 +126,22 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Step do
     |> Workflow.draw_connection(step, result_fact, :produced)
     |> Workflow.prepare_next_runnables(step, result_fact)
     |> Workflow.mark_runnable_as_ran(step, fact)
+    |> maybe_prepare_map_reduce(step, result_fact)
+  end
+
+  defp is_reduced_in_map?(workflow, step) do
+    MapSet.member?(workflow.mapped.mapped_paths, step.hash)
+  end
+
+  defp maybe_prepare_map_reduce(workflow, step, fact) do
+    if is_reduced_in_map?(workflow, step) do
+      key = {workflow.generations, step.hash}
+      sister_facts = workflow.mapped[key] || []
+
+      Map.put(workflow, :mapped, Map.put(workflow.mapped, key, [fact.hash | sister_facts]))
+    else
+      workflow
+    end
   end
 
   def match_or_execute(_step), do: :execute
@@ -392,4 +408,158 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Join do
   end
 
   def match_or_execute(_join), do: :execute
+end
+
+defimpl Runic.Workflow.Invokable, for: Runic.Workflow.FanOut do
+  alias Runic.Workflow
+
+  alias Runic.Workflow.{
+    Fact,
+    FanOut
+  }
+
+  def invoke(
+        %FanOut{} = fan_out,
+        %Workflow{} = workflow,
+        %Fact{} = source_fact
+      ) do
+    unless is_nil(Enumerable.impl_for(source_fact.value)) do
+      # is_reduced? = is_reduced?(workflow, fan_out)
+
+      Enum.reduce(source_fact.value, workflow, fn value, wrk ->
+        fact =
+          Fact.new(value: value, ancestry: {fan_out.hash, source_fact.hash})
+
+        wrk
+        |> Workflow.log_fact(fact)
+        |> Workflow.prepare_next_runnables(fan_out, fact)
+        |> Workflow.draw_connection(fan_out, fact, :fan_out)
+
+        # |> maybe_prepare_map_reduce(is_reduced?, fan_out, source_fact, fact)
+      end)
+      |> Workflow.mark_runnable_as_ran(fan_out, source_fact)
+    else
+      Workflow.mark_runnable_as_ran(workflow, fan_out, source_fact)
+    end
+  end
+
+  # def maybe_prepare_map_reduce(workflow, true, fan_out, source_fact, fan_out_fact) do
+  #   if is_reduced?(workflow, fan_out) do
+  #     key = {workflow.generations, fan_out.hash}
+  #     sister_facts = workflow.mapped[key] || []
+
+  #     Map.put(workflow, :mapped,
+  #       Map.put(workflow.mapped, key, [fact.hash | sister_facts])
+  #     )
+  #   else
+  #     workflow
+  #   end
+  # end
+
+  # defp maybe_prepare_map_reduce(workflow, false, _fan_out, _source_fact, _fan_out_fact) do
+  #   workflow
+  # end
+
+  # def is_reduced?(workflow, fan_out) do
+  #   MapSet.member?(workflow.mapped.mapped_paths, fan_out.hash)
+  # end
+
+  def match_or_execute(_fan_out), do: :execute
+end
+
+defimpl Runic.Workflow.Invokable, for: Runic.Workflow.FanIn do
+  alias Runic.Workflow.FanOut
+  alias Runic.Workflow
+
+  alias Runic.Workflow.{
+    Fact,
+    FanIn
+  }
+
+  @spec invoke(%Runic.Workflow.FanIn{}, Runic.Workflow.t(), Runic.Workflow.Fact.t()) ::
+          Runic.Workflow.t()
+  def invoke(
+        %FanIn{} = fan_in,
+        %Workflow{} = workflow,
+        %Fact{ancestry: {parent_step_hash, _parent_fact_hash}} = fact
+      ) do
+    fan_out =
+      workflow.graph
+      |> Graph.in_edges(fan_in)
+      |> Enum.filter(&(&1.label == :fan_in))
+      |> List.first(%{})
+      |> Map.get(:v1)
+
+    case fan_out do
+      nil ->
+        # basic step w/ enummerable output -> fan_in
+        reduced_value = Enum.reduce(fact.value, fan_in.init.(), fan_in.reducer)
+
+        reduced_fact =
+          Fact.new(value: reduced_value, ancestry: {fan_in.hash, fact.hash})
+
+        workflow
+        |> Workflow.log_fact(reduced_fact)
+        |> Workflow.prepare_next_runnables(fan_in, reduced_fact)
+        |> Workflow.draw_connection(fact, fan_in, :reduced)
+        |> Workflow.mark_runnable_as_ran(fan_in, fact)
+
+      %FanOut{} ->
+        # we may want to check ancestry paths from fan_out to fan_in with set inclusions
+
+        sister_facts =
+          for hash <- workflow.mapped[{workflow.generations, parent_step_hash}] || [] do
+            workflow.graph.vertices
+            |> Map.get(hash)
+          end
+
+        fan_out_facts_for_generation =
+          workflow.graph
+          |> Graph.out_edges(fan_out)
+          |> Enum.filter(fn edge ->
+            fact_generation =
+              workflow.graph
+              |> Graph.in_edges(edge.v2)
+              |> Enum.filter(&(&1.label == :generation))
+              |> List.first(%{})
+              |> Map.get(:v1)
+
+            edge.label == :fan_out and fact_generation == workflow.generations
+          end)
+          |> Enum.map(& &1.v2)
+
+        # is a count safe or should we check set inclusions of hashes?
+        if Enum.count(sister_facts) == Enum.count(fan_out_facts_for_generation) do
+          sister_fact_values = Enum.map(sister_facts, & &1.value)
+
+          reduced_value = Enum.reduce(sister_fact_values, fan_in.init.(), fan_in.reducer)
+
+          fact =
+            Fact.new(value: reduced_value, ancestry: {fan_in.hash, fact.hash})
+
+          workflow =
+            Enum.reduce(sister_facts, workflow, fn sister_fact, wrk ->
+              wrk
+              |> Workflow.mark_runnable_as_ran(fan_in, sister_fact)
+            end)
+
+          workflow
+          |> Workflow.log_fact(fact)
+          |> Workflow.prepare_next_runnables(fan_in, fact)
+          |> Workflow.draw_connection(fan_in, fact, :reduced)
+          |> Workflow.mark_runnable_as_ran(fan_in, fact)
+          |> Map.put(
+            :mapped,
+            Map.delete(workflow.mapped, {workflow.generations, parent_step_hash})
+          )
+        else
+          workflow
+          |> Workflow.mark_runnable_as_ran(fan_in, fact)
+        end
+    end
+
+    # if we have all facts needed then reduce otherwise mark as ran and let last sister fact reduce
+  end
+
+  def match_or_execute(_fan_in), do: :execute
 end

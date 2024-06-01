@@ -25,12 +25,16 @@ defmodule Runic.Workflow do
   execute actual steps with side effects lazily as a GenStage pipeline with backpressure has availability.
   """
   alias Runic.Component
+  alias Runic.Workflow.FanOut
+  alias Runic.Transmutable
   alias Runic.Workflow.Components
   alias Runic.Workflow.Root
   alias Runic.Workflow.Step
   alias Runic.Workflow.Condition
   alias Runic.Workflow.Fact
   alias Runic.Workflow.Rule
+  alias Runic.Workflow.FanIn
+  alias Runic.Workflow.Join
   alias Runic.Workflow.Invokable
 
   @type t() :: %__MODULE__{
@@ -38,21 +42,23 @@ defmodule Runic.Workflow do
           graph: Graph.t(),
           hash: binary(),
           generations: integer(),
-          components: map()
+          # name -> component struct
+          components: map(),
+          # name -> %{before: list(fun), after: list(fun)}
+          hooks: map(),
+          mapped: map()
+          # hash of parent fact for fan_out -> path_to_fan_in e.g. [fan_out, step1, step2, fan_in]
         }
 
   @type runnable() :: {fun(), term()}
-
-  @typedoc """
-  A discrimination network of conditions, and steps, built from composites such as rules and accumulations.
-  """
-  @type flow() :: Graph.t()
 
   defstruct name: nil,
             generations: 0,
             hash: nil,
             graph: nil,
-            components: %{}
+            components: %{},
+            hooks: %{},
+            mapped: %{}
 
   def new(), do: new([])
 
@@ -67,8 +73,9 @@ defmodule Runic.Workflow do
     struct!(__MODULE__, params)
     |> Map.put(:graph, new_graph())
     |> Map.put_new(:name, Uniq.UUID.uuid4())
-    # a map of name -> hash | g(hash --params (flow_edges()) --> hash)
     |> Map.put(:components, %{})
+    |> Map.put(:hooks, %{})
+    |> Map.put(:mapped, %{mapped_paths: MapSet.new()})
   end
 
   defp new_graph do
@@ -78,6 +85,25 @@ defmodule Runic.Workflow do
 
   @doc false
   def root(), do: %Root{}
+
+  def add(%__MODULE__{} = workflow, component, opts \\ []) do
+    parent_step =
+      get_component(workflow, opts[:to]) ||
+        get_by_hash(workflow, opts[:to]) ||
+        root()
+
+    component
+    |> Component.connect(parent_step, workflow)
+    |> maybe_put_component(component)
+  end
+
+  defp get_by_hash(%__MODULE__{graph: g}, %{hash: hash}) do
+    Map.get(g.vertices, hash)
+  end
+
+  defp get_by_hash(_, _hash) do
+    nil
+  end
 
   @doc """
   Adds a step to the root of the workflow that is always evaluated with a new fact.
@@ -117,6 +143,27 @@ defmodule Runic.Workflow do
           |> Graph.add_vertex(child_step, child_step.hash)
           |> Graph.add_edge(%Root{}, child_step, label: :flow, weight: 0)
     }
+    |> maybe_put_component(child_step)
+  end
+
+  def add_step(
+        %__MODULE__{} = workflow,
+        %{} = parent_step,
+        {child_step, grand_child_steps}
+      ) do
+    Enum.reduce(
+      grand_child_steps,
+      add_step(workflow, parent_step, child_step),
+      fn grand_child_step, wrk -> add_step(wrk, child_step, grand_child_step) end
+    )
+  end
+
+  def add_step(
+        %__MODULE__{} = workflow,
+        {%FanOut{}, [%Step{} = map_step]},
+        child_step
+      ) do
+    add_step(workflow, map_step, child_step)
   end
 
   def add_step(%__MODULE__{graph: g} = workflow, %{} = parent_step, %{} = child_step) do
@@ -127,6 +174,7 @@ defmodule Runic.Workflow do
           |> Graph.add_vertex(child_step, to_string(child_step.hash))
           |> Graph.add_edge(parent_step, child_step, label: :flow, weight: 0)
     }
+    |> maybe_put_component(child_step)
   end
 
   def add_step(%__MODULE__{} = workflow, parent_steps, %{} = child_step)
@@ -136,14 +184,132 @@ defmodule Runic.Workflow do
     end)
   end
 
-  def add_step(%__MODULE__{} = workflow, parent_step_name, child_step) do
-    add_step(workflow, get_step(workflow, parent_step_name), child_step)
+  def add_step(%__MODULE__{} = workflow, parent_step_name, child_step)
+      when is_atom(parent_step_name) or is_binary(parent_step_name) do
+    add_step(workflow, get_component!(workflow, parent_step_name), child_step)
   end
 
-  defp get_step(%__MODULE__{components: components, graph: g}, name) do
-    parent_step_hash = Map.get(components, name)
+  def add_rules(workflow, nil), do: workflow
 
-    Map.get(g.vertices, parent_step_hash)
+  def add_rules(workflow, rules) do
+    Enum.reduce(rules, workflow, fn %Rule{} = rule, wrk ->
+      add_rule(wrk, rule)
+    end)
+  end
+
+  def add_steps(workflow, steps) when is_list(steps) do
+    # root level pass
+    Enum.reduce(steps, workflow, fn
+      %Step{} = step, wrk ->
+        add(wrk, step)
+
+      {[_step | _] = parent_steps, dependent_steps}, wrk ->
+        wrk = Enum.reduce(parent_steps, wrk, fn step, wrk -> add_step(wrk, step) end)
+
+        join =
+          parent_steps
+          |> Enum.map(& &1.hash)
+          |> Join.new()
+
+        wrk = add_step(wrk, parent_steps, join)
+
+        add_dependent_steps(wrk, {join, dependent_steps})
+
+      {step, _dependent_steps} = pipeline, wrk ->
+        wrk = add(wrk, step)
+        add_dependent_steps(wrk, pipeline)
+    end)
+  end
+
+  def add_steps(workflow, nil), do: workflow
+
+  def add_dependent_steps(workflow, {parent_step, dependent_steps}) do
+    Enum.reduce(dependent_steps, workflow, fn
+      {[_step | _] = parent_steps, dependent_steps}, wrk ->
+        wrk =
+          Enum.reduce(parent_steps, wrk, fn step, wrk ->
+            add_step(wrk, parent_step, step)
+          end)
+
+        join =
+          parent_steps
+          |> Enum.map(& &1.hash)
+          |> Join.new()
+
+        wrk = add_step(wrk, parent_steps, join)
+
+        add_dependent_steps(wrk, {join, dependent_steps})
+
+      {%Join{} = step, _dependent_steps} = parent_and_children, wrk ->
+        wrk = add_step(wrk, parent_step, step)
+        add_dependent_steps(wrk, parent_and_children)
+
+      {step, _dependent_steps} = parent_and_children, wrk ->
+        wrk = add(wrk, step, to: parent_step)
+        add_dependent_steps(wrk, parent_and_children)
+
+      step, wrk ->
+        add(wrk, step, to: parent_step)
+    end)
+  end
+
+  def maybe_put_component(
+        %__MODULE__{components: components} = workflow,
+        %FanOut{name: name} = step
+      ) do
+    %__MODULE__{
+      workflow
+      | components: Map.put(components, name, step)
+    }
+  end
+
+  def maybe_put_component(
+        %__MODULE__{components: components} = workflow,
+        %{name: name} = step
+      ) do
+    %__MODULE__{
+      workflow
+      | components: Map.put(components, name, step)
+    }
+  end
+
+  def maybe_put_component(%__MODULE__{} = workflow, %FanIn{map: nil}) do
+    workflow
+  end
+
+  def maybe_put_component(
+        %__MODULE__{graph: g} = workflow,
+        %FanIn{map: name_of_map_expression} = step
+      ) do
+    fan_out = get_component!(workflow, name_of_map_expression)
+
+    %{workflow | graph: Graph.add_edge(g, fan_out, step, label: :reduced_by)}
+  end
+
+  def maybe_put_component(%__MODULE__{} = workflow, %{} = _step), do: workflow
+
+  def get_named_vertex(%__MODULE__{graph: g, mapped: mapped}, name) do
+    hash = Map.get(mapped, name)
+    g.vertices |> Map.get(hash)
+  end
+
+  def get_component(%__MODULE__{components: components}, %{name: name}) do
+    Map.get(components, name)
+  end
+
+  def get_component(%__MODULE__{components: components}, name) do
+    Map.get(components, name)
+  end
+
+  def get_component!(wrk, name) do
+    get_component(wrk, name) || raise(KeyError, "No component found with name #{name}")
+  end
+
+  def fetch_component(%__MODULE__{components: components}, name) do
+    case Map.fetch(components, name) do
+      :error -> {:error, :no_component_by_name}
+      {:ok, component} -> {:ok, component}
+    end
   end
 
   @doc """
@@ -168,7 +334,7 @@ defmodule Runic.Workflow do
         %__MODULE__{} = workflow,
         %Rule{} = rule
       ) do
-    workflow_of_rule = Runic.Component.to_workflow(rule)
+    workflow_of_rule = Runic.Transmutable.transmute(rule)
     merge(workflow, workflow_of_rule)
   end
 
@@ -176,8 +342,8 @@ defmodule Runic.Workflow do
   Merges the second workflow into the first maintaining the name of the first.
   """
   def merge(
-        %__MODULE__{graph: g1} = workflow,
-        %__MODULE__{graph: g2} = _workflow2
+        %__MODULE__{graph: g1, components: c1} = workflow,
+        %__MODULE__{graph: g2, components: c2} = _workflow2
       ) do
     merged_graph =
       Graph.Reducers.Bfs.reduce(g2, g1, fn
@@ -234,16 +400,17 @@ defmodule Runic.Workflow do
 
     %__MODULE__{
       workflow
-      | graph: merged_graph
+      | graph: merged_graph,
+        components: Map.merge(c1, c2)
     }
   end
 
   def merge(%__MODULE__{} = workflow, flowable) do
-    merge(workflow, Component.to_workflow(flowable))
+    merge(workflow, Transmutable.transmute(flowable))
   end
 
   def merge(flowable_1, flowable_2) do
-    merge(Component.to_workflow(flowable_1), Component.to_workflow(flowable_2))
+    merge(Transmutable.transmute(flowable_1), Transmutable.transmute(flowable_2))
   end
 
   @doc """
@@ -292,14 +459,14 @@ defmodule Runic.Workflow do
 
   def productions(%__MODULE__{graph: graph}) do
     for %Graph.Edge{} = edge <- Graph.edges(graph),
-        edge.label == :produced or edge.label == :state_produced or edge.label == :state_initiated do
+        edge.label in ~w(produced state_produced state_initiated reduced)a do
       edge.v2
     end
   end
 
   def raw_productions(%__MODULE__{graph: graph}) do
     for %Graph.Edge{} = edge <- Graph.edges(graph),
-        edge.label == :produced or edge.label == :state_produced do
+        edge.label in ~w(produced state_produced state_initiated reduced)a do
       edge.v2.value
     end
   end
@@ -729,4 +896,13 @@ defmodule Runic.Workflow do
       :execute -> :runnable
     end
   end
+
+  # def component_of(
+  #       %__MODULE__{} = wrk,
+  #       parent_component_name,
+  #       sub_component
+  #     )
+  #     when sub_component in @sub_components do
+  #   Map.get(wrk.components, parent_component_name)
+  # end
 end

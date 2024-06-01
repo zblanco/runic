@@ -1,71 +1,77 @@
 defprotocol Runic.Component do
   @moduledoc """
-  The Component protocol is implemented by datastructures which know how to become a Runic Workflow
-    by implementing the `to_workflow/1` transformation.
+  Protocol defining common behaviour of Runic components such as reflection, sub components or how the can be composed with others.
   """
-  @fallback_to_any true
-  def to_workflow(flowable)
+
+  # def component_of(component, sub_component_name)
+
+  # def connectables(component)
+
+  def connect(component, to, workflow)
+
+  # def components(component)
 end
 
-defimpl Runic.Component, for: List do
+defimpl Runic.Component, for: Runic.Workflow.Map do
   alias Runic.Workflow
 
-  def to_workflow([first_flowable | remaining_flowables]) do
-    Enum.reduce(remaining_flowables, Runic.Component.to_workflow(first_flowable), fn flowable,
-                                                                                     wrk ->
-      Workflow.merge(wrk, Runic.Component.to_workflow(flowable))
+  def connect(
+        %Runic.Workflow.Map{pipeline: {fan_out, steps}, components: components},
+        to,
+        workflow
+      ) do
+    wrk =
+      workflow
+      |> Workflow.add_step(to, fan_out)
+      |> Workflow.add_dependent_steps({fan_out, steps})
+
+    Enum.reduce(components, wrk, fn {name, component}, wrk ->
+      Map.put(wrk, :components, Map.put(wrk.components, name, component))
     end)
   end
 end
 
-defimpl Runic.Component, for: Runic.Workflow do
-  def to_workflow(wrk), do: wrk
-end
+defimpl Runic.Component, for: Runic.Workflow.Reduce do
+  alias Runic.Workflow
 
-defimpl Runic.Component, for: Runic.Workflow.Rule do
-  def to_workflow(rule), do: rule.workflow
+  def connect(reduce, %Runic.Workflow.Map{components: components}, workflow) do
+    wrk =
+      workflow
+      |> Workflow.add_step(components.leaf, reduce.fan_in)
+      |> Workflow.draw_connection(components.fan_out, reduce.fan_in, :fan_in)
+
+    path_to_fan_out =
+      wrk.graph
+      |> Graph.get_shortest_path(components.fan_out, reduce.fan_in)
+
+    wrk
+    |> Map.put(
+      :mapped,
+      Map.put(
+        wrk.mapped,
+        :mapped_paths,
+        Enum.reduce(path_to_fan_out, wrk.mapped.mapped_paths, fn node, mapset ->
+          MapSet.put(mapset, node.hash)
+        end)
+      )
+    )
+  end
+
+  def connect(reduce, to, workflow) do
+    Workflow.add_step(workflow, to, reduce.fan_in)
+  end
 end
 
 defimpl Runic.Component, for: Runic.Workflow.Step do
-  alias Runic.Workflow
-  require Runic
-
-  def to_workflow(step),
-    do: step.hash |> to_string() |> Workflow.new() |> Workflow.add_step(step)
-end
-
-defimpl Runic.Component, for: Tuple do
-  alias Runic.Workflow.Rule
-
-  def to_workflow({:fn, _meta, _clauses} = quoted_anonymous_function) do
-    Runic.Component.to_workflow(Rule.new(quoted_anonymous_function))
+  def connect(step, to, workflow) do
+    Runic.Workflow.add_step(workflow, to, step)
   end
 end
 
-defimpl Runic.Component, for: Function do
+defimpl Runic.Component, for: Runic.Workflow.Rule do
   alias Runic.Workflow
 
-  def to_workflow(fun) do
-    fun |> Function.info(:name) |> elem(1) |> Workflow.new() |> Workflow.add_step(fun)
-  end
-end
-
-defimpl Runic.Component, for: Any do
-  alias Runic.Workflow
-
-  def to_workflow(anything_else) do
-    work = fn _anything -> anything_else end
-
-    work
-    |> Runic.Workflow.Components.work_hash()
-    |> to_string()
-    |> Workflow.new()
-    |> Workflow.add_step(work)
-  end
-end
-
-defimpl Runic.Component, for: Runic.Workflow.StateMachine do
-  def to_workflow(%Runic.Workflow.StateMachine{} = fsm) do
-    fsm.workflow
+  def connect(rule, _to, workflow) do
+    Workflow.merge(workflow, rule.workflow)
   end
 end

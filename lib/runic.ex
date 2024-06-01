@@ -13,6 +13,8 @@ defmodule Runic do
   alias Runic.Workflow.Rule
   alias Runic.Workflow.Components
   alias Runic.Workflow.Conjunction
+  alias Runic.Workflow.FanOut
+  alias Runic.Workflow.FanIn
 
   @boolean_expressions ~w(
     ==
@@ -67,7 +69,7 @@ defmodule Runic do
   end
 
   def transmute(component) do
-    Runic.Component.to_workflow(component)
+    Runic.Transmutable.transmute(component)
   end
 
   def workflow(opts \\ []) do
@@ -76,8 +78,8 @@ defmodule Runic do
     rules = opts[:rules]
 
     Workflow.new(name)
-    |> add_steps(steps)
-    |> add_rules(rules)
+    |> Workflow.add_steps(steps)
+    |> Workflow.add_rules(rules)
   end
 
   defmacro rule(opts) when is_list(opts) do
@@ -148,7 +150,7 @@ defmodule Runic do
 
     name = opts[:name]
 
-    workflow = workflow_of_state_machine(init, reducer, reactors)
+    workflow = workflow_of_state_machine(init, reducer, reactors, name)
 
     quote do
       %StateMachine{
@@ -156,17 +158,253 @@ defmodule Runic do
         init: unquote(init),
         reducer: unquote(reducer),
         reactors: unquote(reactors),
-        workflow: unquote(workflow)
+        workflow: unquote(workflow) |> Map.put(:name, unquote(name))
       }
     end
   end
 
-  defp workflow_of_state_machine(init, reducer, reactors) do
+  @doc """
+  map/1 applies the expression to each element in the enumerable.
+
+  A map expression can be a function, a list, or a nested pipeline expression of steps.
+
+  The input fact to the map expression must implement the Enumerable protocol so that during workflow evaluation
+  the map expression can be applied to each element as a runnable.
+
+  A Runic map expression must be inside a Runic workflow to be evaluated.
+
+  Internally a map expression is a FanOut step that splits the input enumerable into separate facts that are then processed by the map expression.
+
+  The map function itself is within a step with a connection flowing from the FanOut step.
+
+  ## Examples
+
+  ```elixir
+  Runic.map(fn x -> x * 2 end)
+
+  Runic.map(
+    {Runic.step(fn num -> num * 2 end),
+    [
+      Runic.step(fn num -> num + 1 end),
+      Runic.step(fn num -> num + 4 end)
+    ]}
+  )
+
+  Runic.map([
+    Runic.step(fn num -> num * 2 end),
+    Runic.step(fn num -> num + 1 end),
+    Runic.step(fn num -> num + 4 end)
+  ])
+  ```
+  """
+  defmacro map(expression, opts \\ []) do
+    name = opts[:name]
+    {_fan_out, _dependent_steps} = pipeline = pipeline_of_map_expression(expression, name)
+
+    quote do
+      %Runic.Workflow.Map{
+        name: unquote(name),
+        pipeline: unquote(pipeline),
+        hash: unquote(Components.fact_hash({expression, name}))
+      }
+      |> Runic.Workflow.Map.build_named_components()
+    end
+  end
+
+  @doc """
+  Includes a reduce expression in a Runic workflow.
+
+  Reducers are used to accumulate many facts into a single fact.
+
+  A reduce expression can aggregate a map expression or a fact produced by a parent step that implements the enumerable protocol.
+
+  By default reduce/2 will behave like Enum.reduce/3 does in Elixir where it expects an enumerable and applies the reducer function to each element.
+
+  ```elixir
+  require Runic
+
+  simple_reduce_workflow = Runic.workflow(steps: [
+    {Runic.step(fn -> 0..5 end), [
+      Runic.reduce(0, fn acc, x -> acc + x end)
+    ]}
+  ])
+  ```
+
+  This is similar to the Elixir code using the Enum module:
+
+  ```elixir
+  Enum.reduce(0..5, 0, fn x, acc -> acc + x end)
+  ```
+
+  However evaluating the reduce in a single runnable invokation with Runic may incur greater costs as it evaluates eagerly.
+
+  When the `step` option is provided with the name of an existing map expression, the reduce expression will be applied to each element in the enumerable produced by its parent step
+  that was fanned out by the map expression.
+
+  This allows lazy workflow evaluation where separate runnables are produced for each element in the enumerable.
+
+  If the work to compute within a map or within each reduce is expensive it may be preferred to allow the workflow scheduler to
+  execute how it sees fit.
+
+  ```elixir
+  Runic.workflow(steps: [
+    {Runic.step(fn -> 0..5 end), [
+      Runic.map(fn x -> x * 2 end, name: :map),
+      Runic.reduce(0, fn x, acc -> acc + x end, step: :map)
+    ]}
+  ])
+  ```
+
+  The reason for an explicit designation of a map expression is so that the map expression can define a pipeline the reduce can follow where the direct parent of the reduce may not be the same step as the map.
+
+  ```elixir
+  Runic.workflow(steps: [
+    {Runic.step(fn -> 0..5 end), [
+      {Runic.map(fn x -> x * 2 end, name: :map), [
+        {Runic.step(fn x -> x + 1 end), [
+          Runic.reduce(0, fn x, acc -> acc + x end, step: :map)
+        ]}
+      ]}
+    ]}
+  ])
+  ```
+
+  In this workflow the reduce will be applied to the output of the step that adds 1 to each element in the enumerable produced by the map expression where it multiplies each element by 2.
+  """
+  defmacro reduce(acc, reducer_fun, opts \\ []) do
+    map_to_reduce = opts[:map]
+
+    name = opts[:name]
+
+    quote do
+      hash = unquote(Components.fact_hash({acc, reducer_fun}))
+
+      %Runic.Workflow.Reduce{
+        name: unquote(name),
+        hash: hash,
+        fan_in: %FanIn{
+          map: unquote(map_to_reduce),
+          init: fn -> unquote(acc) end,
+          reducer: unquote(reducer_fun),
+          hash: hash
+        }
+      }
+    end
+  end
+
+  defp pipeline_of_map_expression(expression, name \\ nil)
+
+  defp pipeline_of_map_expression({:fn, _, _} = expression, name) do
+    fan_out =
+      quote do
+        %FanOut{
+          hash: unquote(Components.fact_hash({:fan_out, expression})),
+          name: unquote(name)
+        }
+      end
+
+    step = pipeline_step(expression)
+
+    quote do
+      {unquote(fan_out), [unquote(step)]}
+    end
+  end
+
+  defp pipeline_of_map_expression(
+         {step_expression, [_ | _] = dependent_steps} = pipeline_expression,
+         name
+       ) do
+    fan_out =
+      quote do
+        %FanOut{
+          hash: unquote(Components.fact_hash({:fan_out, pipeline_expression})),
+          name: unquote(name)
+        }
+      end
+
+    step = pipeline_step(step_expression)
+
+    dependent_pipeline = pipeline_of_expression(dependent_steps)
+
+    quote do
+      {unquote(fan_out), [{unquote(step), unquote(dependent_pipeline)}]}
+    end
+  end
+
+  defp pipeline_of_map_expression({:&, _, _} = expression, name) do
+    fan_out =
+      quote do
+        %FanOut{
+          hash: unquote(Components.fact_hash({:fan_out, expression})),
+          name: unquote(name)
+        }
+      end
+
+    step = pipeline_step(expression)
+
+    quote do
+      {unquote(fan_out), [unquote(step)]}
+    end
+  end
+
+  defp pipeline_of_expression(dependent_steps) when is_list(dependent_steps) do
+    Enum.map(dependent_steps, &pipeline_of_expression/1)
+  end
+
+  defp pipeline_of_expression({{:fn, _, _} = anonymous_step_expression, dependent_steps}) do
+    {pipeline_step(anonymous_step_expression), pipeline_of_expression(dependent_steps)}
+  end
+
+  defp pipeline_of_expression({{:., _, [_, :map]}, _, [expression]}) do
+    pipeline_of_map_expression(expression)
+  end
+
+  defp pipeline_of_expression({{:., _, [_, :step]}, _, _} = expression) do
+    expression
+  end
+
+  defp pipeline_of_expression({{:., _, [_, :reduce]}, _, _} = expression) do
+    expression
+  end
+
+  defp pipeline_of_expression({{{:., _, [_, :step]}, _, _} = expression, dependent_steps}) do
+    {pipeline_step(expression), pipeline_of_expression(dependent_steps)}
+  end
+
+  defp pipeline_of_expression({:map, _, [expression]}) do
+    pipeline_of_map_expression(expression)
+  end
+
+  defp pipeline_step({:&, _, _} = expression) do
+    step_ast_hash = Components.fact_hash(expression)
+
+    quote do
+      Step.new(work: unquote(expression), hash: unquote(step_ast_hash))
+    end
+  end
+
+  defp pipeline_step({:fn, _, _} = expression) do
+    step_ast_hash = Components.fact_hash(expression)
+
+    quote do
+      Step.new(work: unquote(expression), hash: unquote(step_ast_hash))
+    end
+  end
+
+  defp pipeline_step({{:., _, [_, :step]}, _, _} = expression) do
+    expression
+  end
+
+  defp pipeline_step({:step, _, _} = expression) do
+    expression
+  end
+
+  defp workflow_of_state_machine(init, reducer, reactors, name) do
     accumulator = accumulator_of_state_machine(init, reducer)
 
     workflow_ast =
       reducer
-      |> build_reducer_workflow_ast(accumulator)
+      |> build_reducer_workflow_ast(accumulator, name)
       |> maybe_add_reactors(reactors, accumulator)
 
     quote generated: true do
@@ -225,11 +463,11 @@ defmodule Runic do
     end
   end
 
-  defp build_reducer_workflow_ast({:fn, _, clauses} = _reducer, accumulator) do
+  defp build_reducer_workflow_ast({:fn, _, clauses} = _reducer, accumulator, name) do
     Enum.reduce(
       clauses,
-      quote do
-        Workflow.new()
+      quote generated: true do
+        Workflow.new(unquote(name))
       end,
       fn
         {:->, _meta, _} = clause, wrk ->
@@ -255,7 +493,7 @@ defmodule Runic do
           hash_of_ast = Components.fact_hash({state_cond_fun, accumulator})
 
           state_condition =
-            quote do
+            quote generated: true do
               StateCondition.new(
                 unquote(state_cond_fun),
                 Map.get(unquote(accumulator), :hash),
@@ -268,7 +506,7 @@ defmodule Runic do
               Condition.new(Components.is_of_arity?(1))
             end
 
-          quote do
+          quote generated: true do
             unquote(wrk)
             |> Workflow.add_step(unquote(arity_check))
             |> Workflow.add_step(unquote(arity_check), unquote(state_condition))
@@ -284,7 +522,7 @@ defmodule Runic do
     Enum.reduce(reactors, workflow_ast, fn
       {:fn, _meta, [{:->, _, [[lhs], _rhs]}]} = reactor, wrk ->
         memory_assertion_fun =
-          quote do
+          quote generated: true do
             fn workflow ->
               last_known_state = StateMachine.last_known_state(unquote(accumulator), workflow)
 
@@ -300,7 +538,7 @@ defmodule Runic do
         memory_assertion_ast_hash = Components.fact_hash(memory_assertion_fun)
 
         memory_assertion =
-          quote do
+          quote generated: true do
             MemoryAssertion.new(
               memory_assertion: unquote(memory_assertion_fun),
               state_hash: Map.get(unquote(accumulator), :hash),
@@ -310,7 +548,7 @@ defmodule Runic do
 
         state_reaction = reactor_ast_of(reactor, accumulator, Components.arity_of(reactor))
 
-        quote do
+        quote generated: true do
           unquote(wrk)
           |> Workflow.add_step(unquote(memory_assertion))
           |> Workflow.add_step(unquote(memory_assertion), unquote(state_reaction))
@@ -335,66 +573,6 @@ defmodule Runic do
         ast: unquote(Macro.escape(reactor_ast))
       )
     end
-  end
-
-  defp add_steps(workflow, steps) when is_list(steps) do
-    # root level pass
-    Enum.reduce(steps, workflow, fn
-      %Step{} = step, wrk ->
-        Workflow.add_step(wrk, step)
-
-      {%Step{} = step, _dependent_steps} = parent_and_children, wrk ->
-        wrk = Workflow.add_step(wrk, step)
-        add_dependent_steps(parent_and_children, wrk)
-
-      {[_step | _] = parent_steps, dependent_steps}, wrk ->
-        wrk = Enum.reduce(parent_steps, wrk, fn step, wrk -> Workflow.add_step(wrk, step) end)
-
-        join =
-          parent_steps
-          |> Enum.map(& &1.hash)
-          |> Workflow.Join.new()
-
-        wrk = Workflow.add_step(wrk, parent_steps, join)
-
-        add_dependent_steps({join, dependent_steps}, wrk)
-    end)
-  end
-
-  defp add_steps(workflow, nil), do: workflow
-
-  defp add_dependent_steps({parent_step, dependent_steps}, workflow) do
-    Enum.reduce(dependent_steps, workflow, fn
-      {[_step | _] = parent_steps, dependent_steps}, wrk ->
-        wrk =
-          Enum.reduce(parent_steps, wrk, fn step, wrk ->
-            Workflow.add_step(wrk, parent_step, step)
-          end)
-
-        join =
-          parent_steps
-          |> Enum.map(& &1.hash)
-          |> Workflow.Join.new()
-
-        wrk = Workflow.add_step(wrk, parent_steps, join)
-
-        add_dependent_steps({join, dependent_steps}, wrk)
-
-      {step, _dependent_steps} = parent_and_children, wrk ->
-        wrk = Workflow.add_step(wrk, parent_step, step)
-        add_dependent_steps(parent_and_children, wrk)
-
-      step, wrk ->
-        Workflow.add_step(wrk, parent_step, step)
-    end)
-  end
-
-  defp add_rules(workflow, nil), do: workflow
-
-  defp add_rules(workflow, rules) do
-    Enum.reduce(rules, workflow, fn %Rule{} = rule, wrk ->
-      Workflow.add_rule(wrk, rule)
-    end)
   end
 
   defp workflow_of_rule({condition, reaction}, arity) do
