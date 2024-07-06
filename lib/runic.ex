@@ -15,6 +15,7 @@ defmodule Runic do
   alias Runic.Workflow.Conjunction
   alias Runic.Workflow.FanOut
   alias Runic.Workflow.FanIn
+  alias Runic.Workflow.Join
 
   @boolean_expressions ~w(
     ==
@@ -199,16 +200,55 @@ defmodule Runic do
   """
   defmacro map(expression, opts \\ []) do
     name = opts[:name]
-    {_fan_out, _dependent_steps} = pipeline = pipeline_of_map_expression(expression, name)
+    # {_fan_out, _dependent_steps} = pipeline = pipeline_of_map_expression(expression, name)
+
+    pipeline_graph_of_ast =
+      pipeline_graph_of_map_expression(expression, name)
+
+    # BFS reduce the list/tuple pipeline into a |> pipeline that constructs a graph containing workflow nodes and flow edges
+
+    map_pipeline =
+      quote do
+        import Runic
+
+        unquote(
+          pipeline_graph_of_ast
+          |> Graph.edges()
+          |> Enum.reduce(quote(do: Workflow.new()), fn
+            %{v1: :root, v2: v2}, wrk ->
+              quote do
+                unquote(wrk)
+                |> Workflow.add_step(unquote(v2))
+              end
+
+            %{v1: v1, v2: v2}, wrk ->
+              quote do
+                unquote(wrk)
+                |> Workflow.add_step(unquote(v1), unquote(v2))
+              end
+          end)
+        )
+      end
+
+    IO.inspect(Macro.to_string(map_pipeline), limit: :infinity, printable_limit: :infinity)
 
     quote do
       %Runic.Workflow.Map{
         name: unquote(name),
-        pipeline: unquote(pipeline),
+        pipeline: unquote(map_pipeline),
         hash: unquote(Components.fact_hash({expression, name}))
       }
       |> Runic.Workflow.Map.build_named_components()
     end
+
+    # quote do
+    #   %Runic.Workflow.Map{
+    #     name: unquote(name),
+    #     pipeline: unquote(pipeline),
+    #     hash: unquote(Components.fact_hash({expression, name}))
+    #   }
+    #   |> Runic.Workflow.Map.build_named_components()
+    # end
   end
 
   @doc """
@@ -292,9 +332,13 @@ defmodule Runic do
     end
   end
 
-  defp pipeline_of_map_expression(expression, name \\ nil)
+  defp pipeline_graph_of_map_expression(expression, name \\ nil)
 
-  defp pipeline_of_map_expression({:fn, _, _} = expression, name) do
+  defp pipeline_graph_of_map_expression(expression, name) do
+    pipeline_graph_of_map_expression(Graph.new() |> Graph.add_vertex(:root), expression, name)
+  end
+
+  defp pipeline_graph_of_map_expression(g, {:fn, _, _} = expression, name) do
     fan_out =
       quote do
         %FanOut{
@@ -305,12 +349,54 @@ defmodule Runic do
 
     step = pipeline_step(expression)
 
-    quote do
-      {unquote(fan_out), [unquote(step)]}
-    end
+    g
+    |> Graph.add_edge(:root, fan_out)
+    |> Graph.add_edge(fan_out, step)
   end
 
-  defp pipeline_of_map_expression(
+  defp pipeline_graph_of_map_expression(
+         g,
+         {[_ | _] = parent_steps, [_ | _] = dependent_steps} = pipeline_expression,
+         name
+       ) do
+    fan_out =
+      quote do
+        %FanOut{
+          hash: unquote(Components.fact_hash({:fan_out, pipeline_expression})),
+          name: unquote(name)
+        }
+      end
+
+    join_steps = Enum.map(parent_steps, &pipeline_step/1)
+
+    join =
+      quote do
+        unquote(parent_steps)
+        |> Enum.map(& &1.hash)
+        |> Join.new()
+      end
+
+    g =
+      g
+      |> Graph.add_edge(:root, fan_out)
+      |> Graph.add_edges(
+        Enum.map(join_steps, fn join_step ->
+          {fan_out, join_step}
+        end)
+      )
+      |> Graph.add_edges(
+        Enum.map(join_steps, fn join_step ->
+          {join_step, join}
+        end)
+      )
+
+    Enum.reduce(dependent_steps, g, fn dstep, g_acc ->
+      dependent_pipeline_graph_of_expression(g_acc, join, dstep)
+    end)
+  end
+
+  defp pipeline_graph_of_map_expression(
+         g,
          {step_expression, [_ | _] = dependent_steps} = pipeline_expression,
          name
        ) do
@@ -324,55 +410,63 @@ defmodule Runic do
 
     step = pipeline_step(step_expression)
 
-    dependent_pipeline = pipeline_of_expression(dependent_steps)
+    g =
+      g
+      |> Graph.add_edge(:root, fan_out)
+      |> Graph.add_edge(fan_out, step)
 
-    quote do
-      {unquote(fan_out), [{unquote(step), unquote(dependent_pipeline)}]}
-    end
+    Enum.reduce(dependent_steps, g, fn dstep, g_acc ->
+      dependent_pipeline_graph_of_expression(g_acc, step, dstep)
+    end)
   end
 
-  defp pipeline_of_map_expression({:&, _, _} = expression, name) do
-    fan_out =
-      quote do
-        %FanOut{
-          hash: unquote(Components.fact_hash({:fan_out, expression})),
-          name: unquote(name)
-        }
-      end
-
-    step = pipeline_step(expression)
-
-    quote do
-      {unquote(fan_out), [unquote(step)]}
-    end
+  defp dependent_pipeline_graph_of_expression(g, parent, {:fn, _, _} = anonymous_step_expression) do
+    Graph.add_edge(g, parent, pipeline_step(anonymous_step_expression))
   end
 
-  defp pipeline_of_expression(dependent_steps) when is_list(dependent_steps) do
-    Enum.map(dependent_steps, &pipeline_of_expression/1)
+  defp dependent_pipeline_graph_of_expression(g, parent, {{:., _, [_, :step]}, _, _} = expression) do
+    Graph.add_edge(g, parent, pipeline_step(expression))
   end
 
-  defp pipeline_of_expression({{:fn, _, _} = anonymous_step_expression, dependent_steps}) do
-    {pipeline_step(anonymous_step_expression), pipeline_of_expression(dependent_steps)}
+  defp dependent_pipeline_graph_of_expression(
+         g,
+         parent,
+         {{:., _, [_, :reduce]}, _, _} = expression
+       ) do
+    Graph.add_edge(g, parent, expression)
   end
 
-  defp pipeline_of_expression({{:., _, [_, :map]}, _, [expression]}) do
-    pipeline_of_map_expression(expression)
+  defp dependent_pipeline_graph_of_expression(
+         g,
+         parent,
+         {{:., _, [_, :map]}, _, [map_expression]}
+       ) do
+    map_pipeline_graph_of_ast = pipeline_graph_of_map_expression(map_expression)
+
+    Graph.add_edges(
+      g,
+      map_pipeline_graph_of_ast
+      |> Graph.edges()
+      |> Enum.map(fn
+        %{v1: :root, v2: v2} = edge ->
+          %{edge | v1: parent, v2: v2}
+
+        edge ->
+          edge
+      end)
+    )
   end
 
-  defp pipeline_of_expression({{:., _, [_, :step]}, _, _} = expression) do
-    expression
+  defp dependent_pipeline_graph_of_expression(g, parent, {dparent, dependents}) do
+    g = Graph.add_edge(g, parent, pipeline_step(dparent))
+
+    Enum.reduce(dependents, g, fn dstep, g_acc ->
+      dependent_pipeline_graph_of_expression(g_acc, dparent, dstep)
+    end)
   end
 
-  defp pipeline_of_expression({{:., _, [_, :reduce]}, _, _} = expression) do
-    expression
-  end
-
-  defp pipeline_of_expression({{{:., _, [_, :step]}, _, _} = expression, dependent_steps}) do
-    {pipeline_step(expression), pipeline_of_expression(dependent_steps)}
-  end
-
-  defp pipeline_of_expression({:map, _, [expression]}) do
-    pipeline_of_map_expression(expression)
+  defp dependent_pipeline_graph_of_expression(g, parent, step) do
+    Graph.add_edge(g, parent, pipeline_step(step))
   end
 
   defp pipeline_step({:&, _, _} = expression) do
@@ -391,12 +485,20 @@ defmodule Runic do
     end
   end
 
-  defp pipeline_step({{:., _, [_, :step]}, _, _} = expression) do
-    expression
+  defp pipeline_step({{:., _, [_, :step]}, _, [expression]}) do
+    step_ast_hash = Components.fact_hash(expression)
+
+    quote do
+      Step.new(work: unquote(expression), hash: unquote(step_ast_hash))
+    end
   end
 
-  defp pipeline_step({:step, _, _} = expression) do
-    expression
+  defp pipeline_step({:step, _, [expression]}) do
+    step_ast_hash = Components.fact_hash(expression)
+
+    quote do
+      Step.new(work: unquote(expression), hash: unquote(step_ast_hash))
+    end
   end
 
   defp workflow_of_state_machine(init, reducer, reactors, name) do
@@ -666,8 +768,6 @@ defmodule Runic do
     quoted_workflow =
       quote do
         import Runic
-
-        component_ast_graph = unquote(Macro.escape(component_ast_graph))
 
         unquote(
           Graph.Reducers.Bfs.reduce(component_ast_graph, workflow_with_arity_check_quoted, fn

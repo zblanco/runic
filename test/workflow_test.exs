@@ -535,6 +535,39 @@ defmodule WorkflowTest do
 
       Enum.count(Workflow.reactions(wrk))
     end
+
+    test "expressions can include joins" do
+      wrk =
+        Runic.workflow(
+          name: "map test",
+          steps: [
+            {Runic.step(fn num -> Enum.map(0..3, &(&1 + num)) end),
+             [
+               Runic.map(
+                 {[Runic.step(fn num -> num * 2 end), Runic.step(fn num -> num * 3 end)],
+                  [
+                    Runic.step(fn num_1, num_2 -> num_1 * num_2 end)
+                  ]}
+               )
+             ]}
+          ]
+        )
+
+      wrk = Workflow.react_until_satisfied(wrk, 1)
+
+      dbg(Workflow.productions(wrk))
+    end
+
+    test "map model" do
+      map =
+        Runic.map(
+          {Runic.step(fn num -> num * 42 end),
+           [
+             Runic.step(fn num -> num + 69 end),
+             Runic.step(fn num -> num + 420 end)
+           ]}
+        )
+    end
   end
 
   describe "reduce" do
@@ -559,8 +592,10 @@ defmodule WorkflowTest do
         assert num in Workflow.raw_productions(wrk)
       end
 
+      dbg(Workflow.raw_productions(wrk))
+
       assert Enum.any?(Workflow.raw_productions(wrk), fn value ->
-               set_value = MapSet.new(value)
+               set_value = MapSet.new([value])
 
                MapSet.member?(set_value, 4) and
                  MapSet.member?(set_value, 6) and MapSet.member?(set_value, 8) and

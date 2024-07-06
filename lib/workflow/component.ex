@@ -14,16 +14,30 @@ end
 
 defimpl Runic.Component, for: Runic.Workflow.Map do
   alias Runic.Workflow
+  alias Runic.Workflow.Root
 
   def connect(
-        %Runic.Workflow.Map{pipeline: {fan_out, steps}, components: components},
+        %Runic.Workflow.Map{
+          pipeline: pipeline_workflow,
+          components: %{fan_out: fan_out} = components
+        },
         to,
         workflow
       ) do
     wrk =
       workflow
       |> Workflow.add_step(to, fan_out)
-      |> Workflow.add_dependent_steps({fan_out, steps})
+
+    wrk =
+      pipeline_workflow.graph
+      |> Graph.edges()
+      |> Enum.reduce(wrk, fn
+        %{v1: %Root{}, v2: _fan_out}, wrk ->
+          wrk
+
+        %{v1: v1, v2: v2}, wrk ->
+          Workflow.add_step(wrk, v1, v2)
+      end)
 
     Enum.reduce(components, wrk, fn {name, component}, wrk ->
       Map.put(wrk, :components, Map.put(wrk.components, name, component))

@@ -7,29 +7,38 @@ defmodule Runic.Workflow.Map do
   alias Runic.Workflow.FanOut
   defstruct [:hash, :name, :pipeline, :components]
 
+  # def build_named_components(%__MODULE__{pipeline: pipeline} = map) do
+  #   %__MODULE__{map | components: named_steps(pipeline, %{})}
+  # end
+
   def build_named_components(%__MODULE__{pipeline: pipeline} = map) do
-    %__MODULE__{map | components: named_steps(pipeline, %{})}
+    %__MODULE__{
+      map
+      | components:
+          pipeline.graph
+          |> Graph.Reducers.Bfs.reduce(%{}, fn
+            %FanOut{name: nil} = step, components ->
+              {:next, components |> Map.put(:fan_out, step)}
+
+            %FanOut{name: name} = step, components ->
+              {:next, components |> Map.put(:fan_out, step) |> Map.put(name, step)}
+
+            %{name: name} = step, components ->
+              {:next, components |> Map.put(name, step) |> maybe_add_leaf(step, pipeline.graph)}
+
+            _otherwise, components ->
+              {:next, components}
+          end)
+    }
   end
 
-  defp named_steps({%FanOut{name: nil} = step, steps}, acc),
-    do: named_steps(steps, acc |> Map.put(:fan_out, step))
-
-  defp named_steps({%FanOut{name: name} = step, steps}, acc),
-    do: named_steps(steps, acc |> Map.put(:fan_out, step) |> Map.put(name, step))
-
-  defp named_steps({%{name: name} = step, steps}, acc),
-    do: named_steps(steps, Map.put(acc, name, step))
-
-  defp named_steps({_, steps}, acc), do: named_steps(steps, acc)
-
-  defp named_steps(%{name: name} = step, acc),
-    do: acc |> Map.put(name, step) |> Map.put(:leaf, step)
-
-  defp named_steps([_ | _] = steps, acc) do
-    Enum.reduce(steps, acc, fn step, acc ->
-      named_steps(step, acc)
-    end)
+  defp maybe_add_leaf(components, step, pipeline) do
+    if is_leaf?(pipeline, step) do
+      Map.put(components, :leaf, step)
+    else
+      components
+    end
   end
 
-  defp named_steps(_, acc), do: acc
+  defp is_leaf?(g, v), do: Graph.out_degree(g, v) == 0
 end
