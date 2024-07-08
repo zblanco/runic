@@ -557,6 +557,23 @@ defmodule WorkflowTest do
 
       dbg(Workflow.productions(wrk))
     end
+
+    test "steps in a map pipeline can have names" do
+      Runic.workflow(
+        name: "map test",
+        steps: [
+          {Runic.step(fn num -> Enum.map(0..3, &(&1 + num)) end),
+           [
+             Runic.map(
+               {[Runic.step(fn num -> num * 2 end), Runic.step(fn num -> num * 3 end)],
+                [
+                  Runic.step(fn num_1, num_2 -> num_1 * num_2 end, name: "multiply")
+                ]}
+             )
+           ]}
+        ]
+      )
+    end
   end
 
   describe "reduce" do

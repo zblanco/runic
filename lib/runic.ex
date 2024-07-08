@@ -474,11 +474,31 @@ defmodule Runic do
     end
   end
 
+  defp pipeline_step({{:., _, [_, :step]}, _, [expression | [rest]]}) do
+    step_ast_hash = Components.fact_hash(expression)
+
+    name = rest[:name]
+
+    quote do
+      Step.new(work: unquote(expression), hash: unquote(step_ast_hash), name: unquote(name))
+    end
+  end
+
   defp pipeline_step({{:., _, [_, :step]}, _, [expression]}) do
     step_ast_hash = Components.fact_hash(expression)
 
     quote do
       Step.new(work: unquote(expression), hash: unquote(step_ast_hash))
+    end
+  end
+
+  defp pipeline_step({:step, _, [expression | [rest]]}) do
+    step_ast_hash = Components.fact_hash(expression)
+
+    name = rest[:name]
+
+    quote do
+      Step.new(work: unquote(expression), hash: unquote(step_ast_hash), name: unquote(name))
     end
   end
 
