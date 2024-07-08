@@ -9,6 +9,8 @@ defprotocol Runic.Component do
 
   def connect(component, to, workflow)
 
+  # def remove(component, workflow)
+
   # def components(component)
 end
 
@@ -43,6 +45,18 @@ defimpl Runic.Component, for: Runic.Workflow.Map do
       Map.put(wrk, :components, Map.put(wrk.components, name, component))
     end)
   end
+
+  # def remove(%Runic.Workflow.Map{pipeline: map_wrk} = map, workflow) do
+  #   # for vertices in the map workflow, remove them but only if they're not also involved in separate components
+
+  #   map_wrk.graph
+  #   |> Graph.vertices()
+  #   |> Enum.reduce(workflow, fn vertex, wrk ->
+  #     case Graph.out_edges(wrk.graph, vertex) do
+
+  #     end
+  #   end)
+  # end
 end
 
 defimpl Runic.Component, for: Runic.Workflow.Reduce do

@@ -230,8 +230,6 @@ defmodule Runic do
         )
       end
 
-    IO.inspect(Macro.to_string(map_pipeline), limit: :infinity, printable_limit: :infinity)
-
     quote do
       %Runic.Workflow.Map{
         name: unquote(name),
@@ -240,15 +238,6 @@ defmodule Runic do
       }
       |> Runic.Workflow.Map.build_named_components()
     end
-
-    # quote do
-    #   %Runic.Workflow.Map{
-    #     name: unquote(name),
-    #     pipeline: unquote(pipeline),
-    #     hash: unquote(Components.fact_hash({expression, name}))
-    #   }
-    #   |> Runic.Workflow.Map.build_named_components()
-    # end
   end
 
   @doc """

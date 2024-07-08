@@ -97,6 +97,12 @@ defmodule Runic.Workflow do
     |> maybe_put_component(component)
   end
 
+  # def remove_component(%__MODULE__{} = workflow, component_name) do
+  #   component = get_component(workflow, component_name)
+
+  #   Component.remove(component, workflow)
+  # end
+
   defp get_by_hash(%__MODULE__{graph: g}, %{hash: hash}) do
     Map.get(g.vertices, hash)
   end

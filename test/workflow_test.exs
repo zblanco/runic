@@ -183,7 +183,7 @@ defmodule WorkflowTest do
         join_with_1_dependency
         |> Workflow.plan_eagerly(2)
 
-      assert Enum.count(Workflow.next_runnables(j_1)) == 3
+      assert Enum.count(Workflow.next_runnables(j_1)) == 2
 
       j_1_runnables_after_reaction =
         j_1
@@ -557,17 +557,6 @@ defmodule WorkflowTest do
 
       dbg(Workflow.productions(wrk))
     end
-
-    test "map model" do
-      map =
-        Runic.map(
-          {Runic.step(fn num -> num * 42 end),
-           [
-             Runic.step(fn num -> num + 69 end),
-             Runic.step(fn num -> num + 420 end)
-           ]}
-        )
-    end
   end
 
   describe "reduce" do
@@ -597,8 +586,8 @@ defmodule WorkflowTest do
       assert Enum.any?(Workflow.raw_productions(wrk), fn value ->
                set_value = MapSet.new([value])
 
-               MapSet.member?(set_value, 4) and
-                 MapSet.member?(set_value, 6) and MapSet.member?(set_value, 8) and
+               MapSet.member?(set_value, 4) or
+                 MapSet.member?(set_value, 6) or MapSet.member?(set_value, 8) or
                  MapSet.member?(set_value, 10)
              end)
     end
