@@ -324,7 +324,11 @@ defmodule Runic do
   defp pipeline_graph_of_map_expression(expression, name \\ nil)
 
   defp pipeline_graph_of_map_expression(expression, name) do
-    pipeline_graph_of_map_expression(Graph.new() |> Graph.add_vertex(:root), expression, name)
+    pipeline_graph_of_map_expression(
+      Graph.new(vertex_identifier: &Components.vertex_id_of/1) |> Graph.add_vertex(:root),
+      expression,
+      name
+    )
   end
 
   defp pipeline_graph_of_map_expression(g, {:fn, _, _} = expression, name) do
@@ -356,25 +360,33 @@ defmodule Runic do
         }
       end
 
-    join_steps = Enum.map(parent_steps, &pipeline_step/1)
+    parent_steps_with_hashes =
+      Enum.map(parent_steps, fn step_ast ->
+        {Components.fact_hash(step_ast), pipeline_step(step_ast)}
+      end)
+
+    parent_hashes = Enum.map(parent_steps_with_hashes, &elem(&1, 0))
+
+    join_hash = Components.fact_hash(Enum.map(parent_steps_with_hashes, &elem(&1, 0)))
 
     join =
       quote do
-        unquote(parent_steps)
-        |> Enum.map(& &1.hash)
-        |> Join.new()
+        %Join{
+          hash: unquote(join_hash),
+          joins: unquote(parent_hashes)
+        }
       end
 
     g =
       g
       |> Graph.add_edge(:root, fan_out)
       |> Graph.add_edges(
-        Enum.map(join_steps, fn join_step ->
+        Enum.map(parent_steps_with_hashes, fn {_, join_step} ->
           {fan_out, join_step}
         end)
       )
       |> Graph.add_edges(
-        Enum.map(join_steps, fn join_step ->
+        Enum.map(parent_steps_with_hashes, fn {_, join_step} ->
           {join_step, join}
         end)
       )
@@ -447,10 +459,12 @@ defmodule Runic do
   end
 
   defp dependent_pipeline_graph_of_expression(g, parent, {dparent, dependents}) do
-    g = Graph.add_edge(g, parent, pipeline_step(dparent))
+    parent_step = pipeline_step(dparent)
+
+    g = Graph.add_edge(g, parent, parent_step)
 
     Enum.reduce(dependents, g, fn dstep, g_acc ->
-      dependent_pipeline_graph_of_expression(g_acc, dparent, dstep)
+      dependent_pipeline_graph_of_expression(g_acc, parent_step, dstep)
     end)
   end
 
