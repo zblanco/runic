@@ -574,6 +574,27 @@ defmodule WorkflowTest do
         ]
       )
     end
+
+    test "map pipelines can be a list of steps that run independently for each fan out" do
+      wrk =
+        Runic.workflow(
+          name: "list of fan out steps",
+          steps: [
+            {Runic.step(fn _ -> 1..4 end),
+             [
+               Runic.map([
+                 Runic.step(fn num -> num * 2 end),
+                 Runic.step(fn num -> num + 1 end),
+                 Runic.step(fn num -> num + 4 end)
+               ])
+             ]}
+          ]
+        )
+
+      wrk = Workflow.react_until_satisfied(wrk, 2)
+
+      dbg(Workflow.productions(wrk))
+    end
   end
 
   describe "reduce" do

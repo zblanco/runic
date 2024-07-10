@@ -421,6 +421,28 @@ defmodule Runic do
     end)
   end
 
+  defp pipeline_graph_of_map_expression(
+         g,
+         [_ | _] = pipeline_expression,
+         name
+       ) do
+    fan_out =
+      quote do
+        %FanOut{
+          hash: unquote(Components.fact_hash({:fan_out, pipeline_expression})),
+          name: unquote(name)
+        }
+      end
+
+    g =
+      g
+      |> Graph.add_edge(:root, fan_out)
+
+    Enum.reduce(pipeline_expression, g, fn dstep, g_acc ->
+      dependent_pipeline_graph_of_expression(g_acc, fan_out, dstep)
+    end)
+  end
+
   defp dependent_pipeline_graph_of_expression(g, parent, {:fn, _, _} = anonymous_step_expression) do
     Graph.add_edge(g, parent, pipeline_step(anonymous_step_expression))
   end
