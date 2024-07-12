@@ -28,6 +28,7 @@ defimpl Runic.Component, for: Runic.Workflow.Map do
       ) do
     wrk =
       workflow
+      # only add top level fanout in cases with nested map expressions
       |> Workflow.add_step(to, fan_out)
 
     wrk =

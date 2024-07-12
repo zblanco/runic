@@ -595,6 +595,43 @@ defmodule WorkflowTest do
 
       dbg(Workflow.productions(wrk))
     end
+
+    test "map pipelines can include nested map expressions" do
+      wrk =
+        Runic.workflow(
+          name: "list of fan out steps",
+          steps: [
+            {Runic.step(fn _ -> 1..4 end),
+             [
+               Runic.map(
+                 [
+                   {Runic.step(fn num -> [num * 2, num * 3] end),
+                    [
+                      Runic.map([
+                        Runic.step(fn num -> num + 1 end),
+                        Runic.step(fn num -> num + 4 end)
+                      ])
+                    ]},
+                   Runic.step(fn num -> num * 2 end, name: :x2),
+                   Runic.step(fn num -> num + 1 end, name: :x1),
+                   Runic.step(fn num -> num + 4 end, name: :x4)
+                 ],
+                 name: :first_map
+               )
+             ]}
+          ]
+        )
+
+      first_fan_out =
+        Workflow.get_component(wrk, :first_map)
+        |> Map.get(:components)
+        |> Map.get(:fan_out)
+
+      assert Enum.count(Graph.vertices(wrk.graph), &match?(%Runic.Workflow.FanOut{}, &1)) == 2
+
+      assert Graph.out_degree(wrk.graph, first_fan_out) == 4
+      assert Graph.in_degree(wrk.graph, first_fan_out) == 1
+    end
   end
 
   describe "reduce" do

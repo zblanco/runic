@@ -200,17 +200,12 @@ defmodule Runic do
   """
   defmacro map(expression, opts \\ []) do
     name = opts[:name]
-    # {_fan_out, _dependent_steps} = pipeline = pipeline_of_map_expression(expression, name)
 
     pipeline_graph_of_ast =
       pipeline_graph_of_map_expression(expression, name)
 
-    # BFS reduce the list/tuple pipeline into a |> pipeline that constructs a graph containing workflow nodes and flow edges
-
     map_pipeline =
       quote do
-        import Runic
-
         unquote(
           pipeline_graph_of_ast
           |> Graph.edges()
@@ -347,6 +342,22 @@ defmodule Runic do
     |> Graph.add_edge(fan_out, step)
   end
 
+  defp pipeline_graph_of_map_expression(g, {:step, _, _} = expression, name) do
+    fan_out =
+      quote do
+        %FanOut{
+          hash: unquote(Components.fact_hash({:fan_out, expression})),
+          name: unquote(name)
+        }
+      end
+
+    step = pipeline_step(expression)
+
+    g
+    |> Graph.add_edge(:root, fan_out)
+    |> Graph.add_edge(fan_out, step)
+  end
+
   defp pipeline_graph_of_map_expression(
          g,
          {[_ | _] = parent_steps, [_ | _] = dependent_steps} = pipeline_expression,
@@ -426,10 +437,12 @@ defmodule Runic do
          [_ | _] = pipeline_expression,
          name
        ) do
+    fan_out_hash = Components.fact_hash({:fan_out, pipeline_expression})
+
     fan_out =
       quote do
         %FanOut{
-          hash: unquote(Components.fact_hash({:fan_out, pipeline_expression})),
+          hash: unquote(fan_out_hash),
           name: unquote(name)
         }
       end
@@ -464,6 +477,23 @@ defmodule Runic do
          parent,
          {{:., _, [_, :map]}, _, [map_expression]}
        ) do
+    map_pipeline_graph_of_ast = pipeline_graph_of_map_expression(map_expression)
+
+    Graph.add_edges(
+      g,
+      map_pipeline_graph_of_ast
+      |> Graph.edges()
+      |> Enum.map(fn
+        %{v1: :root, v2: v2} = edge ->
+          %{edge | v1: parent, v2: v2}
+
+        edge ->
+          edge
+      end)
+    )
+  end
+
+  defp dependent_pipeline_graph_of_expression(g, parent, {:map, _, [map_expression]}) do
     map_pipeline_graph_of_ast = pipeline_graph_of_map_expression(map_expression)
 
     Graph.add_edges(

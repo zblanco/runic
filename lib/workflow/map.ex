@@ -18,10 +18,21 @@ defmodule Runic.Workflow.Map do
           pipeline.graph
           |> Graph.Reducers.Bfs.reduce(%{}, fn
             %FanOut{name: nil} = step, components ->
-              {:next, components |> Map.put(:fan_out, step)}
+              if Runic.Workflow.root() in Graph.in_neighbors(pipeline.graph, step) do
+                {:next, components |> Map.put(:fan_out, step)}
+              else
+                {:next, components}
+              end
 
             %FanOut{name: name} = step, components ->
-              {:next, components |> Map.put(:fan_out, step) |> Map.put(name, step)}
+              if Runic.Workflow.root() in Graph.in_neighbors(pipeline.graph, step) do
+                {:next, components |> Map.put(:fan_out, step) |> Map.put(name, step)}
+              else
+                {:next, components}
+              end
+
+            %{name: nil}, components ->
+              {:next, components}
 
             %{name: name} = step, components ->
               {:next, components |> Map.put(name, step) |> maybe_add_leaf(step, pipeline.graph)}
