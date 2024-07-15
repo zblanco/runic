@@ -303,6 +303,10 @@ defmodule Runic.Workflow do
     Map.get(components, name)
   end
 
+  def get_component(%__MODULE__{components: components}, names) when is_list(names) do
+    Enum.map(names, fn name -> Map.get(components, name) end)
+  end
+
   def get_component(%__MODULE__{components: components}, name) do
     Map.get(components, name)
   end

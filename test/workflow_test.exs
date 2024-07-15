@@ -1,6 +1,7 @@
 defmodule WorkflowTest do
   use ExUnit.Case
   require Runic
+
   alias Runic.Workflow
   alias Runic.Workflow.Invokable
   alias Runic.Workflow.Step
@@ -489,6 +490,66 @@ defmodule WorkflowTest do
       # assert not is_nil Workflow.component_of(wrk, "state_machine", :init)
       # assert not is_nil Workflow.component_of(wrk, "state_machine", :reducer)
     end
+
+    test "a step can be added to multiple components assuming a join in order of `:to` names" do
+      wrk =
+        Runic.workflow(
+          name: "test workflow",
+          steps: [
+            {Runic.step(fn num -> num + 1 end, name: "step 1"),
+             [
+               Runic.step(fn num -> num + 2 end, name: "step 2"),
+               Runic.step(fn num -> num + 4 end, name: "step 3")
+             ]}
+          ]
+        )
+
+      wrk =
+        Workflow.add(
+          wrk,
+          Runic.step(fn num, num2 -> num + num2 + 3 end, name: "joined_step"),
+          to: ["step 2", "step 3"]
+        )
+
+      step = Workflow.get_component(wrk, "joined_step")
+
+      join = Graph.in_neighbors(wrk.graph, step) |> List.first()
+
+      assert match?(%Workflow.Join{}, join)
+
+      assert Graph.in_degree(wrk.graph, join) == 2
+    end
+
+    test "a step can be added to multiple reduces assuming a join in order of `:to` names" do
+      wrk =
+        Runic.workflow(
+          name: "test workflow",
+          steps: [
+            {Runic.step(fn _ -> 0..5 end),
+             [
+               Runic.reduce(0, fn num, acc -> num + acc end, name: "reduce 1"),
+               Runic.reduce(0, fn num, acc -> num + acc end, name: "reduce 2")
+             ]}
+          ]
+        )
+
+      wrk =
+        Workflow.add(
+          wrk,
+          Runic.step(fn num, num2 -> num + num2 + 3 end, name: "joined_step"),
+          to: ["reduce 1", "reduce 2"]
+        )
+
+      step = Workflow.get_component(wrk, "joined_step")
+
+      join = Graph.in_neighbors(wrk.graph, step) |> List.first()
+
+      assert match?(%Workflow.Join{}, join)
+
+      assert Graph.in_degree(wrk.graph, join) == 2
+
+      assert match?(%Workflow.FanIn{}, Graph.in_neighbors(wrk.graph, join) |> List.first())
+    end
   end
 
   describe "map" do
@@ -631,6 +692,31 @@ defmodule WorkflowTest do
 
       assert Graph.out_degree(wrk.graph, first_fan_out) == 4
       assert Graph.in_degree(wrk.graph, first_fan_out) == 1
+    end
+
+    test "map expressions can be named" do
+      wrk1 =
+        Runic.workflow(
+          name: "map test",
+          steps: [
+            {Runic.step(fn _ -> 1..4 end),
+             [
+               Runic.map(
+                 {Runic.step(fn num -> num * 2 end),
+                  [
+                    Runic.map(
+                      {Runic.step(fn num -> num * 1 end),
+                       [
+                         Runic.step(fn num -> num + 1 end),
+                         Runic.step(fn num -> num + 4 end)
+                       ]}
+                    )
+                  ]},
+                 name: "map"
+               )
+             ]}
+          ]
+        )
     end
   end
 

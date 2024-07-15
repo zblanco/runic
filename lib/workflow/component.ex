@@ -3,7 +3,7 @@ defprotocol Runic.Component do
   Protocol defining common behaviour of Runic components such as reflection, sub components or how the can be composed with others.
   """
 
-  # def component_of(component, sub_component_name)
+  def get_component(component, sub_component_name)
 
   # def connectables(component)
 
@@ -45,6 +45,10 @@ defimpl Runic.Component, for: Runic.Workflow.Map do
     Enum.reduce(components, wrk, fn {name, component}, wrk ->
       Map.put(wrk, :components, Map.put(wrk.components, name, component))
     end)
+  end
+
+  def get_component(%Runic.Workflow.Map{components: components}, sub_component_name) do
+    Map.get(components, sub_component_name)
   end
 
   # def remove(%Runic.Workflow.Map{pipeline: map_wrk} = map, workflow) do
@@ -89,11 +93,32 @@ defimpl Runic.Component, for: Runic.Workflow.Reduce do
   def connect(reduce, to, workflow) do
     Workflow.add_step(workflow, to, reduce.fan_in)
   end
+
+  def get_component(%Runic.Workflow.Reduce{fan_in: fan_in}, _kind) do
+    fan_in
+  end
 end
 
 defimpl Runic.Component, for: Runic.Workflow.Step do
+  alias Runic.Workflow
+
+  def connect(step, to, workflow) when is_list(to) do
+    join =
+      to
+      |> Enum.map(& &1.hash)
+      |> Workflow.Join.new()
+
+    workflow
+    |> Workflow.add_step(to, join)
+    |> Workflow.add_step(join, step)
+  end
+
   def connect(step, to, workflow) do
-    Runic.Workflow.add_step(workflow, to, step)
+    Workflow.add_step(workflow, to, step)
+  end
+
+  def get_component(step, _kind) do
+    step
   end
 end
 
@@ -102,5 +127,24 @@ defimpl Runic.Component, for: Runic.Workflow.Rule do
 
   def connect(rule, _to, workflow) do
     Workflow.merge(workflow, rule.workflow)
+  end
+
+  def get_component(rule, :reaction) do
+    rule
+  end
+end
+
+defimpl Runic.Component, for: Runic.Workflow.StateMachine do
+  alias Runic.Workflow
+
+  def connect(state_machine, to, workflow) do
+    Workflow.add_step(workflow, to, state_machine)
+  end
+
+  def get_component(state_machine, :reducer) do
+    state_machine.workflow.graph
+    |> Graph.vertices()
+    |> Enum.filter(&match?(%Runic.Workflow.Accumulator{}, &1))
+    |> List.first()
   end
 end

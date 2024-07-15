@@ -73,6 +73,32 @@ defmodule Runic do
     Runic.Transmutable.transmute(component)
   end
 
+  @doc """
+  Retrieves a sub component by name of the given kind allowing it to be connected to another component in a workflow.
+
+  ## Examples
+
+  ```elixir
+
+  iex> Runic.component_of(workflow, :my_state_machine, :reducer)
+
+  > %Accumulator{}
+
+  iex> Runic.component_of(workflow, :my_map, :fan_out)
+
+  > %FanOut{}
+
+  iex> Runic.component_of(workflow, :my_map, :leafs)
+
+  > [%Step{}, %Step{}]
+  ```
+  """
+  def component_of(workflow, component_name, kind) do
+    workflow
+    |> Runic.Workflow.get_component(component_name)
+    |> Runic.Component.get_component(kind)
+  end
+
   def workflow(opts \\ []) do
     name = opts[:name]
     steps = opts[:steps]
@@ -475,9 +501,51 @@ defmodule Runic do
   defp dependent_pipeline_graph_of_expression(
          g,
          parent,
+         {{:., _, [_, :map]}, _, [[map_expression, opts]]}
+       )
+       when is_list(map_expression) do
+    name = opts[:name]
+    map_pipeline_graph_of_ast = pipeline_graph_of_map_expression(map_expression, name)
+
+    Graph.add_edges(
+      g,
+      map_pipeline_graph_of_ast
+      |> Graph.edges()
+      |> Enum.map(fn
+        %{v1: :root, v2: v2} = edge ->
+          %{edge | v1: parent, v2: v2}
+
+        edge ->
+          edge
+      end)
+    )
+  end
+
+  defp dependent_pipeline_graph_of_expression(
+         g,
+         parent,
          {{:., _, [_, :map]}, _, [map_expression]}
        ) do
     map_pipeline_graph_of_ast = pipeline_graph_of_map_expression(map_expression)
+
+    Graph.add_edges(
+      g,
+      map_pipeline_graph_of_ast
+      |> Graph.edges()
+      |> Enum.map(fn
+        %{v1: :root, v2: v2} = edge ->
+          %{edge | v1: parent, v2: v2}
+
+        edge ->
+          edge
+      end)
+    )
+  end
+
+  defp dependent_pipeline_graph_of_expression(g, parent, {:map, _, [{map_expression, opts}]})
+       when is_list(opts) do
+    name = opts[:name]
+    map_pipeline_graph_of_ast = pipeline_graph_of_map_expression(map_expression, name)
 
     Graph.add_edges(
       g,

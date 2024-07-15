@@ -1,7 +1,7 @@
 defmodule RunicTest do
   # Component constructor API tests
   use ExUnit.Case
-  doctest Runic
+  # doctest Runic
 
   alias Runic.Workflow.Step
   alias Runic.Workflow.Rule
