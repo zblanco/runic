@@ -616,7 +616,7 @@ defmodule WorkflowTest do
 
       wrk = Workflow.react_until_satisfied(wrk, 1)
 
-      dbg(Workflow.productions(wrk))
+      dbg(Workflow.raw_productions(wrk))
     end
 
     test "steps in a map pipeline can have names" do
@@ -654,7 +654,7 @@ defmodule WorkflowTest do
 
       wrk = Workflow.react_until_satisfied(wrk, 2)
 
-      dbg(Workflow.productions(wrk))
+      dbg(Workflow.raw_productions(wrk))
     end
 
     test "map pipelines can include nested map expressions" do
@@ -742,8 +742,6 @@ defmodule WorkflowTest do
         assert num in Workflow.raw_productions(wrk)
       end
 
-      dbg(Workflow.raw_productions(wrk))
-
       assert Enum.any?(Workflow.raw_productions(wrk), fn value ->
                set_value = MapSet.new([value])
 
@@ -794,9 +792,43 @@ defmodule WorkflowTest do
           ]
         )
     end
+
+    test "reduce can be added to a step in a map expression and reduce over each fanned out fact of the map" do
+      wrk =
+        Runic.workflow(
+          name: "reduce test",
+          steps: [
+            {Runic.step(fn _ -> 0..3 end),
+             [
+               Runic.map(
+                 {step(fn num -> num + 1 end),
+                  [
+                    Runic.step(fn num -> num + 4 end),
+                    Runic.step(fn num -> num + 2 end, name: :plus2)
+                  ]},
+                 name: "map"
+               )
+             ]}
+          ]
+        )
+
+      wrk =
+        Workflow.add(
+          wrk,
+          Runic.reduce(0, fn num, acc -> num + acc end, name: "reduce", map: "map"),
+          to: :plus2
+        )
+        |> IO.inspect(label: "reduce wrk")
+
+      wrk = Workflow.react_until_satisfied(wrk, "potato")
+
+      for reaction <- Workflow.raw_productions(wrk) do
+        assert reaction in [5, 6, 7, 8, 18, 4, 5, 3, 6, 3, 4, 2, 1, 0..3]
+      end
+    end
   end
 
-  # describe "continuations" do
+  # describe "continuations and hooks" do
   #   test "continuations can add additional steps and runnables to a workflow after a step has been run in order to continue a computation" do
   #     wrk =
   #       Runic.workflow(

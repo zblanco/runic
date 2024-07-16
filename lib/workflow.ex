@@ -283,14 +283,17 @@ defmodule Runic.Workflow do
     workflow
   end
 
-  def maybe_put_component(
-        %__MODULE__{graph: g} = workflow,
-        %FanIn{map: name_of_map_expression} = step
-      ) do
-    fan_out = get_component!(workflow, name_of_map_expression)
+  # def maybe_put_component(
+  #       %__MODULE__{graph: g} = workflow,
+  #       %FanIn{map: name_of_map_expression} = step
+  #     ) do
+  #   fan_out =
+  #     get_component!(workflow, name_of_map_expression)
+  #     |> Map.get(:components)
+  #     |> Map.get(:fan_out)
 
-    %{workflow | graph: Graph.add_edge(g, fan_out, step, label: :reduced_by)}
-  end
+  #   %{workflow | graph: Graph.add_edge(g, fan_out, step, label: :reduced_by)}
+  # end
 
   def maybe_put_component(%__MODULE__{} = workflow, %{} = _step), do: workflow
 
@@ -352,8 +355,8 @@ defmodule Runic.Workflow do
   Merges the second workflow into the first maintaining the name of the first.
   """
   def merge(
-        %__MODULE__{graph: g1, components: c1} = workflow,
-        %__MODULE__{graph: g2, components: c2} = _workflow2
+        %__MODULE__{graph: g1, components: c1, mapped: m1} = workflow,
+        %__MODULE__{graph: g2, components: c2, mapped: m2} = _workflow2
       ) do
     merged_graph =
       Graph.Reducers.Bfs.reduce(g2, g1, fn
@@ -368,7 +371,14 @@ defmodule Runic.Workflow do
           {:next, g}
 
         generation, g when is_integer(generation) ->
-          {:next, Graph.add_vertex(g, generation)}
+          out_edges = Enum.uniq(Graph.out_edges(g, generation) ++ Graph.out_edges(g2, generation))
+
+          g =
+            g
+            |> Graph.add_vertex(generation)
+            |> Graph.add_edges(out_edges)
+
+          {:next, g}
 
         v, g ->
           g = Graph.add_vertex(g, v, v.hash)
@@ -411,7 +421,23 @@ defmodule Runic.Workflow do
     %__MODULE__{
       workflow
       | graph: merged_graph,
-        components: Map.merge(c1, c2)
+        components: Map.merge(c1, c2),
+        mapped:
+          Enum.reduce(m1, m2, fn
+            {:mapped_paths, mapset}, acc ->
+              Map.put(acc, :mapped_paths, MapSet.union(acc.mapped_paths, mapset))
+
+            {k, v}, acc ->
+              Map.put(
+                acc,
+                k,
+                [v | acc[k] || []]
+                |> List.flatten()
+                |> Enum.reject(&is_nil/1)
+                |> Enum.reverse()
+                |> Enum.uniq()
+              )
+          end)
     }
   end
 

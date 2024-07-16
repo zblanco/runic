@@ -90,6 +90,32 @@ defimpl Runic.Component, for: Runic.Workflow.Reduce do
     )
   end
 
+  def connect(%{fan_in: %{map: mapped}} = reduce, %Workflow.Step{} = step, workflow)
+      when not is_nil(mapped) do
+    map = Workflow.get_component!(workflow, mapped)
+
+    wrk =
+      workflow
+      |> Workflow.add_step(step, reduce.fan_in)
+      |> Workflow.draw_connection(map.components.fan_out, reduce.fan_in, :fan_in)
+
+    path_to_fan_out =
+      wrk.graph
+      |> Graph.get_shortest_path(map.components.fan_out, reduce.fan_in)
+
+    wrk
+    |> Map.put(
+      :mapped,
+      Map.put(
+        wrk.mapped,
+        :mapped_paths,
+        Enum.reduce(path_to_fan_out, wrk.mapped.mapped_paths, fn node, mapset ->
+          MapSet.put(mapset, node.hash)
+        end)
+      )
+    )
+  end
+
   def connect(reduce, to, workflow) do
     Workflow.add_step(workflow, to, reduce.fan_in)
   end

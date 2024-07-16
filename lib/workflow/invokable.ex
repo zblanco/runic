@@ -373,10 +373,20 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Join do
 
     workflow = Workflow.draw_connection(workflow, fact, join, :joined)
 
+    join_order_weights =
+      join.joins
+      |> Enum.with_index()
+      |> Map.new()
+
     possible_priors =
       workflow.graph
       |> Graph.in_edges(join)
       |> Enum.filter(&(&1.label == :joined))
+      |> Enum.sort(fn edge1, edge2 ->
+        join_weight_1 = Map.get(join_order_weights, elem(edge1.v1.ancestry, 0))
+        join_weight_2 = Map.get(join_order_weights, elem(edge2.v1.ancestry, 0))
+        join_weight_1 <= join_weight_2
+      end)
       |> Enum.map(& &1.v1.value)
 
     if Enum.count(join.joins) == Enum.count(possible_priors) do
@@ -424,7 +434,7 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.FanOut do
         %Fact{} = source_fact
       ) do
     unless is_nil(Enumerable.impl_for(source_fact.value)) do
-      # is_reduced? = is_reduced?(workflow, fan_out)
+      is_reduced? = is_reduced?(workflow, fan_out)
 
       Enum.reduce(source_fact.value, workflow, fn value, wrk ->
         fact =
@@ -434,8 +444,7 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.FanOut do
         |> Workflow.log_fact(fact)
         |> Workflow.prepare_next_runnables(fan_out, fact)
         |> Workflow.draw_connection(fan_out, fact, :fan_out)
-
-        # |> maybe_prepare_map_reduce(is_reduced?, fan_out, source_fact, fact)
+        |> maybe_prepare_map_reduce(is_reduced?, fan_out, fact)
       end)
       |> Workflow.mark_runnable_as_ran(fan_out, source_fact)
     else
@@ -443,26 +452,20 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.FanOut do
     end
   end
 
-  # def maybe_prepare_map_reduce(workflow, true, fan_out, source_fact, fan_out_fact) do
-  #   if is_reduced?(workflow, fan_out) do
-  #     key = {workflow.generations, fan_out.hash}
-  #     sister_facts = workflow.mapped[key] || []
+  defp maybe_prepare_map_reduce(workflow, true, fan_out, fan_out_fact) do
+    key = {workflow.generations, fan_out.hash}
+    sister_facts = workflow.mapped[key] || []
 
-  #     Map.put(workflow, :mapped,
-  #       Map.put(workflow.mapped, key, [fact.hash | sister_facts])
-  #     )
-  #   else
-  #     workflow
-  #   end
-  # end
+    Map.put(workflow, :mapped, Map.put(workflow.mapped, key, [fan_out_fact.hash | sister_facts]))
+  end
 
-  # defp maybe_prepare_map_reduce(workflow, false, _fan_out, _source_fact, _fan_out_fact) do
-  #   workflow
-  # end
+  defp maybe_prepare_map_reduce(workflow, false, _fan_out, _fan_out_fact) do
+    workflow
+  end
 
-  # def is_reduced?(workflow, fan_out) do
-  #   MapSet.member?(workflow.mapped.mapped_paths, fan_out.hash)
-  # end
+  def is_reduced?(workflow, fan_out) do
+    Graph.out_edges(workflow.graph, fan_out) |> Enum.any?(&(&1.label == :fan_in))
+  end
 
   def match_or_execute(_fan_out), do: :execute
 end
@@ -507,6 +510,8 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.FanIn do
       %FanOut{} ->
         # we may want to check ancestry paths from fan_out to fan_in with set inclusions
 
+        IO.puts("here")
+
         sister_facts =
           for hash <- workflow.mapped[{workflow.generations, parent_step_hash}] || [] do
             workflow.graph.vertices
@@ -527,9 +532,11 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.FanIn do
             edge.label == :fan_out and fact_generation == workflow.generations
           end)
           |> Enum.map(& &1.v2)
+          |> Enum.uniq()
 
         # is a count safe or should we check set inclusions of hashes?
-        if Enum.count(sister_facts) == Enum.count(fan_out_facts_for_generation) do
+        if Enum.count(sister_facts) == Enum.count(fan_out_facts_for_generation) and
+             not Enum.empty?(sister_facts) do
           sister_fact_values = Enum.map(sister_facts, & &1.value)
 
           reduced_value = Enum.reduce(sister_fact_values, fan_in.init.(), fan_in.reducer)
@@ -550,7 +557,7 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.FanIn do
           |> Workflow.mark_runnable_as_ran(fan_in, fact)
           |> Map.put(
             :mapped,
-            Map.delete(workflow.mapped, {workflow.generations, parent_step_hash})
+            Map.delete(workflow.mapped, {workflow.generations, fan_out.hash})
           )
         else
           workflow
