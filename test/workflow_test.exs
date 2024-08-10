@@ -818,7 +818,6 @@ defmodule WorkflowTest do
           Runic.reduce(0, fn num, acc -> num + acc end, name: "reduce", map: "map"),
           to: :plus2
         )
-        |> IO.inspect(label: "reduce wrk")
 
       wrk = Workflow.react_until_satisfied(wrk, "potato")
 
@@ -828,46 +827,41 @@ defmodule WorkflowTest do
     end
   end
 
-  # describe "continuations and hooks" do
-  #   test "continuations can add additional steps and runnables to a workflow after a step has been run in order to continue a computation" do
-  #     wrk =
-  #       Runic.workflow(
-  #         name: "continuation test",
-  #         steps: [
-  #           Runic.step(fn num -> Enum.map(0..3, fn _ -> num end) end,
-  #             after: fn step, wrk, fact ->
-  #               # we shouldn't expose complexity of internal invokables to user
-  #               # instead we should return a workflow with an input fact to add as a runnable
-  #               # the continuation must be a runnable pair of a component and a fact
-  #               # we can merge the workflows together but once all steps resolve we should
-  #               # remove the continuation components from the workflow with trust that memory
-  #               # will be maintained with ancestry to the original step which produced the continuation
+  describe "hooks / continuations" do
+    test "hooks run before/after invokation of a step" do
+      wrk =
+        Runic.workflow(
+          name: "continuation test",
+          steps: [
+            Runic.step(fn num -> Enum.map(0..3, fn _ -> num end) end, name: :step_1)
+          ],
+          before_hooks: [
+            step_1: [
+              fn _step, wrk, _fact ->
+                send(self(), :before)
+                wrk
+              end
+            ]
+          ],
+          after_hooks: [
+            step_1: [
+              fn _step, wrk, _fact ->
+                send(self(), :after)
+                wrk
+              end
+            ]
+          ]
+        )
 
-  #               # it's important to avoid running continuation workflows for new facts unless the after function wants to
-  #               # in which case it should happen at runtime again because the prior continuation is invalid in the next runtime context
+      ran_wrk = Workflow.react_until_satisfied(wrk, 2)
 
-  #               Runic.workflow(steps: Enum.map(fact.value, &Runic.step(fn num -> &1 + 1 end)))
-  #             end
-  #           )
-  #         ]
-  #       )
-  #       |> Workflow.react(2)
+      assert {:messages, [:before, :after]} = Process.info(self(), :messages)
+    end
 
-  #     Runic.workflow(
-  #       name: "continuation test",
-  #       steps: [
-  #         {Runic.step(fn num -> Enum.map(0..3, fn _ -> num end) end),
-  #          [
-  #            {Runic.map(fn num -> num + 1 end),
-  #             [
-  #               Runic.reduce(0, fn num, acc -> num + acc end)
-  #             ]}
-  #          ]}
-  #       ]
-  #     )
-  #   end
+    test "can add additional steps and runnables to a workflow after a step has been run in order to continue a computation" do
+    end
 
-  #   test "continuations aren't present for separate generation / external fact" do
-  #   end
-  # end
+    test "continuations aren't present for separate generation / external fact" do
+    end
+  end
 end

@@ -103,10 +103,14 @@ defmodule Runic do
     name = opts[:name]
     steps = opts[:steps]
     rules = opts[:rules]
+    before_hooks = opts[:before_hooks]
+    after_hooks = opts[:after_hooks]
 
     Workflow.new(name)
     |> Workflow.add_steps(steps)
     |> Workflow.add_rules(rules)
+    |> Workflow.add_before_hooks(before_hooks)
+    |> Workflow.add_after_hooks(after_hooks)
   end
 
   defmacro rule(opts) when is_list(opts) do

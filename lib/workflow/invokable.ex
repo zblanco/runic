@@ -127,6 +127,7 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Step do
     |> Workflow.prepare_next_runnables(step, result_fact)
     |> Workflow.mark_runnable_as_ran(step, fact)
     |> maybe_prepare_map_reduce(step, result_fact)
+    |> Workflow.run_after_hooks(step, result_fact)
   end
 
   defp is_reduced_in_map?(workflow, step) do
@@ -242,6 +243,7 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.StateReaction do
       |> Workflow.draw_connection(sr, result_fact, :produced)
       |> Workflow.prepare_next_runnables(sr, result_fact)
       |> Workflow.mark_runnable_as_ran(sr, fact)
+      |> Workflow.run_after_hooks(sr, result_fact)
     else
       Workflow.mark_runnable_as_ran(workflow, sr, fact)
     end
@@ -316,6 +318,7 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Accumulator do
       |> Workflow.log_fact(next_state_produced_fact)
       |> Workflow.draw_connection(acc, fact, :state_produced)
       |> Workflow.mark_runnable_as_ran(acc, fact)
+      |> Workflow.run_after_hooks(acc, next_state_produced_fact)
     else
       init_fact = init_fact(acc)
 
@@ -330,6 +333,7 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Accumulator do
       |> Workflow.log_fact(next_state_produced_fact)
       |> Workflow.draw_connection(acc, next_state_produced_fact, :state_produced)
       |> Workflow.mark_runnable_as_ran(acc, fact)
+      |> Workflow.run_after_hooks(acc, next_state_produced_fact)
     end
   end
 
@@ -412,6 +416,7 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Join do
           }
       end)
       |> Workflow.draw_connection(join, join_bindings_fact, :produced)
+      |> Workflow.run_after_hooks(join, join_bindings_fact)
     else
       workflow
     end
@@ -506,11 +511,10 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.FanIn do
         |> Workflow.prepare_next_runnables(fan_in, reduced_fact)
         |> Workflow.draw_connection(fact, fan_in, :reduced)
         |> Workflow.mark_runnable_as_ran(fan_in, fact)
+        |> Workflow.run_after_hooks(fan_in, reduced_fact)
 
       %FanOut{} ->
         # we may want to check ancestry paths from fan_out to fan_in with set inclusions
-
-        IO.puts("here")
 
         sister_facts =
           for hash <- workflow.mapped[{workflow.generations, parent_step_hash}] || [] do
@@ -559,6 +563,7 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.FanIn do
             :mapped,
             Map.delete(workflow.mapped, {workflow.generations, fan_out.hash})
           )
+          |> Workflow.run_after_hooks(fan_in, fact)
         else
           workflow
           |> Workflow.mark_runnable_as_ran(fan_in, fact)

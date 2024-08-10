@@ -45,7 +45,8 @@ defmodule Runic.Workflow do
           # name -> component struct
           components: map(),
           # name -> %{before: list(fun), after: list(fun)}
-          hooks: map(),
+          before_hooks: map(),
+          after_hooks: map(),
           mapped: map()
           # hash of parent fact for fan_out -> path_to_fan_in e.g. [fan_out, step1, step2, fan_in]
         }
@@ -57,7 +58,8 @@ defmodule Runic.Workflow do
             hash: nil,
             graph: nil,
             components: %{},
-            hooks: %{},
+            before_hooks: %{},
+            after_hooks: %{},
             mapped: %{}
 
   def new(), do: new([])
@@ -74,7 +76,8 @@ defmodule Runic.Workflow do
     |> Map.put(:graph, new_graph())
     |> Map.put_new(:name, Uniq.UUID.uuid4())
     |> Map.put(:components, %{})
-    |> Map.put(:hooks, %{})
+    |> Map.put(:before_hooks, %{})
+    |> Map.put(:after_hooks, %{})
     |> Map.put(:mapped, %{mapped_paths: MapSet.new()})
   end
 
@@ -96,6 +99,73 @@ defmodule Runic.Workflow do
     |> Component.connect(parent_step, workflow)
     |> maybe_put_component(component)
   end
+
+  def add_before_hooks(%__MODULE__{} = workflow, nil), do: workflow
+
+  def add_before_hooks(%__MODULE__{} = workflow, hooks) do
+    %__MODULE__{
+      workflow
+      | before_hooks:
+          Enum.reduce(hooks, workflow.before_hooks, fn
+            {name, hook}, acc when is_function(hook, 3) ->
+              hooks_for_component = Map.get(acc, name, [])
+              Map.put(acc, name, [hook | hooks_for_component])
+
+            {name, hooks}, acc when is_list(hooks) ->
+              hooks_for_component = Map.get(acc, name, [])
+              Map.put(acc, name, hooks ++ hooks_for_component)
+          end)
+    }
+  end
+
+  def add_after_hooks(%__MODULE__{} = workflow, nil), do: workflow
+
+  def add_after_hooks(%__MODULE__{} = workflow, hooks) do
+    %__MODULE__{
+      workflow
+      | after_hooks:
+          Enum.reduce(hooks, workflow.after_hooks, fn
+            {name, hook}, acc when is_function(hook, 3) ->
+              hooks_for_component = Map.get(acc, name, [])
+              Map.put(acc, name, [hook | hooks_for_component])
+
+            {name, hooks}, acc when is_list(hooks) ->
+              hooks_for_component = Map.get(acc, name, [])
+              Map.put(acc, name, hooks ++ hooks_for_component)
+          end)
+    }
+  end
+
+  # def attach_hook(%__MODULE__{} = workflow, hook, to: component_name) when is_function(hook, 3) do
+  #   %__MODULE__{
+  #     workflow
+  #     | hooks: Map.put(workflow.hooks, component_name, hook)
+  #   }
+  # end
+
+  defp run_before_hooks(%__MODULE__{} = workflow, %{name: name} = step, input_fact) do
+    case Map.get(workflow.before_hooks, name) do
+      nil ->
+        workflow
+
+      hooks ->
+        Enum.reduce(hooks, workflow, fn hook, wrk -> hook.(step, wrk, input_fact) end)
+    end
+  end
+
+  defp run_before_hooks(%__MODULE__{} = workflow, _step, _input_fact), do: workflow
+
+  def run_after_hooks(%__MODULE__{} = workflow, %{name: name} = step, output_fact) do
+    case Map.get(workflow.after_hooks, name) do
+      nil ->
+        workflow
+
+      hooks ->
+        Enum.reduce(hooks, workflow, fn hook, wrk -> hook.(step, wrk, output_fact) end)
+    end
+  end
+
+  def run_after_hooks(%__MODULE__{} = workflow, _step, _input_fact), do: workflow
 
   # def remove_component(%__MODULE__{} = workflow, component_name) do
   #   component = get_component(workflow, component_name)
@@ -528,7 +598,7 @@ defmodule Runic.Workflow do
   """
   def react(%__MODULE__{generations: generations} = wrk) when generations > 0 do
     Enum.reduce(next_runnables(wrk), wrk, fn {node, fact}, wrk ->
-      Invokable.invoke(node, wrk, fact)
+      invoke(wrk, node, fact)
     end)
   end
 
@@ -548,7 +618,7 @@ defmodule Runic.Workflow do
     |> Workflow.reactions()
   """
   def react(%__MODULE__{} = wrk, %Fact{ancestry: nil} = fact) do
-    react(Invokable.invoke(root(), wrk, fact))
+    react(invoke(wrk, root(), fact))
   end
 
   def react(%__MODULE__{} = wrk, raw_fact) do
@@ -587,7 +657,7 @@ defmodule Runic.Workflow do
   defp do_react_until_satisfied(%__MODULE__{} = workflow, true = _is_runnable?) do
     workflow =
       Enum.reduce(next_runnables(workflow), workflow, fn {node, fact} = _runnable, wrk ->
-        Invokable.invoke(node, wrk, fact)
+        invoke(wrk, node, fact)
       end)
 
     do_react_until_satisfied(workflow, is_runnable?(workflow))
@@ -626,7 +696,7 @@ defmodule Runic.Workflow do
   available.
   """
   def plan(%__MODULE__{} = wrk, %Fact{} = fact) do
-    Invokable.invoke(root(), wrk, fact)
+    invoke(wrk, root(), fact)
   end
 
   def plan(%__MODULE__{} = wrk, raw_fact) do
@@ -641,7 +711,7 @@ defmodule Runic.Workflow do
     |> maybe_prepare_next_generation_from_state_accumulations()
     |> next_match_runnables()
     |> Enum.reduce(wrk, fn {node, fact}, wrk ->
-      Invokable.invoke(node, wrk, fact)
+      invoke(wrk, node, fact)
     end)
   end
 
@@ -674,8 +744,8 @@ defmodule Runic.Workflow do
          _any_match_phase_runnables? = true
        ) do
     Enum.reduce(next_match_runnables, wrk, fn {node, fact}, wrk ->
-      node
-      |> Invokable.invoke(wrk, fact)
+      wrk
+      |> invoke(node, fact)
       |> activate_through_possible_matches()
     end)
   end
@@ -686,6 +756,11 @@ defmodule Runic.Workflow do
          _any_match_phase_runnables? = false
        ) do
     wrk
+  end
+
+  def invoke(%__MODULE__{} = wrk, step, fact) do
+    wrk = run_before_hooks(wrk, step, fact)
+    Invokable.invoke(step, wrk, fact)
   end
 
   defp any_match_phase_runnables?(%__MODULE__{graph: graph, generations: generation}) do
