@@ -858,10 +858,99 @@ defmodule WorkflowTest do
       assert {:messages, [:before, :after]} = Process.info(self(), :messages)
     end
 
-    test "can add additional steps and runnables to a workflow after a step has been run in order to continue a computation" do
+    test "multiple hooks can run for a step" do
+      wrk =
+        Runic.workflow(
+          name: "continuation test",
+          steps: [
+            Runic.step(fn num -> Enum.map(0..3, fn _ -> num end) end, name: :step_1)
+          ],
+          before_hooks: [
+            step_1: [
+              fn _step, wrk, _fact ->
+                send(self(), :before_1)
+                wrk
+              end,
+              fn _step, wrk, _fact ->
+                send(self(), :before_2)
+                wrk
+              end
+            ]
+          ],
+          after_hooks: [
+            step_1: [
+              fn _step, wrk, _fact ->
+                send(self(), :after_1)
+                wrk
+              end,
+              fn _step, wrk, _fact ->
+                send(self(), :after_2)
+                wrk
+              end
+            ]
+          ]
+        )
+
+      ran_wrk = Workflow.react_until_satisfied(wrk, 2)
+
+      assert {:messages, [:before_1, :before_2, :after_1, :after_2]} =
+               Process.info(self(), :messages)
     end
 
-    test "continuations aren't present for separate generation / external fact" do
+    test "hooks can be added to a workflow after it has been created" do
+      wrk =
+        Runic.workflow(
+          name: "continuation test",
+          steps: [
+            Runic.step(fn num -> Enum.map(0..3, fn _ -> num end) end, name: :step_1)
+          ]
+        )
+
+      wrk =
+        Workflow.attach_before_hook(
+          wrk,
+          :step_1,
+          fn _step, wrk, _fact ->
+            send(self(), :before)
+            wrk
+          end
+        )
+
+      wrk =
+        Workflow.attach_after_hook(
+          wrk,
+          :step_1,
+          fn _step, wrk, _fact ->
+            send(self(), :after)
+            wrk
+          end
+        )
+
+      ran_wrk = Workflow.react_until_satisfied(wrk, 2)
+
+      assert {:messages, [:before, :after]} = Process.info(self(), :messages)
+    end
+
+    test "can add additional steps and runnables to a workflow after a step has been run in order to continue a computation" do
+      wrk =
+        Runic.workflow(
+          name: "continuation test",
+          steps: [
+            Runic.step(fn num -> num + 1 end, name: :step_1)
+          ],
+          after_hooks: [
+            step_1: [
+              fn _step, wrk, _fact ->
+                wrk
+                |> Workflow.add(Runic.step(fn num -> num + 2 end), to: :step_1)
+              end
+            ]
+          ]
+        )
+
+      ran_wrk = Workflow.react_until_satisfied(wrk, 2)
+
+      assert Enum.count(Workflow.reactions(ran_wrk)) == 3
     end
   end
 end

@@ -109,7 +109,7 @@ defmodule Runic.Workflow do
           Enum.reduce(hooks, workflow.before_hooks, fn
             {name, hook}, acc when is_function(hook, 3) ->
               hooks_for_component = Map.get(acc, name, [])
-              Map.put(acc, name, [hook | hooks_for_component])
+              Map.put(acc, name, Enum.reverse([hook | hooks_for_component]))
 
             {name, hooks}, acc when is_list(hooks) ->
               hooks_for_component = Map.get(acc, name, [])
@@ -127,7 +127,7 @@ defmodule Runic.Workflow do
           Enum.reduce(hooks, workflow.after_hooks, fn
             {name, hook}, acc when is_function(hook, 3) ->
               hooks_for_component = Map.get(acc, name, [])
-              Map.put(acc, name, [hook | hooks_for_component])
+              Map.put(acc, name, Enum.reverse([hook | hooks_for_component]))
 
             {name, hooks}, acc when is_list(hooks) ->
               hooks_for_component = Map.get(acc, name, [])
@@ -136,12 +136,35 @@ defmodule Runic.Workflow do
     }
   end
 
-  # def attach_hook(%__MODULE__{} = workflow, hook, to: component_name) when is_function(hook, 3) do
-  #   %__MODULE__{
-  #     workflow
-  #     | hooks: Map.put(workflow.hooks, component_name, hook)
-  #   }
-  # end
+  def attach_before_hook(%__MODULE__{} = workflow, component_name, hook)
+      when is_function(hook, 3) do
+    hooks_for_component = Map.get(workflow.before_hooks, component_name, [])
+
+    %__MODULE__{
+      workflow
+      | before_hooks:
+          Map.put(
+            workflow.before_hooks,
+            component_name,
+            Enum.reverse([hook | hooks_for_component])
+          )
+    }
+  end
+
+  def attach_after_hook(%__MODULE__{} = workflow, component_name, hook)
+      when is_function(hook, 3) do
+    hooks_for_component = Map.get(workflow.after_hooks, component_name, [])
+
+    %__MODULE__{
+      workflow
+      | after_hooks:
+          Map.put(
+            workflow.after_hooks,
+            component_name,
+            Enum.reverse([hook | hooks_for_component])
+          )
+    }
+  end
 
   defp run_before_hooks(%__MODULE__{} = workflow, %{name: name} = step, input_fact) do
     case Map.get(workflow.before_hooks, name) do
