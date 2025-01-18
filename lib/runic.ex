@@ -73,32 +73,6 @@ defmodule Runic do
     Runic.Transmutable.transmute(component)
   end
 
-  @doc """
-  Retrieves a sub component by name of the given kind allowing it to be connected to another component in a workflow.
-
-  ## Examples
-
-  ```elixir
-
-  iex> Runic.component_of(workflow, :my_state_machine, :reducer)
-
-  > %Accumulator{}
-
-  iex> Runic.component_of(workflow, :my_map, :fan_out)
-
-  > %FanOut{}
-
-  iex> Runic.component_of(workflow, :my_map, :leafs)
-
-  > [%Step{}, %Step{}]
-  ```
-  """
-  def component_of(workflow, component_name, kind) do
-    workflow
-    |> Runic.Workflow.get_component(component_name)
-    |> Runic.Component.get_component(kind)
-  end
-
   def workflow(opts \\ []) do
     name = opts[:name]
     steps = opts[:steps]

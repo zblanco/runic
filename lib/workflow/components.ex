@@ -44,6 +44,8 @@ defmodule Runic.Workflow.Components do
 
   def arity_of(args) when is_list(args), do: length(args)
 
+  def arity_of(%{work: work}), do: arity_of(work)
+
   def arity_of(_term), do: 1
 
   def is_of_arity?(arity) do

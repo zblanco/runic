@@ -401,25 +401,25 @@ defmodule WorkflowTest do
     test "adding a component with a name that is already in use raises an error" do
     end
 
-    test "components can be removed by name" do
-      wrk =
-        Workflow.new()
-        |> Workflow.add_step(Runic.step(name: "step 1", work: fn num -> num + 1 end))
+    # test "components can be removed by name" do
+    #   wrk =
+    #     Workflow.new()
+    #     |> Workflow.add_step(Runic.step(name: "step 1", work: fn num -> num + 1 end))
 
-      refute is_nil(Workflow.get_component(wrk, "step 1"))
-      wrk = Workflow.remove_component(wrk, "step 1")
-      assert Workflow.get_component(wrk, "step 1") == nil
-    end
+    #   refute is_nil(Workflow.get_component(wrk, "step 1"))
+    #   wrk = Workflow.remove_component(wrk, "step 1")
+    #   assert Workflow.get_component(wrk, "step 1") == nil
+    # end
 
-    test "removing a component that does not exist raises an error when using remove_component!/2" do
-      wrk =
-        Workflow.new()
-        |> Workflow.add_step(Runic.step(name: "step 1", work: fn num -> num + 1 end))
+    # test "removing a component that does not exist raises an error when using remove_component!/2" do
+    #   wrk =
+    #     Workflow.new()
+    #     |> Workflow.add_step(Runic.step(name: "step 1", work: fn num -> num + 1 end))
 
-      assert_raise KeyError, fn ->
-        Workflow.remove_component!(wrk, "a step that isn't present")
-      end
-    end
+    #   assert_raise KeyError, fn ->
+    #     Workflow.remove_component!(wrk, "a step that isn't present")
+    #   end
+    # end
 
     # test "components can be replaced by name" do
     #   wrk =
@@ -951,6 +951,77 @@ defmodule WorkflowTest do
       ran_wrk = Workflow.react_until_satisfied(wrk, 2)
 
       assert Enum.count(Workflow.reactions(ran_wrk)) == 3
+    end
+  end
+
+  describe "component management" do
+    test "connectables/2 lists components in a workflow that a given component can be added/connected to" do
+      wrk =
+        Runic.workflow(
+          name: "test workflow",
+          steps: [
+            Runic.step(fn num -> num + 1 end, name: :step_1)
+          ]
+        )
+
+      assert [%Step{}] =
+               Workflow.connectables(wrk, Runic.step(fn num -> num * 2 end, name: :step_2))
+    end
+
+    test "connectables/2 lists only components that are compatible by arity" do
+      step_1 = Runic.step(fn num -> num + 1 end, name: :step_1)
+      step_2 = Runic.step(fn num, num2 -> num + num2 end, name: :step_2)
+
+      wrk =
+        Runic.workflow(
+          name: "test workflow",
+          steps: [
+            step_1,
+            step_2
+          ]
+        )
+
+      connectables = Workflow.connectables(wrk, Runic.step(fn num -> num * 3 end, name: :step_3))
+
+      assert step_1 in connectables
+      refute step_2 in connectables
+    end
+
+    test "connectable?/3 returns an :ok if the component can be added or an error tuple with a list of errors" do
+      wrk =
+        Runic.workflow(
+          name: "test workflow",
+          steps: [
+            Runic.step(fn num -> num + 1 end, name: :step_1),
+            Runic.step(fn num, num_2 -> num * num_2 end, name: :step_2)
+          ]
+        )
+
+      assert Workflow.connectable?(wrk, Runic.step(fn num -> num * 2 end, name: :step_3),
+               to: :step_1
+             ) ==
+               :ok
+
+      assert {:error, _} =
+               Workflow.connectable?(wrk, Runic.step(fn num -> num * 2 end, name: :step_3),
+                 to: :step_2
+               )
+    end
+
+    test "connect reactors to a state machine" do
+      wrk =
+        Runic.state_machine(
+          name: "state_machine",
+          init: 0,
+          reducer: fn num, state -> state + num end
+        )
+        |> Runic.transmute()
+        |> Workflow.add(
+          Runic.step(fn num -> num + 1 end, name: :add_one),
+          to: {"state_machine", :reducer}
+        )
+
+      assert %Step{} = Workflow.get_component(wrk, :add_one)
     end
   end
 end

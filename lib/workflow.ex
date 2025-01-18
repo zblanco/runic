@@ -100,6 +100,56 @@ defmodule Runic.Workflow do
     |> maybe_put_component(component)
   end
 
+  def components(%__MODULE__{} = workflow) do
+    workflow.components
+  end
+
+  def connectables(%__MODULE__{graph: g} = _wrk, %{} = step) do
+    impls =
+      case Component.__protocol__(:impls) do
+        :not_consolidated -> []
+        {:consolidated, impls} -> impls
+      end
+
+    arity = Components.arity_of(step)
+
+    g
+    |> Graph.vertices()
+    |> Enum.filter(fn %{__struct__: module} = v ->
+      v_arity = Components.arity_of(v)
+
+      module in impls and
+        v_arity == arity
+    end)
+  end
+
+  def connectable?(wrk, component, to: component_name) do
+    with {:ok, added_to} <- fetch_component(wrk, component_name),
+         :ok <- arity_match(component, added_to),
+         true <- Component.connectable?(component, added_to) do
+      :ok
+    else
+      false -> {:error, :not_connectable}
+      otherwise -> otherwise
+    end
+  end
+
+  def connectable?(wrk, component, []) do
+    connectable?(wrk, component)
+  end
+
+  def connectable?(_wrk, _component) do
+    true
+  end
+
+  defp arity_match(component, add_to_component) do
+    if Components.arity_of(component) == Components.arity_of(add_to_component) do
+      :ok
+    else
+      {:error, :arity_mismatch}
+    end
+  end
+
   def add_before_hooks(%__MODULE__{} = workflow, nil), do: workflow
 
   def add_before_hooks(%__MODULE__{} = workflow, hooks) do
@@ -395,6 +445,39 @@ defmodule Runic.Workflow do
     g.vertices |> Map.get(hash)
   end
 
+  @doc """
+  Retrieves a sub component by name of the given kind allowing it to be connected to another component in a workflow.
+
+  ## Examples
+
+  ```elixir
+
+  iex> Runic.Workflow.component_of(workflow, :my_state_machine, :reducer)
+
+  > %Accumulator{}
+
+  iex> Runic.Workflow.component_of(workflow, :my_map, :fan_out)
+
+  > %FanOut{}
+
+  iex> Runic.Workflow.component_of(workflow, :my_map, :leafs)
+
+  > [%Step{}, %Step{}]
+  ```
+  """
+  def component_of(workflow, component_name, kind) do
+    workflow
+    |> get_component(component_name)
+    |> Component.get_component(kind)
+  end
+
+  def get_component(
+    %__MODULE__{components: components},
+    {component_name, subcomponent_kind_or_name}) do
+    component = Map.get(components, component_name)
+    Component.get_component(component, subcomponent_kind_or_name)
+  end
+
   def get_component(%__MODULE__{components: components}, %{name: name}) do
     Map.get(components, name)
   end
@@ -409,6 +492,10 @@ defmodule Runic.Workflow do
 
   def get_component!(wrk, name) do
     get_component(wrk, name) || raise(KeyError, "No component found with name #{name}")
+  end
+
+  def fetch_component(%__MODULE__{} = wrk, %{name: name}) do
+    fetch_component(wrk, name)
   end
 
   def fetch_component(%__MODULE__{components: components}, name) do
@@ -942,8 +1029,12 @@ defmodule Runic.Workflow do
     # we need to access the subset of an accumulator's match nodes quickly and without iteration over irrelevant flowables
   end
 
-  defp stateful_matching_impls,
-    do: Runic.Workflow.StatefulMatching.__protocol__(:impls) |> elem(1)
+  defp stateful_matching_impls do
+    case Runic.Workflow.StatefulMatching.__protocol__(:impls) do
+      {:consolidated, impls} -> impls
+      :not_consolidated -> []
+    end
+  end
 
   @spec prepare_next_generation(Workflow.t(), Fact.t() | list(Fact.t())) :: Workflow.t()
   @doc false
@@ -1030,13 +1121,4 @@ defmodule Runic.Workflow do
       :execute -> :runnable
     end
   end
-
-  # def component_of(
-  #       %__MODULE__{} = wrk,
-  #       parent_component_name,
-  #       sub_component
-  #     )
-  #     when sub_component in @sub_components do
-  #   Map.get(wrk.components, parent_component_name)
-  # end
 end
