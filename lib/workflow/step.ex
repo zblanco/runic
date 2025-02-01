@@ -3,7 +3,7 @@ defmodule Runic.Workflow.Step do
   alias Runic.Workflow.Fact
   alias Runic.Workflow.Components
 
-  defstruct [:name, :work, :hash]
+  defstruct [:name, :work, :hash, :source]
 
   def new(params) do
     struct!(__MODULE__, params)

@@ -615,8 +615,6 @@ defmodule WorkflowTest do
         )
 
       wrk = Workflow.react_until_satisfied(wrk, 1)
-
-      dbg(Workflow.raw_productions(wrk))
     end
 
     test "steps in a map pipeline can have names" do
@@ -653,8 +651,6 @@ defmodule WorkflowTest do
         )
 
       wrk = Workflow.react_until_satisfied(wrk, 2)
-
-      dbg(Workflow.raw_productions(wrk))
     end
 
     test "map pipelines can include nested map expressions" do

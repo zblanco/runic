@@ -25,6 +25,11 @@ defprotocol Runic.Component do
 
   def connect(component, to, workflow)
 
+  @doc """
+  Returns the source AST for building a component.
+  """
+  def source(component)
+
   # def remove(component, workflow)
 end
 
@@ -75,6 +80,10 @@ defimpl Runic.Component, for: Runic.Workflow.Map do
 
   def connectable?(_component, _other_component) do
     true
+  end
+
+  def source(%Runic.Workflow.Map{source: source}) do
+    source
   end
 
   # def remove(%Runic.Workflow.Map{pipeline: map_wrk} = map, workflow) do
@@ -165,6 +174,10 @@ defimpl Runic.Component, for: Runic.Workflow.Reduce do
       _otherwise -> false
     end
   end
+
+  def source(reduce) do
+    reduce.source
+  end
 end
 
 defimpl Runic.Component, for: Runic.Workflow.Step do
@@ -200,6 +213,10 @@ defimpl Runic.Component, for: Runic.Workflow.Step do
   def connectable?(_step, _other_component) do
     true
   end
+
+  def source(step) do
+    step.source
+  end
 end
 
 defimpl Runic.Component, for: Runic.Workflow.Rule do
@@ -232,6 +249,10 @@ defimpl Runic.Component, for: Runic.Workflow.Rule do
       %Workflow{} -> true
       _otherwise -> false
     end
+  end
+
+  def source(rule) do
+    rule.source
   end
 end
 
@@ -266,5 +287,9 @@ defimpl Runic.Component, for: Runic.Workflow.StateMachine do
 
   def connectable?(_state_machine, _other_component) do
     true
+  end
+
+  def source(state_machine) do
+    state_machine.source
   end
 end

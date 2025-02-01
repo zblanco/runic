@@ -39,26 +39,68 @@ defmodule Runic do
   A Step implements the Runic.Workflow.Activation, and Runic.Workflow.Component protocols
   to be composable and possible to evaluate at runtime with inputs.
   """
-  def step(opts \\ [])
+  defmacro step({:fn, _, _} = work) do
+    source =
+      quote do
+        Runic.step(unquote(work))
+      end
 
-  def step(work) when is_function(work) do
-    step(work: work)
+    quote do
+      Step.new(
+        work: unquote(work),
+        source: unquote(Macro.escape(source)),
+        hash: unquote(Components.fact_hash(work))
+      )
+    end
   end
 
-  def step(opts) when is_list(opts) do
-    Step.new(opts)
+  defmacro step({:&, _, _} = work) do
+    source =
+      quote do
+        Runic.step(unquote(work))
+      end
+
+    quote do
+      Step.new(
+        work: unquote(work),
+        source: unquote(Macro.escape(source)),
+        hash: unquote(Components.fact_hash(work))
+      )
+    end
   end
 
-  def step(opts) when is_map(opts) do
-    Step.new(opts)
+  defmacro step(opts) when is_list(opts) or is_map(opts) do
+    work = opts[:work]
+
+    source =
+      quote do
+        Runic.step(unquote(opts))
+      end
+
+    quote do
+      Step.new(
+        work: unquote(work),
+        source: unquote(Macro.escape(source)),
+        name: unquote(opts[:name]),
+        hash: unquote(Components.fact_hash(work))
+      )
+    end
   end
 
-  def step(work, opts) when is_function(work) do
-    Step.new(Keyword.merge([work: work], opts))
-  end
+  defmacro step(work, opts) do
+    source =
+      quote do
+        Runic.step(unquote(work), unquote(opts))
+      end
 
-  def step({m, f, a} = work, opts) when is_atom(m) and is_atom(f) and is_integer(a) do
-    Step.new(Keyword.merge([work: work], opts))
+    quote do
+      Step.new(
+        work: unquote(work),
+        source: unquote(Macro.escape(source)),
+        name: unquote(opts[:name]),
+        hash: unquote(Components.fact_hash(work))
+      )
+    end
   end
 
   def condition(fun) when is_function(fun) do
@@ -95,11 +137,17 @@ defmodule Runic do
 
     workflow = workflow_of_rule({condition, reaction}, arity)
 
+    source =
+      quote do
+        Runic.rule(unquote(opts))
+      end
+
     quote do
       %Rule{
         expression: unquote({Macro.escape(condition), Macro.escape(reaction)}),
         arity: unquote(arity),
-        workflow: unquote(workflow)
+        workflow: unquote(workflow),
+        source: unquote(Macro.escape(source))
       }
     end
   end
@@ -109,15 +157,22 @@ defmodule Runic do
 
     workflow = workflow_of_rule(expression, arity)
 
+    source =
+      quote do
+        Runic.rule(unquote(expression))
+      end
+
     quote bind_quoted: [
             expression: Macro.escape(expression),
             arity: arity,
-            workflow: workflow
+            workflow: workflow,
+            source: Macro.escape(source)
           ] do
       %Rule{
         arity: arity,
         workflow: workflow,
-        expression: expression
+        expression: expression,
+        source: source
       }
     end
   end
@@ -129,17 +184,24 @@ defmodule Runic do
 
     workflow = workflow_of_rule(expression, arity)
 
+    source =
+      quote do
+        Runic.rule(unquote(expression), unquote(opts))
+      end
+
     quote bind_quoted: [
             name: name,
             expression: Macro.escape(expression),
             arity: arity,
-            workflow: workflow
+            workflow: workflow,
+            source: Macro.escape(source)
           ] do
       %Rule{
         name: name,
         arity: arity,
         workflow: workflow,
-        expression: expression
+        expression: expression,
+        source: source
       }
     end
   end
@@ -157,13 +219,19 @@ defmodule Runic do
 
     workflow = workflow_of_state_machine(init, reducer, reactors, name)
 
+    source =
+      quote do
+        Runic.state_machine(unquote(opts))
+      end
+
     quote do
       %StateMachine{
         name: unquote(name),
         init: unquote(init),
         reducer: unquote(reducer),
         reactors: unquote(reactors),
-        workflow: unquote(workflow) |> Map.put(:name, unquote(name))
+        workflow: unquote(workflow) |> Map.put(:name, unquote(name)),
+        source: unquote(Macro.escape(source))
       }
     end
   end
@@ -208,6 +276,11 @@ defmodule Runic do
     pipeline_graph_of_ast =
       pipeline_graph_of_map_expression(expression, name)
 
+    source =
+      quote do
+        Runic.map(unquote(expression), unquote(opts))
+      end
+
     map_pipeline =
       quote do
         unquote(
@@ -233,7 +306,8 @@ defmodule Runic do
       %Runic.Workflow.Map{
         name: unquote(name),
         pipeline: unquote(map_pipeline),
-        hash: unquote(Components.fact_hash({expression, name}))
+        hash: unquote(Components.fact_hash({expression, name})),
+        source: unquote(Macro.escape(source))
       }
       |> Runic.Workflow.Map.build_named_components()
     end
@@ -304,6 +378,11 @@ defmodule Runic do
 
     name = opts[:name]
 
+    source =
+      quote do
+        Runic.reduce(unquote(acc), unquote(reducer_fun), unquote(opts))
+      end
+
     quote do
       hash = unquote(Components.fact_hash({acc, reducer_fun}))
 
@@ -315,7 +394,8 @@ defmodule Runic do
           init: fn -> unquote(acc) end,
           reducer: unquote(reducer_fun),
           hash: hash
-        }
+        },
+        source: unquote(Macro.escape(source))
       }
     end
   end

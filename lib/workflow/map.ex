@@ -5,7 +5,7 @@ defmodule Runic.Workflow.Map do
   Map just splits input facts - separate steps as defined in the map expression will do the processing.
   """
   alias Runic.Workflow.FanOut
-  defstruct [:hash, :name, :pipeline, :components]
+  defstruct [:hash, :name, :pipeline, :components, :source]
 
   # def build_named_components(%__MODULE__{pipeline: pipeline} = map) do
   #   %__MODULE__{map | components: named_steps(pipeline, %{})}

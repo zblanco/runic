@@ -4,7 +4,8 @@ defmodule Runic.Workflow.Rule do
   defstruct name: nil,
             arity: nil,
             workflow: nil,
-            expression: nil
+            expression: nil,
+            source: nil
 
   @typedoc """
   A rule.
@@ -13,7 +14,8 @@ defmodule Runic.Workflow.Rule do
           name: String.t(),
           arity: arity(),
           workflow: Workflow.t(),
-          expression: expression()
+          expression: expression(),
+          source: tuple()
         }
 
   @typedoc """
