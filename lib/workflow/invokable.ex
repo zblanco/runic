@@ -8,6 +8,12 @@ defprotocol Runic.Workflow.Invokable do
   """
   def invoke(node, workflow, fact)
   def match_or_execute(node)
+
+  # replay reduces facts into a workflow to rebuild the workflow's memory from a log
+  # in contrast to invoke which receives a runnable; replay instead accepts the fact produced by the parent
+  # i.e. the fact ancestry hash == node.hash
+  # this lets the protocol know what edges to draw in the workflow memory
+  def replay(node, workflow, fact)
 end
 
 defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Root do

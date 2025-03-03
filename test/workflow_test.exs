@@ -184,6 +184,8 @@ defmodule WorkflowTest do
         join_with_1_dependency
         |> Workflow.plan_eagerly(2)
 
+      dbg(j_1.graph, structs: false)
+
       assert Enum.count(Workflow.next_runnables(j_1)) == 2
 
       j_1_runnables_after_reaction =
@@ -1018,6 +1020,37 @@ defmodule WorkflowTest do
         )
 
       assert %Step{} = Workflow.get_component(wrk, :add_one)
+    end
+  end
+
+  describe "log based workflow reconstruction for encode/decode" do
+    test "a workflow can be encoded and decoded from a log" do
+      # event to rebuild workflow: component_added
+      # event to rebuild workflow state: fact_produced
+      wrk =
+        Runic.workflow(
+          name: "test workflow",
+          steps: [
+            Runic.step(fn num -> num + 1 end, name: :step_1),
+            Runic.step(fn num, num_2 -> num * num_2 end, name: :step_2)
+          ]
+        )
+
+      build_log = Workflow.build_log(wrk)
+      # log of JSON/binary encodeable structs e.g. `[%WorkflowComponentAdded{}, ...]`
+
+      # rebuild just the workflow steps from log
+      built_wrk = Workflow.from_log(build_log)
+
+      assert %Workflow{} = built_wrk
+
+      assert Enum.empty?(Workflow.facts(built_wrk))
+
+      ran_wrk = Workflow.react_until_satisfied(wrk, 2)
+
+      build_and_execution_log = Workflow.log(wrk)
+
+      refute Enum.empty?(Workflow.facts(build_and_execution_log))
     end
   end
 end

@@ -36,6 +36,7 @@ defmodule Runic.Workflow do
   alias Runic.Workflow.FanIn
   alias Runic.Workflow.Join
   alias Runic.Workflow.Invokable
+  alias Runic.Workflow.ComponentAdded
 
   @type t() :: %__MODULE__{
           name: String.t(),
@@ -82,7 +83,10 @@ defmodule Runic.Workflow do
   end
 
   defp new_graph do
-    Graph.new(vertex_identifier: &Components.vertex_id_of/1)
+    Graph.new(
+      vertex_identifier: &Components.vertex_id_of/1,
+      multigraph: true
+    )
     |> Graph.add_vertex(root(), :root)
   end
 
@@ -98,6 +102,40 @@ defmodule Runic.Workflow do
     component
     |> Component.connect(parent_step, workflow)
     |> maybe_put_component(component)
+  end
+
+  @doc """
+  Returns a list of serializeable `%ComponentAdded{}` events that can be used to rebuild the workflow using `from_log/1`.
+
+  ## Examples
+
+  ```elixir
+  iex> workflow = Workflow.new()
+  iex> workflow = Workflow.add(workflow, %Step{})
+  iex> Workflow.build_log(workflow)
+  > [%ComponentAdded{component: %Step{}}]
+  ```
+  """
+  def build_log(wrk) do
+    []
+  end
+
+  @doc """
+  Rebuilds a workflow from a list of `%ComponentAdded{}` and/or `%Fact{}` events.
+  """
+  def from_log(events) do
+    Enum.reduce(events, new(), fn
+      %ComponentAdded{source: source, to: to}, wrk ->
+        {component, _binding} = Code.eval_quoted(source)
+        add(wrk, component, to: to)
+
+      %Fact{} = fact, wrk ->
+        log_fact(wrk, fact)
+    end)
+  end
+
+  def log(wrk) do
+    build_log(wrk)
   end
 
   def components(%__MODULE__{} = workflow) do
@@ -472,8 +510,9 @@ defmodule Runic.Workflow do
   end
 
   def get_component(
-    %__MODULE__{components: components},
-    {component_name, subcomponent_kind_or_name}) do
+        %__MODULE__{components: components},
+        {component_name, subcomponent_kind_or_name}
+      ) do
     component = Map.get(components, component_name)
     Component.get_component(component, subcomponent_kind_or_name)
   end
@@ -513,7 +552,7 @@ defmodule Runic.Workflow do
   end
 
   def next_steps(%Graph{} = g, parent_step) do
-    for e <- Graph.out_edges(g, parent_step), e.label == :flow, do: e.v2
+    for e <- Graph.out_edges(g, parent_step, by: :flow), do: e.v2
   end
 
   @doc """
@@ -645,8 +684,7 @@ defmodule Runic.Workflow do
 
   @doc false
   def satisfied_condition_hashes(%__MODULE__{graph: graph}, %Fact{} = fact) do
-    for %Graph.Edge{} = edge <- Graph.out_edges(graph, fact),
-        edge.label == :satisfied,
+    for %Graph.Edge{} = edge <- Graph.out_edges(graph, fact, by: :satisfied),
         do: edge.v2.hash
   end
 
@@ -665,24 +703,27 @@ defmodule Runic.Workflow do
   Returns raw (output value) side effects of the workflow - i.e. facts resulting from the execution of a Runic.Step
   """
   def reactions(%__MODULE__{graph: graph}) do
-    for %Graph.Edge{} = edge <- Graph.edges(graph),
-        edge.label in [:produced, :ran] and
-          (match?(%Fact{}, edge.v1) or match?(%Fact{}, edge.v2)),
+    for %Graph.Edge{} = edge <-
+          Graph.edges(
+            graph,
+            by: [:produced, :ran],
+            where: fn edge -> match?(%Fact{}, edge.v1) or match?(%Fact{}, edge.v2) end
+          ),
         uniq: true do
       if(match?(%Fact{}, edge.v1), do: edge.v1, else: edge.v2)
     end
   end
 
   def productions(%__MODULE__{graph: graph}) do
-    for %Graph.Edge{} = edge <- Graph.edges(graph),
-        edge.label in ~w(produced state_produced state_initiated reduced)a do
+    for %Graph.Edge{} = edge <-
+          Graph.edges(graph, by: [:produced, :state_produced, :state_initiated, :reduced]) do
       edge.v2
     end
   end
 
   def raw_productions(%__MODULE__{graph: graph}) do
-    for %Graph.Edge{} = edge <- Graph.edges(graph),
-        edge.label in ~w(produced state_produced state_initiated reduced)a do
+    for %Graph.Edge{} = edge <-
+          Graph.edges(graph, by: [:produced, :state_produced, :state_initiated, :reduced]) do
       edge.v2.value
     end
   end
@@ -697,8 +738,7 @@ defmodule Runic.Workflow do
 
   @doc false
   def matches(%__MODULE__{graph: graph}) do
-    for %Graph.Edge{} = edge <- Graph.edges(graph),
-        edge.label == :matchable or edge.label == :satisfied do
+    for %Graph.Edge{} = edge <- Graph.edges(graph, by: [:matchable, :satisfied]) do
       edge.v2
     end
   end
@@ -876,27 +916,21 @@ defmodule Runic.Workflow do
   defp any_match_phase_runnables?(%__MODULE__{graph: graph, generations: generation}) do
     generation_fact = fact_for_generation(graph, generation)
 
-    graph
-    |> Graph.out_edges(generation_fact)
-    |> Enum.any?(fn edge ->
-      edge.label == :matchable
-    end)
+    not Enum.empty?(Graph.out_edges(graph, generation_fact, by: :matchable))
   end
 
   defp next_match_runnables(%__MODULE__{graph: graph, generations: generation}) do
     current_generation_facts = facts_for_generation(graph, generation)
 
     Enum.flat_map(current_generation_facts, fn current_generation_fact ->
-      for %Graph.Edge{} = edge <- Graph.edges(graph),
-          edge.label == :matchable do
+      for %Graph.Edge{} = edge <- Graph.edges(graph, by: :matchable) do
         {edge.v2, current_generation_fact}
       end
     end)
   end
 
   defp fact_for_generation(graph, generation) do
-    for %Graph.Edge{} = edge <- Graph.in_edges(graph, generation),
-        edge.label == :generation do
+    for %Graph.Edge{} = edge <- Graph.in_edges(graph, generation, by: :generation) do
       edge.v1
     end
     |> List.first()
@@ -909,11 +943,7 @@ defmodule Runic.Workflow do
 
   @spec is_runnable?(Runic.Workflow.t()) :: boolean()
   def is_runnable?(%__MODULE__{graph: graph}) do
-    graph
-    |> Graph.edges()
-    |> Enum.any?(fn edge ->
-      edge.label == :runnable
-    end)
+    not Enum.empty?(Graph.edges(graph, by: :runnable))
   end
 
   @doc """
@@ -923,8 +953,7 @@ defmodule Runic.Workflow do
   without wait or delays to get the same results.
   """
   def next_runnables(%__MODULE__{graph: graph}) do
-    for %Graph.Edge{} = edge <- Graph.edges(graph),
-        edge.label == :runnable do
+    for %Graph.Edge{} = edge <- Graph.edges(graph, by: :runnable) do
       {edge.v2, edge.v1}
     end
   end
@@ -948,15 +977,13 @@ defmodule Runic.Workflow do
       |> Enum.map(& &1.hash)
 
     for %Graph.Edge{} = edge <-
-          Enum.flat_map(next_step_hashes, &Graph.out_edges(wrk.graph, &1)),
-        edge.label == :runnable do
+          Enum.flat_map(next_step_hashes, &Graph.out_edges(wrk.graph, &1, by: :runnable)) do
       {Map.get(wrk.graph.vertices, edge.v2), edge.v1}
     end
   end
 
   def next_runnables(%__MODULE__{graph: graph}, raw_fact) do
-    for %Graph.Edge{} = edge <- Graph.out_edges(graph, root()),
-        edge.label == :flow do
+    for %Graph.Edge{} = edge <- Graph.out_edges(graph, root(), by: :flow) do
       {edge.v1, Fact.new(value: raw_fact)}
     end
   end
@@ -976,10 +1003,8 @@ defmodule Runic.Workflow do
        ) do
     # we need the last state produced fact for all accumulators from the current generation
     state_produced_facts_by_ancestor =
-      for generation_edge <- Graph.out_edges(graph, generation),
-          generation_edge.label == :generation do
-        for connection <- Graph.in_edges(graph, generation_edge.v2),
-            connection.label == :state_produced do
+      for generation_edge <- Graph.out_edges(graph, generation, by: :generation) do
+        for connection <- Graph.in_edges(graph, generation_edge.v2, by: :state_produced) do
           connection.v2
         end
       end
