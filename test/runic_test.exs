@@ -95,7 +95,6 @@ defmodule RunicTest do
       end
 
       dynamic_rule = builder.([:potato, :ham, :tomato])
-
       assert match?(%Rule{}, dynamic_rule)
       assert Rule.check(dynamic_rule, :potato)
       refute Rule.check(dynamic_rule, :yam)

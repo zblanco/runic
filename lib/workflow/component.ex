@@ -30,6 +30,8 @@ defprotocol Runic.Component do
   """
   def source(component)
 
+  def hash(component)
+
   # def remove(component, workflow)
 end
 
@@ -84,6 +86,10 @@ defimpl Runic.Component, for: Runic.Workflow.Map do
 
   def source(%Runic.Workflow.Map{source: source}) do
     source
+  end
+
+  def hash(map) do
+    map.hash
   end
 
   # def remove(%Runic.Workflow.Map{pipeline: map_wrk} = map, workflow) do
@@ -178,6 +184,10 @@ defimpl Runic.Component, for: Runic.Workflow.Reduce do
   def source(reduce) do
     reduce.source
   end
+
+  def hash(reduce) do
+    reduce.hash
+  end
 end
 
 defimpl Runic.Component, for: Runic.Workflow.Step do
@@ -217,6 +227,10 @@ defimpl Runic.Component, for: Runic.Workflow.Step do
   def source(step) do
     step.source
   end
+
+  def hash(step) do
+    step.hash
+  end
 end
 
 defimpl Runic.Component, for: Runic.Workflow.Rule do
@@ -253,6 +267,10 @@ defimpl Runic.Component, for: Runic.Workflow.Rule do
 
   def source(rule) do
     rule.source
+  end
+
+  def hash(rule) do
+    Runic.Workflow.Components.fact_hash(rule.expression)
   end
 end
 
@@ -291,5 +309,9 @@ defimpl Runic.Component, for: Runic.Workflow.StateMachine do
 
   def source(state_machine) do
     state_machine.source
+  end
+
+  def hash(state_machine) do
+    Runic.Workflow.Components.fact_hash(state_machine.source)
   end
 end

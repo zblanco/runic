@@ -61,7 +61,8 @@ defmodule Runic.Workflow do
             components: %{},
             before_hooks: %{},
             after_hooks: %{},
-            mapped: %{}
+            mapped: %{},
+            build_log: []
 
   def new(), do: new([])
 
@@ -79,6 +80,7 @@ defmodule Runic.Workflow do
     |> Map.put(:components, %{})
     |> Map.put(:before_hooks, %{})
     |> Map.put(:after_hooks, %{})
+    |> Map.put(:build_log, [])
     |> Map.put(:mapped, %{mapped_paths: MapSet.new()})
   end
 
@@ -101,7 +103,46 @@ defmodule Runic.Workflow do
 
     component
     |> Component.connect(parent_step, workflow)
+    # |> Map.put(:build_log, [
+    #   %ComponentAdded{
+    #     source: Component.source(component),
+    #     to: parent_step[:hash] || root()
+    #   }
+    #   | workflow.build_log
+    # ])
+    |> append_build_log(component, parent_step)
     |> maybe_put_component(component)
+  end
+
+  defp append_build_log(%__MODULE__{} = workflow, component, %Root{} = parent) do
+    do_append_build_log(workflow, component, parent)
+  end
+
+  defp append_build_log(%__MODULE__{} = workflow, component, parents) when is_list(parents) do
+    Enum.reduce(parents, workflow, fn parent, wrk ->
+      append_build_log(wrk, component, parent)
+    end)
+  end
+
+  defp append_build_log(%__MODULE__{} = workflow, component, %{hash: parent_hash}) do
+    do_append_build_log(workflow, component, parent_hash)
+  end
+
+  defp append_build_log(%__MODULE__{} = workflow, component, parent) do
+    do_append_build_log(workflow, component, Component.hash(parent))
+  end
+
+  defp do_append_build_log(%__MODULE__{build_log: bl} = workflow, component, parent_step_hash) do
+    %__MODULE__{
+      workflow
+      | build_log: [
+          %ComponentAdded{
+            source: Component.source(component),
+            to: parent_step_hash
+          }
+          | bl
+        ]
+    }
   end
 
   @doc """
@@ -117,7 +158,9 @@ defmodule Runic.Workflow do
   ```
   """
   def build_log(wrk) do
-    []
+    # BFS reduce the graph following only flow edges and accumulate into a list of ComponentAdded events
+    # Or accumulate connections of added components in graph by keeping the source with a `component_of` edge to invokables.
+    Enum.reverse(wrk.build_log)
   end
 
   @doc """
@@ -126,7 +169,7 @@ defmodule Runic.Workflow do
   def from_log(events) do
     Enum.reduce(events, new(), fn
       %ComponentAdded{source: source, to: to}, wrk ->
-        {component, _binding} = Code.eval_quoted(source)
+        {component, _binding} = Code.eval_quoted(source, [], build_eval_env())
         add(wrk, component, to: to)
 
       %Fact{} = fact, wrk ->
@@ -134,8 +177,15 @@ defmodule Runic.Workflow do
     end)
   end
 
+  defp build_eval_env() do
+    require Runic
+    import Runic, warn: false
+    alias Runic.Workflow, warn: false
+    __ENV__
+  end
+
   def log(wrk) do
-    build_log(wrk)
+    build_log(wrk) ++ reactions(wrk)
   end
 
   def components(%__MODULE__{} = workflow) do

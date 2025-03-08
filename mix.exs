@@ -22,8 +22,8 @@ defmodule Runic.MixProject do
   defp deps do
     [
       {:uniq, "~> 0.5.3"},
-      {:libgraph, "~> 0.16.0", github: "zblanco/libgraph", branch: "zw/multigraph-indexes"}
-      # {:libgraph, "~> 0.16.0", path: "~/wrk/oss/libgraph"},
+      # {:libgraph, "~> 0.16.0", github: "zblanco/libgraph", branch: "zw/multigraph-indexes"}
+      {:libgraph, "~> 0.16.0", path: "~/wrk/oss/libgraph"}
     ]
   end
 end

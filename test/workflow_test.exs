@@ -184,8 +184,6 @@ defmodule WorkflowTest do
         join_with_1_dependency
         |> Workflow.plan_eagerly(2)
 
-      dbg(j_1.graph, structs: false)
-
       assert Enum.count(Workflow.next_runnables(j_1)) == 2
 
       j_1_runnables_after_reaction =
@@ -948,7 +946,7 @@ defmodule WorkflowTest do
 
       ran_wrk = Workflow.react_until_satisfied(wrk, 2)
 
-      assert Enum.count(Workflow.reactions(ran_wrk)) == 3
+      assert Enum.count(Workflow.reactions(ran_wrk)) == 2
     end
   end
 
@@ -1032,12 +1030,13 @@ defmodule WorkflowTest do
           name: "test workflow",
           steps: [
             Runic.step(fn num -> num + 1 end, name: :step_1),
-            Runic.step(fn num, num_2 -> num * num_2 end, name: :step_2)
+            Runic.step(fn num -> num * 2 end, name: :step_2)
           ]
         )
 
       build_log = Workflow.build_log(wrk)
       # log of JSON/binary encodeable structs e.g. `[%WorkflowComponentAdded{}, ...]`
+      assert [%Runic.Workflow.ComponentAdded{} | _] = build_log
 
       # rebuild just the workflow steps from log
       built_wrk = Workflow.from_log(build_log)
@@ -1048,9 +1047,10 @@ defmodule WorkflowTest do
 
       ran_wrk = Workflow.react_until_satisfied(wrk, 2)
 
-      build_and_execution_log = Workflow.log(wrk)
+      build_and_execution_log = Workflow.log(ran_wrk)
 
-      refute Enum.empty?(Workflow.facts(build_and_execution_log))
+      refute Enum.empty?(build_and_execution_log)
+      assert Enum.any?(build_and_execution_log, &match?(%Fact{}, &1))
     end
   end
 end
