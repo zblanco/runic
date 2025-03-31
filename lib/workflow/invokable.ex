@@ -10,7 +10,7 @@ defprotocol Runic.Workflow.Invokable do
   def match_or_execute(node)
 
   # replay reduces facts into a workflow to rebuild the workflow's memory from a log
-  # in contrast to invoke which receives a runnable; replay instead accepts the fact produced by the parent
+  # in contrast to invoke which receives a runnable; replay instead accepts the fact the invokable has produced before
   # i.e. the fact ancestry hash == node.hash
   # this lets the protocol know what edges to draw in the workflow memory
   # def replay(node, workflow, fact)
@@ -37,6 +37,12 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Root do
   def match_or_execute(_root), do: :match
   # def runnable_connection(_root), do: :root
   # def resolved_connection(_root), do: :root
+
+  def replay(_root, workflow, fact) do
+    workflow
+    |> Workflow.log_fact(fact)
+    |> Workflow.prepare_next_generation(fact)
+  end
 end
 
 defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Condition do
@@ -71,6 +77,13 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Condition do
   # def resolved_connection(_condition), do: :satisfied
 
   def match_or_execute(_condition), do: :match
+
+  def replay(condition, workflow, fact) do
+    workflow
+    |> Workflow.prepare_next_runnables(condition, fact)
+    |> Workflow.draw_connection(fact, condition, :satisfied)
+    |> Workflow.mark_runnable_as_ran(condition, fact)
+  end
 
   defp try_to_run_work(work, fact_value, arity) do
     try do
@@ -136,6 +149,19 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Step do
     |> maybe_prepare_map_reduce(step, result_fact)
   end
 
+  def replay(step, workflow, fact) do
+    parent_fact = Map.get(workflow.graph.vertices, elem(fact.ancestry, 1))
+
+    workflow
+    |> Workflow.log_fact(fact)
+    |> Workflow.draw_connection(step, fact, :produced)
+    |> Workflow.mark_runnable_as_ran(step, parent_fact)
+    |> Workflow.prepare_next_runnables(step, fact)
+    |> maybe_prepare_map_reduce(step, fact)
+  end
+
+  def match_or_execute(_step), do: :execute
+
   defp is_reduced_in_map?(workflow, step) do
     MapSet.member?(workflow.mapped.mapped_paths, step.hash)
   end
@@ -151,7 +177,6 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Step do
     end
   end
 
-  def match_or_execute(_step), do: :execute
   # def runnable_connection(_step), do: :runnable
   # def resolved_connection(_step), do: :ran
   # def causal_connection(_step), do: :produced

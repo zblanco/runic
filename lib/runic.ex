@@ -16,20 +16,22 @@ defmodule Runic do
   alias Runic.Workflow.FanOut
   alias Runic.Workflow.FanIn
   alias Runic.Workflow.Join
+  alias Runic.Workflow.ComponentAdded
+  alias Runic.Workflow.ReactionOccurred
 
-  @boolean_expressions ~w(
-    ==
-    ===
-    !=
-    !==
-    <
-    >
-    <=
-    >=
-    in
-    not
-    =~
-  )a
+  # @boolean_expressions ~w(
+  #   ==
+  #   ===
+  #   !=
+  #   !==
+  #   <
+  #   >
+  #   <=
+  #   >=
+  #   in
+  #   not
+  #   =~
+  # )a
 
   @doc """
   Creates a %Step{}: a basic lambda expression that can be added to a workflow.
@@ -129,24 +131,82 @@ defmodule Runic do
     |> Workflow.add_after_hooks(after_hooks)
   end
 
+  # defmacro workflow_from_log(events) do
+  #   Enum.reduce(unquote(events), Workflow.new(), fn
+  #     %ComponentAdded{source: source, to: to}, wrk ->
+  #       dbg(source, label: "source")
+  #       {component, _binding} = Code.eval_quoted(source, [], __CALLER__)
+  #       Workflow.add(wrk, component, to: to)
+
+  #     %ReactionOccurred{} = ro, wrk ->
+  #       reaction_edge =
+  #         Graph.Edge.new(
+  #           ro.from,
+  #           ro.to,
+  #           label: ro.reaction,
+  #           properties: ro.properties
+  #         )
+
+  #       generation =
+  #         if(ro.reaction == :generation and ro.from > wrk.generations) do
+  #           ro.from
+  #         else
+  #           wrk.generations
+  #         end
+
+  #       %Workflow{
+  #         wrk
+  #         | graph: Graph.add_edge(wrk.graph, reaction_edge),
+  #           generations: generation
+  #       }
+  #   end)
+  # end
+
   defmacro rule(opts) when is_list(opts) do
+    name = opts[:name]
     condition = opts[:condition] || opts[:if]
     reaction = opts[:reaction] || opts[:do]
 
     arity = Components.arity_of(reaction)
 
-    workflow = workflow_of_rule({condition, reaction}, arity)
+    {rewritten_condition, condition_bindings} = traverse_expression(condition)
+    {rewritten_reaction, reaction_bindings} = traverse_expression(reaction)
+
+    variable_bindings =
+      (condition_bindings ++ reaction_bindings)
+      |> Enum.uniq()
+
+    bindings =
+      quote do
+        # Create a map to hold the bindings for the rule
+        %{
+          unquote_splicing(
+            Enum.map(variable_bindings, fn {:=, _, [{left_var, _, _}, right]} ->
+              {left_var, right}
+            end)
+          )
+        }
+      end
+
+    workflow = workflow_of_rule({rewritten_condition, rewritten_reaction}, arity)
 
     source =
       quote do
-        Runic.rule(unquote(opts))
+        Runic.rule(
+          name: unquote(name),
+          condition: unquote(rewritten_condition),
+          reaction: unquote(rewritten_reaction)
+        )
       end
 
     quote do
+      unquote_splicing(Enum.reverse(variable_bindings))
+
       %Rule{
-        expression: unquote({Macro.escape(condition), Macro.escape(reaction)}),
+        name: unquote(name),
         arity: unquote(arity),
         workflow: unquote(workflow),
+        bindings: unquote(bindings),
         source: unquote(Macro.escape(source))
       }
     end
@@ -163,7 +223,6 @@ defmodule Runic do
       end
 
     quote bind_quoted: [
-            expression: Macro.escape(expression),
             arity: arity,
             workflow: workflow,
             source: Macro.escape(source)
@@ -171,7 +230,6 @@ defmodule Runic do
       %Rule{
         arity: arity,
         workflow: workflow,
-        expression: expression,
         source: source
       }
     end
@@ -191,7 +249,6 @@ defmodule Runic do
 
     quote bind_quoted: [
             name: name,
-            expression: Macro.escape(expression),
             arity: arity,
             workflow: workflow,
             source: Macro.escape(source)
@@ -200,10 +257,21 @@ defmodule Runic do
         name: name,
         arity: arity,
         workflow: workflow,
-        expression: expression,
         source: source
       }
     end
+  end
+
+  defp traverse_expression({:fn, _, [{:->, _, [_, _block]}]} = expression) do
+    Macro.prewalk(expression, [], fn
+      {:^, meta, [{var, _, ctx} = expr]} = _pinned_ast, acc ->
+        # new_var = Macro.unique_var(:pin, ctx)
+        new_var = Macro.var(var, ctx)
+        {new_var, [{:=, meta, [new_var, expr]} | acc]}
+
+      otherwise, acc ->
+        {otherwise, acc}
+    end)
   end
 
   defmacro state_machine(opts) do
@@ -918,7 +986,8 @@ defmodule Runic do
   end
 
   defp workflow_of_rule(
-         {:fn, _meta, [{:->, _, [[{:when, _, _} = lhs], _rhs]}]} = expression,
+         {:fn, _head_meta, [{:->, _clause_meta, [[{:when, _, _clauses} = lhs], _rhs]}]} =
+           expression,
          arity
        ) do
     reaction_ast_hash = Components.fact_hash(expression)
@@ -943,26 +1012,25 @@ defmodule Runic do
         |> Workflow.add_step(unquote(arity_condition))
       end
 
-    component_ast_graph =
+    binds = binds_of_guarded_anonymous(lhs, arity)
+
+    condition_fun =
       quote do
-        unquote(
-          lhs
-          |> Macro.postwalker()
-          |> Enum.reduce(
-            %{
-              component_ast_graph:
-                Graph.new() |> Graph.add_vertex(:root) |> Graph.add_edge(:root, arity_condition),
-              arity: arity,
-              arity_condition: arity_condition,
-              binds: binds_of_guarded_anonymous(expression, arity),
-              reaction: reaction,
-              children: [],
-              possible_children: %{},
-              conditions: []
-            },
-            &post_extract_guarded_into_workflow/2
-          )
-          |> Map.get(:component_ast_graph)
+        fn
+          unquote(lhs) ->
+            true
+
+          unquote_splicing(Enum.map(binds, fn {_bind, meta, cont} -> {:_, meta, cont} end)) ->
+            false
+        end
+      end
+
+    condition =
+      quote do
+        Condition.new(
+          work: unquote(condition_fun),
+          hash: unquote(Components.fact_hash(condition_fun)),
+          arity: unquote(arity)
         )
       end
 
@@ -970,30 +1038,62 @@ defmodule Runic do
       quote do
         import Runic
 
-        unquote(
-          Graph.Reducers.Bfs.reduce(component_ast_graph, workflow_with_arity_check_quoted, fn
-            ast_vertex, quoted_workflow ->
-              parents = Graph.in_neighbors(component_ast_graph, ast_vertex)
-
-              quoted_workflow =
-                Enum.reduce(parents, quoted_workflow, fn
-                  :root, quoted_workflow ->
-                    quote do
-                      unquote(quoted_workflow)
-                      |> Workflow.add_step(unquote(ast_vertex))
-                    end
-
-                  parent, quoted_workflow ->
-                    quote do
-                      unquote(quoted_workflow)
-                      |> Workflow.add_step(unquote(parent), unquote(ast_vertex))
-                    end
-                end)
-
-              {:next, quoted_workflow}
-          end)
-        )
+        unquote(workflow_with_arity_check_quoted)
+        |> Workflow.add_step(unquote(arity_condition), unquote(condition))
+        |> Workflow.add_step(unquote(condition), unquote(reaction))
       end
+
+    # component_ast_graph =
+    #   quote do
+    #     unquote(
+    #       lhs
+    #       |> Macro.postwalker()
+    #       |> Enum.reduce(
+    #         %{
+    #           component_ast_graph:
+    #             Graph.new() |> Graph.add_vertex(:root) |> Graph.add_edge(:root, arity_condition),
+    #           arity: arity,
+    #           arity_condition: arity_condition,
+    #           binds: binds_of_guarded_anonymous(expression, arity),
+    #           reaction: reaction,
+    #           children: [],
+    #           possible_children: %{},
+    #           conditions: []
+    #         },
+    #         &post_extract_guarded_into_workflow/2
+    #       )
+    #       |> Map.get(:component_ast_graph)
+    #     )
+    #   end
+
+    # quoted_workflow =
+    #   quote do
+    #     import Runic
+
+    #     unquote(
+    #       Graph.Reducers.Bfs.reduce(component_ast_graph, workflow_with_arity_check_quoted, fn
+    #         ast_vertex, quoted_workflow ->
+    #           parents = Graph.in_neighbors(component_ast_graph, ast_vertex)
+
+    #           quoted_workflow =
+    #             Enum.reduce(parents, quoted_workflow, fn
+    #               :root, quoted_workflow ->
+    #                 quote do
+    #                   unquote(quoted_workflow)
+    #                   |> Workflow.add_step(unquote(ast_vertex))
+    #                 end
+
+    #               parent, quoted_workflow ->
+    #                 quote do
+    #                   unquote(quoted_workflow)
+    #                   |> Workflow.add_step(unquote(parent), unquote(ast_vertex))
+    #                 end
+    #             end)
+
+    #           {:next, quoted_workflow}
+    #       end)
+    #     )
+    #   end
 
     quoted_workflow
   end
@@ -1069,157 +1169,157 @@ defmodule Runic do
     Enum.take(guarded_expression, arity)
   end
 
-  defp post_extract_guarded_into_workflow(
-         {:when, _meta, _guarded_expression},
-         %{
-           component_ast_graph: g,
-           arity_condition: arity_condition,
-           reaction: reaction,
-           conditions: conditions
-         } = wrapped_wrk
-       ) do
-    component_ast_g =
-      Enum.reduce(conditions, g, fn
-        {lhs_of_or, rhs_of_or} = _or, g ->
-          Graph.add_edges(g, [
-            Graph.Edge.new(arity_condition, lhs_of_or),
-            Graph.Edge.new(arity_condition, rhs_of_or)
-          ])
+  # defp post_extract_guarded_into_workflow(
+  #        {:when, _meta, _guarded_expression},
+  #        %{
+  #          component_ast_graph: g,
+  #          arity_condition: arity_condition,
+  #          reaction: reaction,
+  #          conditions: conditions
+  #        } = wrapped_wrk
+  #      ) do
+  #   component_ast_g =
+  #     Enum.reduce(conditions, g, fn
+  #       {lhs_of_or, rhs_of_or} = _or, g ->
+  #         Graph.add_edges(g, [
+  #           Graph.Edge.new(arity_condition, lhs_of_or),
+  #           Graph.Edge.new(arity_condition, rhs_of_or)
+  #         ])
 
-        condition, g ->
-          Graph.add_edge(g, arity_condition, condition)
-      end)
+  #       condition, g ->
+  #         Graph.add_edge(g, arity_condition, condition)
+  #     end)
 
-    component_ast_g =
-      component_ast_g
-      |> Graph.add_vertex(reaction)
-      |> Graph.add_edges(leaf_to_reaction_edges(component_ast_g, arity_condition, reaction))
+  #   component_ast_g =
+  #     component_ast_g
+  #     |> Graph.add_vertex(reaction)
+  #     |> Graph.add_edges(leaf_to_reaction_edges(component_ast_g, arity_condition, reaction))
 
-    %{wrapped_wrk | component_ast_graph: component_ast_g}
-  end
+  #   %{wrapped_wrk | component_ast_graph: component_ast_g}
+  # end
 
-  defp post_extract_guarded_into_workflow(
-         {:or, _meta, [lhs_of_or | [rhs_of_or | _]]} = ast,
-         %{
-           possible_children: possible_children
-         } = wrapped_wrk
-       ) do
-    lhs_child_cond = Map.fetch!(possible_children, lhs_of_or)
-    rhs_child_cond = Map.fetch!(possible_children, rhs_of_or)
+  # defp post_extract_guarded_into_workflow(
+  #        {:or, _meta, [lhs_of_or | [rhs_of_or | _]]} = ast,
+  #        %{
+  #          possible_children: possible_children
+  #        } = wrapped_wrk
+  #      ) do
+  #   lhs_child_cond = Map.fetch!(possible_children, lhs_of_or)
+  #   rhs_child_cond = Map.fetch!(possible_children, rhs_of_or)
 
-    wrapped_wrk
-    |> Map.put(
-      :possible_children,
-      Map.put(possible_children, ast, {lhs_child_cond, rhs_child_cond})
-    )
-  end
+  #   wrapped_wrk
+  #   |> Map.put(
+  #     :possible_children,
+  #     Map.put(possible_children, ast, {lhs_child_cond, rhs_child_cond})
+  #   )
+  # end
 
-  defp post_extract_guarded_into_workflow(
-         {:and, _meta, [lhs_of_and | [rhs_of_and | _]]} = ast,
-         %{possible_children: possible_children, component_ast_graph: g} =
-           wrapped_wrk
-       ) do
-    lhs_child_cond = Map.fetch!(possible_children, lhs_of_and)
-    rhs_child_cond = Map.fetch!(possible_children, rhs_of_and)
+  # defp post_extract_guarded_into_workflow(
+  #        {:and, _meta, [lhs_of_and | [rhs_of_and | _]]} = ast,
+  #        %{possible_children: possible_children, component_ast_graph: g} =
+  #          wrapped_wrk
+  #      ) do
+  #   lhs_child_cond = Map.fetch!(possible_children, lhs_of_and)
+  #   rhs_child_cond = Map.fetch!(possible_children, rhs_of_and)
 
-    conditions = [lhs_child_cond, rhs_child_cond] |> List.flatten()
+  #   conditions = [lhs_child_cond, rhs_child_cond] |> List.flatten()
 
-    conjunction = quote(do: Conjunction.new(unquote(conditions)))
+  #   conjunction = quote(do: Conjunction.new(unquote(conditions)))
 
-    wrapped_wrk
-    |> Map.put(
-      :component_ast_graph,
-      Enum.reduce(conditions, g, fn
-        {lhs_of_or, rhs_of_or} = _or, g ->
-          Graph.add_edges(g, [
-            Graph.Edge.new(lhs_of_or, conjunction),
-            Graph.Edge.new(rhs_of_or, conjunction)
-          ])
+  #   wrapped_wrk
+  #   |> Map.put(
+  #     :component_ast_graph,
+  #     Enum.reduce(conditions, g, fn
+  #       {lhs_of_or, rhs_of_or} = _or, g ->
+  #         Graph.add_edges(g, [
+  #           Graph.Edge.new(lhs_of_or, conjunction),
+  #           Graph.Edge.new(rhs_of_or, conjunction)
+  #         ])
 
-        condition, g ->
-          Graph.add_edge(g, condition, conjunction)
-      end)
-    )
-    |> Map.put(:possible_children, Map.put(possible_children, ast, conjunction))
-  end
+  #       condition, g ->
+  #         Graph.add_edge(g, condition, conjunction)
+  #     end)
+  #   )
+  #   |> Map.put(:possible_children, Map.put(possible_children, ast, conjunction))
+  # end
 
-  defp post_extract_guarded_into_workflow(
-         {expr, _meta, children} = expression,
-         %{binds: binds, arity_condition: arity_condition, arity: arity, component_ast_graph: g} =
-           wrapped_wrk
-       )
-       when is_atom(expr) and not is_nil(children) do
-    if expr in @boolean_expressions or binary_part(to_string(expr), 0, 2) === "is" do
-      match_fun_ast =
-        {:fn, [],
-         [
-           {:->, [],
-            [
-              [
-                {:when, [], underscore_unused_binds(binds, expression) ++ [expression]}
-              ],
-              true
-            ]},
-           {:->, [], [Enum.map(binds, fn {_bind, _meta, cont} -> {:_, [], cont} end), false]}
-         ]}
+  # defp post_extract_guarded_into_workflow(
+  #        {expr, _meta, children} = expression,
+  #        %{binds: binds, arity_condition: arity_condition, arity: arity, component_ast_graph: g} =
+  #          wrapped_wrk
+  #      )
+  #      when is_atom(expr) and not is_nil(children) do
+  #   if expr in @boolean_expressions or binary_part(to_string(expr), 0, 2) === "is" do
+  #     match_fun_ast =
+  #       {:fn, [],
+  #        [
+  #          {:->, [],
+  #           [
+  #             [
+  #               {:when, [], underscore_unused_binds(binds, expression) ++ [expression]}
+  #             ],
+  #             true
+  #           ]},
+  #          {:->, [], [Enum.map(binds, fn {_bind, _meta, cont} -> {:_, [], cont} end), false]}
+  #        ]}
 
-      ast_hash = Components.fact_hash(match_fun_ast)
+  #     ast_hash = Components.fact_hash(match_fun_ast)
 
-      condition =
-        quote(
-          do:
-            Condition.new(
-              work: unquote(match_fun_ast),
-              arity: unquote(arity),
-              hash: unquote(ast_hash)
-            )
-        )
+  #     condition =
+  #       quote(
+  #         do:
+  #           Condition.new(
+  #             work: unquote(match_fun_ast),
+  #             arity: unquote(arity),
+  #             hash: unquote(ast_hash)
+  #           )
+  #       )
 
-      wrapped_wrk
-      |> Map.put(:component_ast_graph, Graph.add_edge(g, arity_condition, condition))
-      |> Map.put(:conditions, [condition | wrapped_wrk.conditions])
-      |> Map.put(
-        :possible_children,
-        Map.put(wrapped_wrk.possible_children, expression, condition)
-      )
-    else
-      wrapped_wrk
-    end
-  end
+  #     wrapped_wrk
+  #     |> Map.put(:component_ast_graph, Graph.add_edge(g, arity_condition, condition))
+  #     |> Map.put(:conditions, [condition | wrapped_wrk.conditions])
+  #     |> Map.put(
+  #       :possible_children,
+  #       Map.put(wrapped_wrk.possible_children, expression, condition)
+  #     )
+  #   else
+  #     wrapped_wrk
+  #   end
+  # end
 
-  defp post_extract_guarded_into_workflow(
-         _some_other_ast,
-         acc
-       ) do
-    acc
-  end
+  # defp post_extract_guarded_into_workflow(
+  #        _some_other_ast,
+  #        acc
+  #      ) do
+  #   acc
+  # end
 
-  defp underscore_unused_binds(binds, expression) do
-    prewalked = Macro.prewalker(expression)
+  # defp underscore_unused_binds(binds, expression) do
+  #   prewalked = Macro.prewalker(expression)
 
-    Enum.map(binds, fn {_binding, meta, context} = bind ->
-      if bind not in prewalked do
-        {:_, meta, context}
-      else
-        bind
-      end
-    end)
-  end
+  #   Enum.map(binds, fn {_binding, meta, context} = bind ->
+  #     if bind not in prewalked do
+  #       {:_, meta, context}
+  #     else
+  #       bind
+  #     end
+  #   end)
+  # end
 
-  defp leaf_to_reaction_edges(g, arity_condition, reaction) do
-    Graph.Reducers.Dfs.reduce(g, [], fn
-      ^arity_condition, leaf_edges ->
-        {:next, leaf_edges}
+  # defp leaf_to_reaction_edges(g, arity_condition, reaction) do
+  #   Graph.Reducers.Dfs.reduce(g, [], fn
+  #     ^arity_condition, leaf_edges ->
+  #       {:next, leaf_edges}
 
-      :root, leaf_edges ->
-        {:next, leaf_edges}
+  #     :root, leaf_edges ->
+  #       {:next, leaf_edges}
 
-      v, leaf_edges ->
-        if Graph.out_degree(g, v) == 0 do
-          {:next, [Graph.Edge.new(v, reaction) | leaf_edges]}
-        else
-          {:next, leaf_edges}
-        end
-    end)
-  end
+  #     v, leaf_edges ->
+  #       if Graph.out_degree(g, v) == 0 do
+  #         {:next, [Graph.Edge.new(v, reaction) | leaf_edges]}
+  #       else
+  #         {:next, leaf_edges}
+  #       end
+  #   end)
+  # end
 end

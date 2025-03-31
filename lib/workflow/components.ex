@@ -1,5 +1,6 @@
 defmodule Runic.Workflow.Components do
   # common functions across workflow components
+  @doc false
   @max_phash 4_294_967_296
 
   def fact_hash(value), do: :erlang.phash2(value, @max_phash)

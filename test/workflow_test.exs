@@ -6,6 +6,7 @@ defmodule WorkflowTest do
   alias Runic.Workflow.Invokable
   alias Runic.Workflow.Step
   alias Runic.Workflow.Fact
+  alias Runic.Workflow.ReactionOccurred
 
   defmodule TextProcessing do
     require Runic
@@ -946,7 +947,7 @@ defmodule WorkflowTest do
 
       ran_wrk = Workflow.react_until_satisfied(wrk, 2)
 
-      assert Enum.count(Workflow.reactions(ran_wrk)) == 2
+      assert Enum.count(Workflow.reactions(ran_wrk)) == 3
     end
   end
 
@@ -1050,7 +1051,57 @@ defmodule WorkflowTest do
       build_and_execution_log = Workflow.log(ran_wrk)
 
       refute Enum.empty?(build_and_execution_log)
-      assert Enum.any?(build_and_execution_log, &match?(%Fact{}, &1))
+      assert Enum.any?(build_and_execution_log, &match?(%ReactionOccurred{}, &1))
     end
+
+    test "a rebuilt workflow can be replayed from log state" do
+      wrk =
+        Runic.workflow(
+          name: "test workflow",
+          steps: [
+            Runic.step(fn num -> num + 1 end, name: :step_1),
+            Runic.step(fn num -> num * 2 end, name: :step_2)
+          ]
+        )
+
+      ran_wrk = Workflow.react_until_satisfied(wrk, 2)
+
+      build_and_execution_log = Workflow.log(ran_wrk)
+
+      built_wrk = Workflow.from_log(build_and_execution_log)
+
+      assert Enum.any?(build_and_execution_log, &match?(%ReactionOccurred{}, &1))
+
+      edge_labels = Graph.edges(built_wrk.graph) |> Enum.map(& &1.label)
+
+      for edge <- Graph.edges(ran_wrk.graph) do
+        assert edge.label in edge_labels
+      end
+    end
+
+    # test "encode/decode workflow logs to JSON" do
+    #   wrk =
+    #     Runic.workflow(
+    #       name: "test workflow",
+    #       steps: [
+    #         Runic.step(fn num -> num + 1 end, name: :step_1),
+    #         Runic.step(fn num -> num * 2 end, name: :step_2)
+    #       ]
+    #     )
+
+    #   ran_wrk = Workflow.react_until_satisfied(wrk, 2)
+
+    #   log = Workflow.log(ran_wrk) |> dbg()
+
+    #   json_log = Enum.map(log, &JSON.encode!/1)
+
+    #   decoded_log = Enum.map(json_log, &JSON.decode!/1)
+
+    #   assert log = decoded_log
+
+    #   rebuilt_wrk = Workflow.from_log(decoded_log)
+
+    #   assert rebuilt_wrk = ran_wrk
+    # end
   end
 end

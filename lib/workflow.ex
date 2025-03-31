@@ -24,6 +24,7 @@ defmodule Runic.Workflow do
   GenServer, with cluster-aware registration for a given workflow, then execute conditionals eagerly, but
   execute actual steps with side effects lazily as a GenStage pipeline with backpressure has availability.
   """
+  alias Runic.Workflow.ReactionOccurred
   alias Runic.Component
   alias Runic.Workflow.FanOut
   alias Runic.Transmutable
@@ -37,6 +38,7 @@ defmodule Runic.Workflow do
   alias Runic.Workflow.Join
   alias Runic.Workflow.Invokable
   alias Runic.Workflow.ComponentAdded
+  alias Runic.Workflow.ReactionOccurred
 
   @type t() :: %__MODULE__{
           name: String.t(),
@@ -97,19 +99,16 @@ defmodule Runic.Workflow do
 
   def add(%__MODULE__{} = workflow, component, opts \\ []) do
     parent_step =
-      get_component(workflow, opts[:to]) ||
-        get_by_hash(workflow, opts[:to]) ||
+      if not is_nil(opts[:to]) do
+        get_component(workflow, opts[:to]) ||
+          get_by_hash(workflow, opts[:to]) ||
+          root()
+      else
         root()
+      end
 
     component
     |> Component.connect(parent_step, workflow)
-    # |> Map.put(:build_log, [
-    #   %ComponentAdded{
-    #     source: Component.source(component),
-    #     to: parent_step[:hash] || root()
-    #   }
-    #   | workflow.build_log
-    # ])
     |> append_build_log(component, parent_step)
     |> maybe_put_component(component)
   end
@@ -138,7 +137,13 @@ defmodule Runic.Workflow do
       | build_log: [
           %ComponentAdded{
             source: Component.source(component),
-            to: parent_step_hash
+            to: parent_step_hash,
+            bindings:
+              Map.get(
+                component,
+                :bindings,
+                %{}
+              )
           }
           | bl
         ]
@@ -168,12 +173,31 @@ defmodule Runic.Workflow do
   """
   def from_log(events) do
     Enum.reduce(events, new(), fn
-      %ComponentAdded{source: source, to: to}, wrk ->
-        {component, _binding} = Code.eval_quoted(source, [], build_eval_env())
+      %ComponentAdded{source: source, to: to, bindings: bindings}, wrk ->
+        {component, _binding} = Code.eval_quoted(source, Map.to_list(bindings), build_eval_env())
         add(wrk, component, to: to)
 
-      %Fact{} = fact, wrk ->
-        log_fact(wrk, fact)
+      %ReactionOccurred{} = ro, wrk ->
+        reaction_edge =
+          Graph.Edge.new(
+            ro.from,
+            ro.to,
+            label: ro.reaction,
+            properties: ro.properties
+          )
+
+        generation =
+          if(ro.reaction == :generation and ro.from > wrk.generations) do
+            ro.from
+          else
+            wrk.generations
+          end
+
+        %__MODULE__{
+          wrk
+          | graph: Graph.add_edge(wrk.graph, reaction_edge),
+            generations: generation
+        }
     end)
   end
 
@@ -185,8 +209,37 @@ defmodule Runic.Workflow do
   end
 
   def log(wrk) do
-    build_log(wrk) ++ reactions(wrk)
+    build_log(wrk) ++ reactions_occurred(wrk)
   end
+
+  defp reactions_occurred(%__MODULE__{graph: g}) do
+    reaction_edge_kinds =
+      Map.keys(g.edge_index)
+      |> Enum.reject(&(&1 == :flow))
+
+    for %Graph.Edge{} = edge <-
+          Graph.edges(g, by: reaction_edge_kinds) do
+      %ReactionOccurred{
+        from: edge.v1,
+        to: edge.v2,
+        reaction: edge.label,
+        properties: edge.properties
+      }
+    end
+  end
+
+  # def replay(%__MODULE__{}, log) when is_list(log) do
+  #   Enum.reduce(log, new(), fn
+  #     %Fact{ancestry: nil} = input_fact, wrk ->
+  #       parent_step = root()
+  #       Invokable.replay(parent_step, wrk, input_fact)
+
+  #     %Fact{} = fact, wrk ->
+  #       {parent_step_hash, _} = fact.ancestry
+  #       parent_step = get_by_hash(wrk, parent_step_hash)
+  #       Invokable.replay(parent_step, wrk, fact)
+  #   end)
+  # end
 
   def components(%__MODULE__{} = workflow) do
     workflow.components
@@ -335,6 +388,10 @@ defmodule Runic.Workflow do
   # end
 
   defp get_by_hash(%__MODULE__{graph: g}, %{hash: hash}) do
+    Map.get(g.vertices, hash)
+  end
+
+  defp get_by_hash(%__MODULE__{graph: g}, hash) when is_integer(hash) do
     Map.get(g.vertices, hash)
   end
 
@@ -500,6 +557,13 @@ defmodule Runic.Workflow do
     }
   end
 
+  # def maybe_put_component(
+  #       %__MODULE__{} = workflow,
+  #       %{name: nil}
+  #     ) do
+  #   workflow
+  # end
+
   def maybe_put_component(
         %__MODULE__{components: components} = workflow,
         %{name: name} = step
@@ -616,8 +680,7 @@ defmodule Runic.Workflow do
         %__MODULE__{} = workflow,
         %Rule{} = rule
       ) do
-    workflow_of_rule = Runic.Transmutable.transmute(rule)
-    merge(workflow, workflow_of_rule)
+    add(workflow, rule)
   end
 
   @doc """
@@ -963,10 +1026,8 @@ defmodule Runic.Workflow do
     Invokable.invoke(step, wrk, fact)
   end
 
-  defp any_match_phase_runnables?(%__MODULE__{graph: graph, generations: generation}) do
-    generation_fact = fact_for_generation(graph, generation)
-
-    not Enum.empty?(Graph.out_edges(graph, generation_fact, by: :matchable))
+  defp any_match_phase_runnables?(%__MODULE__{graph: graph}) do
+    not Enum.empty?(Graph.edges(graph, by: :matchable))
   end
 
   defp next_match_runnables(%__MODULE__{graph: graph, generations: generation}) do
@@ -979,12 +1040,12 @@ defmodule Runic.Workflow do
     end)
   end
 
-  defp fact_for_generation(graph, generation) do
-    for %Graph.Edge{} = edge <- Graph.in_edges(graph, generation, by: :generation) do
-      edge.v1
-    end
-    |> List.first()
-  end
+  # defp fact_for_generation(graph, generation) do
+  #   for %Graph.Edge{} = edge <- Graph.in_edges(graph, generation, by: :generation) do
+  #     edge.v1
+  #   end
+  #   |> List.first()
+  # end
 
   defp facts_for_generation(graph, generation) do
     graph

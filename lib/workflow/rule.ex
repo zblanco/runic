@@ -4,7 +4,7 @@ defmodule Runic.Workflow.Rule do
   defstruct name: nil,
             arity: nil,
             workflow: nil,
-            expression: nil,
+            bindings: %{},
             source: nil
 
   @typedoc """
@@ -14,15 +14,9 @@ defmodule Runic.Workflow.Rule do
           name: String.t(),
           arity: arity(),
           workflow: Workflow.t(),
-          expression: expression(),
+          bindings: map(),
           source: tuple()
         }
-
-  @typedoc """
-  A list of clauses or branches of the rule where each item is a tuple containing the lhs, rhs
-  of the function/rule.
-  """
-  @type expression() :: [{lhs(), rhs()}] | any()
 
   @typedoc """
   The left hand side of a clause correlating with the pattern or condition of a function.

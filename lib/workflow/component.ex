@@ -270,7 +270,7 @@ defimpl Runic.Component, for: Runic.Workflow.Rule do
   end
 
   def hash(rule) do
-    Runic.Workflow.Components.fact_hash(rule.expression)
+    Runic.Workflow.Components.fact_hash(rule.source)
   end
 end
 

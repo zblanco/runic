@@ -71,19 +71,36 @@ defmodule RunicTest do
       assert Rule.run(rule, [2, 90]) == 180
     end
 
-    # test "escapes runtime values with '^'" do
-    #   some_values = [:potato, :ham, :tomato]
+    test "escapes runtime values with '^'" do
+      some_values = [:potato, :ham, :tomato]
 
-    #   escaped_rule =
-    #     Runic.rule(
-    #       name: "escaped_rule",
-    #       condition: fn val when val in ^some_values -> true end,
-    #       reaction: "food"
-    #     )
+      escaped_rule =
+        Runic.rule(
+          name: "escaped rule",
+          condition: fn val when is_atom(val) -> true end,
+          reaction: fn val ->
+            Enum.map(^some_values, fn x ->
+              {val, x}
+            end)
+          end
+        )
 
-    #   assert match?(%Rule{}, escaped_rule)
-    #   assert Rule.check(escaped_rule, :potato)
-    # end
+      assert match?(%Rule{}, escaped_rule)
+      assert Rule.check(escaped_rule, :potato)
+
+      wrk =
+        Runic.workflow(
+          name: "test workflow",
+          rules: [escaped_rule]
+        )
+
+      build_log = wrk |> Workflow.build_log()
+
+      rebuilt_wrk = Workflow.from_log(build_log)
+
+      assert wrk |> Workflow.react_until_satisfied(:potato) |> Workflow.productions() ==
+               rebuilt_wrk |> Workflow.react_until_satisfied(:potato) |> Workflow.productions()
+    end
 
     test "a function can wrap construction to build custom rules at runtime" do
       builder = fn list_of_things ->
@@ -149,8 +166,8 @@ defmodule RunicTest do
   describe "Runic.condition/1" do
     test "conditions can be made from kinds of elixir functions that return a boolean" do
       assert match?(%Condition{}, Runic.condition(fn :potato -> true end))
-      assert match?(%Condition{}, Runic.condition(&Examples.is_potato/1))
-      assert match?(%Condition{}, Runic.condition({Examples, :is_potato, 1}))
+      assert match?(%Condition{}, Runic.condition(&Examples.is_potato?/1))
+      assert match?(%Condition{}, Runic.condition({Examples, :is_potato?, 1}))
     end
   end
 
