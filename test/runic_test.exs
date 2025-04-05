@@ -96,6 +96,8 @@ defmodule RunicTest do
 
       build_log = wrk |> Workflow.build_log()
 
+      dbg(build_log)
+
       rebuilt_wrk = Workflow.from_log(build_log)
 
       assert wrk |> Workflow.react_until_satisfied(:potato) |> Workflow.productions() ==

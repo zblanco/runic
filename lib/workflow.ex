@@ -174,7 +174,27 @@ defmodule Runic.Workflow do
   def from_log(events) do
     Enum.reduce(events, new(), fn
       %ComponentAdded{source: source, to: to, bindings: bindings}, wrk ->
-        {component, _binding} = Code.eval_quoted(source, Map.to_list(bindings), build_eval_env())
+        {ctx, bindings} =
+          case bindings[:__caller_context__] do
+            nil ->
+              {build_eval_env(), bindings}
+
+            caller_context ->
+              env =
+                caller_context
+                |> Macro.Env.prune_compile_info()
+                |> Code.env_for_eval()
+
+              {env, Map.delete(bindings, :__caller_context__)}
+          end
+
+        {component, _binding} =
+          Code.eval_quoted(
+            source,
+            Map.to_list(bindings),
+            ctx
+          )
+
         add(wrk, component, to: to)
 
       %ReactionOccurred{} = ro, wrk ->
@@ -868,17 +888,11 @@ defmodule Runic.Workflow do
   @doc """
   Plans eagerly through the match phase then executes a single cycle of right hand side runnables.
 
-  ### Example
+  ## Example
 
-  ```elixir
-
-  workflow = Workflow.new()
-
-  [%Fact{value: "hello"}] =
-    workflow
-    |> Workflow.add_step(fn fact -> fact end)
-    |> Workflow.react("hello")
-    |> Workflow.reactions()
+      iex> workflow = Workflow.new()
+      ...> workflow |> Workflow.add_step(fn fact -> fact end) |> Workflow.react("hello") |> Workflow.reactions()
+      [%Fact{value: "hello"}]
   """
   def react(%__MODULE__{} = wrk, %Fact{ancestry: nil} = fact) do
     react(invoke(wrk, root(), fact))

@@ -169,11 +169,11 @@ defmodule Runic do
 
     arity = Components.arity_of(reaction)
 
-    {rewritten_condition, condition_bindings} = traverse_expression(condition)
-    {rewritten_reaction, reaction_bindings} = traverse_expression(reaction)
+    # {rewritten_condition, condition_bindings} = traverse_expression(condition, __CALLER__)
+    {rewritten_reaction, reaction_bindings} = traverse_expression(reaction, __CALLER__)
 
     variable_bindings =
-      (condition_bindings ++ reaction_bindings)
+      reaction_bindings
       |> Enum.uniq()
 
     bindings =
@@ -184,17 +184,18 @@ defmodule Runic do
             Enum.map(variable_bindings, fn {:=, _, [{left_var, _, _}, right]} ->
               {left_var, right}
             end)
-          )
+          ),
+          __caller_context__: unquote(Macro.escape(__CALLER__))
         }
       end
 
-    workflow = workflow_of_rule({rewritten_condition, rewritten_reaction}, arity)
+    workflow = workflow_of_rule({condition, rewritten_reaction}, arity)
 
     source =
       quote do
         Runic.rule(
           name: unquote(name),
-          condition: unquote(rewritten_condition),
+          condition: unquote(condition),
           reaction: unquote(rewritten_reaction)
         )
       end
@@ -262,15 +263,14 @@ defmodule Runic do
     end
   end
 
-  defp traverse_expression({:fn, _, [{:->, _, [_, _block]}]} = expression) do
+  defp traverse_expression({:fn, _, [{:->, _, [_, _block]}]} = expression, env) do
     Macro.prewalk(expression, [], fn
       {:^, meta, [{var, _, ctx} = expr]} = _pinned_ast, acc ->
-        # new_var = Macro.unique_var(:pin, ctx)
         new_var = Macro.var(var, ctx)
         {new_var, [{:=, meta, [new_var, expr]} | acc]}
 
       otherwise, acc ->
-        {otherwise, acc}
+        {Macro.expand(otherwise, env), acc}
     end)
   end
 
