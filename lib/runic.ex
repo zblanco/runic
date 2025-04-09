@@ -38,8 +38,46 @@ defmodule Runic do
 
   Steps are basic input -> output dataflow primatives that can be connected together in a workflow.
 
-  A Step implements the Runic.Workflow.Activation, and Runic.Workflow.Component protocols
-  to be composable and possible to evaluate at runtime with inputs.
+  A Step implements the Runic.Workflow.Activation, and Runic.Workflow.Component protocols for evaluation in a workflow and composition
+  with other Runic components.
+
+  ## Examples
+
+  ```elixir
+  require Runic
+  import Runic
+
+  iex> simple_0_arity_step = step(fn -> 42 end)
+  iex> 1_arity_step = step(fn input -> input * 2 end)
+  iex> 2_arity_step = step(fn input1, input2 -> input1 + input2 end)
+  ```
+
+  Steps that accept more than 1 input are not evaluated unless the workflow is evaluating a list of inputs the same length as its arity.
+
+  Steps can also be defined with Options in a keyword list so that it can be referenced by other components.
+
+  ## Options
+
+  - `:name` - a name for the step that can be used to reference it in other components.
+  - `:work` - the work to be done by the step, can be a function, or a quoted expression.
+
+  ```elixir
+  iex> named_step = step(
+    name: :my_named_step,
+    work: fn input -> input * 2 end
+  )
+
+  iex> alternately_named_step(
+    fn input -> input * 2 end, name: :alternately_named_step
+  )
+  ```
+
+  Steps can also be defined using captured functions:
+
+  ```elixir
+  iex> captured_step = step(&Enum.map/2)
+  > %Runic.Workflow.Step{...}
+  ```
   """
   defmacro step({:fn, _, _} = work) do
     source =
@@ -105,6 +143,9 @@ defmodule Runic do
     end
   end
 
+  @doc """
+  Creates a %Condition{}: a conditional expression that can be added to a workflow or used as the left hand side of a rule.
+  """
   def condition(fun) when is_function(fun) do
     Condition.new(fun)
   end
@@ -113,10 +154,101 @@ defmodule Runic do
     Condition.new(Function.capture(m, f, a))
   end
 
+  @doc """
+  Invokes the Transmutable protocol of a component to convert it into a workflow.
+  """
   def transmute(component) do
     Runic.Transmutable.transmute(component)
   end
 
+  @doc """
+  Define a Runic.Workflow with options.
+
+  Runic Workflows are made up of many components connected to eachother through dataflow semantics.
+
+  Runic Workflows can be made up of built in components like steps, rules, statemachines, and map or reduce operations.
+
+  Runic Components can be combined together at runtime and evaluated in composition.
+
+  See the `Runic.Workflow` documentation to learn more about using workflows in detail.
+
+  ## Options
+
+  - `:name` - a name for the workflow that can be used to reference it in other components.
+  - `:steps` - a list of steps to add to the workflow. Steps defined here may be nested using the pipeline syntax, a tree of tuples with the step and any child steps.
+  - `:rules` - a list of rules to add to the workflow.
+  - `:before_hooks` - a list of hooks to run before a named component is evaluated in the workflow. Meant for debugging or dynamic changes to the workflow.
+  - `:after_hooks` - a list of hooks to run after a named component is evaluated in the workflow. Meant for debugging or dynamic changes to the workflow.
+
+  ## Examples
+
+  ```elixir
+  require Runic
+  require Logger
+  import Runic
+  alias Runic.Workflow
+
+  simple_workflow = workflow(
+    name: :simple_workflow,
+    steps: [
+      step(fn -> 42 end),
+      step(fn input -> String.upcase(input) end)
+    ],
+    rules: [
+      rule(
+        condition: fn input -> input == :hello end,
+        reaction: fn input -> "Greeting: \#{input}" end
+      )
+    ]
+  )
+
+  iex> simple_workflow |> Workflow.react_until_satisfied(:hello) |> Workflow.raw_reactions()
+  > [42, "HELLO", "Greeting: :hello"]
+
+  workflow_with_hooks = workflow(
+    name: :workflow_with_hooks,
+    steps: [
+      step(fn num -> 42 * num end, :times_42)
+    ],
+    before_hooks: [
+      times_42: [
+        fn step, wrk, input_fact ->
+          Logger.debug(\"""
+          Processing step: \#{step.name}
+          with input: \#{fact.value}
+          \""")
+
+          wrk
+        end
+      ]
+    ],
+    after_hooks: [
+      times_42: [
+        fn step, wrk, output_fact ->
+          Logger.debug(\"""
+          Step processed: \#{step.name}
+          produced output: \#{fact.value}
+          \""")
+
+          wrk
+        end
+      ]
+    ]
+  )
+
+  workflow_with_pipeline_of_steps = workflow(
+    name: :nested_pipeline_workflow,
+    steps: [
+      {step(fn num -> num * 2), [
+        {step(fn num -> num + 2), [
+          step(fn num -> num * 42)
+        ]},
+        step(fn num -> num + 1)
+      ]}
+    ]
+  )
+  ```
+  """
   def workflow(opts \\ []) do
     name = opts[:name]
     steps = opts[:steps]
@@ -162,6 +294,54 @@ defmodule Runic do
   #   end)
   # end
 
+  @doc """
+  Rules are a way to define conditional reactions within a Runic workflow.
+
+  Every rule has a left hand side that must match conditionally to execute the right hand side.
+
+  A rule is like an elixir function except it's condition may be evaluated separately from its block of code.
+
+  Rules also differ in that they can be evaluated with many other rules and evaluated together in composition.
+
+  ## Examples
+
+  ```elixir
+
+  require Runic
+  import Runic
+  alias Runic.Workflow.Rule
+
+  anonymous_function_rule = rule(fn input when is_binary(input) -> :string_found end)
+
+  iex> Rule.check(anonymous_function_rule, "hello")
+  > true
+
+  iex> Rule.run(anonymous_function_rule, "hello")
+  > :string_found
+  ```
+
+  We can also define the condition and reaction separately.
+
+  This can be advantageous if more than one rule share the same condition and/or it is an expensive operation you don't
+  want to evaluate many times for a single input.
+
+  ```elixir
+  example_rule = rule(
+    condition: fn input -> ExpensiveAIModel.is_input_okay?(input) end,
+    reaction: fn input -> MyModule.do_thing(input) end
+  )
+  ```
+
+  You can also name the rule and define it with `if` and `do` options.
+
+  ```elixir
+  example_rule = rule(
+    name: :example_rule,
+    if: fn input -> ExpensiveAIModel.is_input_okay?(input) end,
+    do: fn input -> MyModule.do_thing(input) end
+  )
+  ```
+  """
   defmacro rule(opts) when is_list(opts) do
     name = opts[:name]
     condition = opts[:condition] || opts[:if]
@@ -274,6 +454,45 @@ defmodule Runic do
     end)
   end
 
+  @doc """
+  Defines a statemachine that can be evaluated within a Runic workflow.
+
+  Runic state machines are a way to model stateful workflows with reducers that can conditionally accumulate state
+  and reactors to act on the new state.
+
+  You can think of a reducer as a rule that evaluates the input in context of the last known state accumulated.
+  And reactors as rules that conditionally evaluate the new state returned by the reducer.
+
+  ## Example
+  ```elixir
+  require Runic
+  import Runic
+
+  potato_lock =
+    Runic.state_machine(
+      name: "potato lock",
+      init: %{code: "potato", state: :locked, contents: "ham"},
+      reducer: fn
+        :lock, state ->
+          %{state | state: :locked}
+
+        {:unlock, input_code}, %{code: code, state: :locked} = state
+        when input_code == code ->
+          %{state | state: :unlocked}
+
+        {:unlock, _input_code}, %{state: :locked} = state ->
+          state
+
+        _input_code, %{state: :unlocked} = state ->
+          state
+      end,
+      reactors: [
+        fn %{state: :unlocked, contents: contents} -> contents end,
+        fn %{state: :locked} -> {:error, :locked} end
+      ]
+    )
+  ```
+  """
   defmacro state_machine(opts) do
     init = opts[:init] || raise ArgumentError, "An `init` function or state is required"
 
