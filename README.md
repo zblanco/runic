@@ -18,7 +18,7 @@ require Runic
 step = Runic.step(fn x -> x + 1 end)
 ```
 
-And since steps are composable, you can connect them together in a workflow:
+And since steps are composable, you can integrate them together in a workflow:
 
 ```elixir
 workflow = Runic.workflow(
@@ -40,7 +40,7 @@ This produces a workflow graph like the following where R is the entrypoint or "
       B-->C;
 ```
 
-Inputs fed through a workflow are called "Facts". During workflow evaluation various steps are traversed to and invoked producing more Facts.
+In Runic, inputs fed through a workflow are called "Facts". During workflow evaluation various steps are traversed to and invoked producing more Facts.
 
 ```elixir
 alias Runic.Workflow
@@ -83,7 +83,7 @@ defmodule TextProcessing do
 end
 ```
 
-Notice that we have 3 functions here that all expect a `list_of_words`. If we were to simply evaluate each output in a linear fashion such as the tried and true Elixir `|>` expression...
+Notice we have 3 functions that expect a `list_of_words`. In Elixir if we wanted to evaluate each output we can pipe them together the `|>` expression...
 
 ```elixir
 import TextProcessing
@@ -104,9 +104,11 @@ last_word =
   |> last_word()
 ```
 
-We've used the common `tokenize/1` function 3 times for the same input text.
+However in evaluating these linearly we've used the common `tokenize/1` function 3 times for the same input text.
 
-With Runic we can compose all of these steps into one workflow and evaluate them.
+This could be problematic if `tokenize/1` is expensive - we'd prefer to run it just once and then fed into the rest of our pipeline.
+
+With Runic we can compose all of these steps into one workflow and evaluate them together.
 
 ```elixir
 text_processing_workflow = 

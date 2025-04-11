@@ -1,4 +1,4 @@
 %{
-  "libgraph": {:git, "https://github.com/zblanco/libgraph.git", "07b018d6307b4d29ce5de8c9dffabab6e0a411d9", [branch: "zw/multigraph-indexes"]},
+  "libgraph": {:git, "https://github.com/zblanco/libgraph.git", "ab4305ede2c9bc11feb5203a0a98e9c9a2e48d82", [branch: "zw/multigraph-indexes"]},
   "uniq": {:hex, :uniq, "0.6.1", "369660ecbc19051be526df3aa85dc393af5f61f45209bce2fa6d7adb051ae03c", [:mix], [{:ecto, "~> 3.0", [hex: :ecto, repo: "hexpm", optional: true]}], "hexpm", "6426c34d677054b3056947125b22e0daafd10367b85f349e24ac60f44effb916"},
 }

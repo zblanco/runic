@@ -24,6 +24,7 @@ defmodule Runic.Workflow do
   GenServer, with cluster-aware registration for a given workflow, then execute conditionals eagerly, but
   execute actual steps with side effects lazily as a GenStage pipeline with backpressure has availability.
   """
+  require Logger
   alias Runic.Workflow.ReactionOccurred
   alias Runic.Component
   alias Runic.Workflow.FanOut
@@ -179,9 +180,17 @@ defmodule Runic.Workflow do
             nil ->
               {build_eval_env(), bindings}
 
-            caller_context ->
+            %Macro.Env{context_modules: cms} = caller_context ->
               env =
-                caller_context
+                Enum.reduce(cms, caller_context, fn module, ctx ->
+                  case Macro.Env.define_import(ctx, [], module) do
+                    {:ok, new_ctx} ->
+                      new_ctx
+
+                    {:error, msg} ->
+                      Logger.error(msg)
+                  end
+                end)
                 |> Macro.Env.prune_compile_info()
                 |> Code.env_for_eval()
 

@@ -12,12 +12,9 @@ defmodule Runic do
   alias Runic.Workflow.Condition
   alias Runic.Workflow.Rule
   alias Runic.Workflow.Components
-  alias Runic.Workflow.Conjunction
   alias Runic.Workflow.FanOut
   alias Runic.Workflow.FanIn
   alias Runic.Workflow.Join
-  alias Runic.Workflow.ComponentAdded
-  alias Runic.Workflow.ReactionOccurred
 
   # @boolean_expressions ~w(
   #   ==
@@ -358,7 +355,6 @@ defmodule Runic do
 
     bindings =
       quote do
-        # Create a map to hold the bindings for the rule
         %{
           unquote_splicing(
             Enum.map(variable_bindings, fn {:=, _, [{left_var, _, _}, right]} ->
