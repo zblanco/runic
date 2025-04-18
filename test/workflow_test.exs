@@ -399,6 +399,39 @@ defmodule WorkflowTest do
       assert 8 in results
     end
 
+    test "state machines can be connected to other components" do
+      wrk =
+        Runic.workflow(
+          name: "state machine connection",
+          rules: [
+            Runic.rule(
+              name: "add until 10",
+              condition: fn num -> num <= 10 end,
+              reaction: fn num -> num + 1 end
+            )
+          ]
+        )
+
+      state_machine =
+        Runic.state_machine(
+          name: "state_machine_test",
+          init: 0,
+          reducer: fn num, state -> state + num end
+        )
+
+      wrk = Workflow.add(wrk, state_machine, to: {"add until 10", :reaction})
+
+      assert not is_nil(Workflow.get_component(wrk, "state_machine_test"))
+      assert Enum.any?(wrk.graph |> Graph.vertices(), &match?(%Runic.Workflow.Accumulator{}, &1))
+
+      wrk =
+        wrk
+        |> Workflow.react_until_satisfied(1)
+        |> Workflow.plan_eagerly()
+
+      Workflow.productions(wrk)
+    end
+
     test "adding a component with a name that is already in use raises an error" do
     end
 

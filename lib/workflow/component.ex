@@ -244,7 +244,7 @@ defimpl Runic.Component, for: Runic.Workflow.Rule do
   end
 
   def get_component(rule, :reaction) do
-    rule
+    rule.workflow.components |> Elixir.Map.values() |> List.first()
   end
 
   def components(rule) do
@@ -275,13 +275,113 @@ defimpl Runic.Component, for: Runic.Workflow.Rule do
 end
 
 defimpl Runic.Component, for: Runic.Workflow.StateMachine do
+  alias Runic.Workflow.MemoryAssertion
   alias Runic.Workflow
   alias Runic.Workflow.Accumulator
   alias Runic.Workflow.Step
+  alias Runic.Workflow.Root
+
+  def connect(state_machine, %Root{}, workflow) do
+    state_machine.workflow.graph
+    |> Graph.edges(by: :flow)
+    |> Enum.reduce(workflow, fn edge, wrk ->
+      %Workflow{wrk | graph: Graph.add_edge(wrk.graph, edge)}
+    end)
+    |> Map.put(:components, Map.merge(state_machine.workflow.components, workflow.components))
+  end
 
   def connect(state_machine, to, workflow) do
-    Workflow.add_step(workflow, to, state_machine)
+    accumulator =
+      state_machine.workflow.graph
+      |> Graph.vertices()
+      |> Enum.find(&match?(%Accumulator{}, &1))
+
+    wrk = Workflow.add_step(workflow, to, accumulator)
+
+    state_machine.workflow.graph
+    |> Graph.edges(by: :flow)
+    |> Enum.reduce(wrk, fn edge, wrk ->
+      case edge do
+        %{v2: v2, v1: v1} = edge
+        when is_struct(v2, StateReaction) or is_struct(v2, MemoryAssertion) or
+               (is_struct(v1, StateReaction) or is_struct(v1, MemoryAssertion)) ->
+          %Workflow{wrk | graph: Graph.add_edge(wrk.graph, edge)}
+
+        _otherwise ->
+          wrk
+      end
+    end)
   end
+
+  # def connect(state_machine, to, workflow) do
+  #   wrk = Runic.transmute(state_machine)
+
+  #   # create a memory assertion to ensure that the state machine only reacts to facts producted by `to` parent step
+
+  #   # put memory assertion in conjunction with state conditions
+
+  #   # attach rewritten tree to root of into workflow
+
+  #   memory_assertion_fun_ast =
+  #     quote do
+  #       fn
+  #         _workflow, %Fact{ancestry: {parent_step_hash, _pfh}} ->
+  #           parent_step_hash == unquote(to.hash)
+
+  #         _workflow, _ ->
+  #           false
+  #       end
+  #     end
+
+  #   memory_assertion =
+  #     MemoryAssertion.new(
+  #       memory_assertion: fn
+  #         _workflow, %Fact{ancestry: {parent_step_hash, _pfh}} ->
+  #           parent_step_hash == to.hash
+
+  #         _workflow, _ ->
+  #           false
+  #       end,
+  #       hash: Runic.Workflow.Components.fact_hash(memory_assertion_fun_ast)
+  #     )
+
+  #   wrk =
+  #     wrk
+  #     |> Workflow.add_step(memory_assertion)
+
+  #   wrk.graph
+  #   |> Graph.edges(by: :flow)
+  #   |> Enum.reduce(workflow, fn
+  #     %Graph.Edge{v1: %Root{}, v2: %StateCondition{} = v2}, acc ->
+  #       conjunction =
+  #         Workflow.Conjunction.new([
+  #           v2,
+  #           memory_assertion
+  #         ])
+
+  #       next_accumulators =
+  #         Workflow.next_steps(wrk, v2)
+
+  #       acc =
+  #         acc
+  #         |> Workflow.add_step(v2)
+  #         |> Workflow.add_step(v2, conjunction)
+  #         |> Workflow.add_step(memory_assertion, conjunction)
+
+  #       Enum.reduce(next_accumulators, acc, fn
+  #         next_acc, acc ->
+  #           Workflow.add_step(acc, conjunction, next_acc)
+  #       end)
+
+  #     %Graph.Edge{v1: %StateCondition{}, v2: %Accumulator{}}, acc ->
+  #       acc
+
+  #     %Graph.Edge{} = edge, acc ->
+  #       g = Graph.add_edge(acc.graph, edge)
+  #       %Workflow{acc | graph: g}
+  #   end)
+  #   |> Map.put(:components, Map.merge(wrk.components, workflow.components))
+  # end
 
   def get_component(state_machine, :reducer) do
     state_machine.workflow.graph
@@ -312,6 +412,6 @@ defimpl Runic.Component, for: Runic.Workflow.StateMachine do
   end
 
   def hash(state_machine) do
-    Runic.Workflow.Components.fact_hash(state_machine.source)
+    state_machine.hash
   end
 end

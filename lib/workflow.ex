@@ -911,6 +911,12 @@ defmodule Runic.Workflow do
     react(wrk, Fact.new(value: raw_fact))
   end
 
+  # def react_while(%__MODULE__{} = wrk, %Fact{ancestry: nil} = fact) do
+  #   wrk
+  #   |> react(fact)
+  #   |> react_while()
+  # end
+
   @doc """
   Cycles eagerly through runnables resulting from the input fact.
 
@@ -921,7 +927,7 @@ defmodule Runic.Workflow do
   `react_until_satisfied/2` is good for nested step -> [child_step_1, child_step2, ...] dependencies
   where the goal is to get to the results at the end of the pipeline of steps.
 
-  One should be careful about using react_until_satisfied with infinite loops as evaluation will not terminate.
+  Careful, react_until_satisfied can evaluate infinite loops if the expressed workflow will not terminate.
 
   If your goal is to evaluate some non-terminating program to some finite number of generations - wrapping
   `react/2` in a process that can track workflow evaluation livecycles until desired is recommended.
@@ -1002,13 +1008,43 @@ defmodule Runic.Workflow do
   end
 
   @doc """
+  Eagerly plans through all output facts in the workflow produced in the previous generation to prepare the next set of runnables.
+
+  This is useful for after a workflow has already been ran and satisfied without runnables and you want to continue
+  preparing reactions in the workflow from the output facts of the previous run.
+  """
+  def plan_eagerly(%__MODULE__{} = workflow) do
+    new_productions =
+      for edge <-
+            Graph.out_edges(workflow.graph, workflow.generations,
+              by: :generation,
+              where: fn edge ->
+                Enum.empty?(Graph.out_edges(workflow.graph, edge.v2, by: [:runnable, :matchable]))
+              end
+            ) do
+        edge.v2
+      end
+
+    Enum.reduce(new_productions, workflow, fn output_fact, wrk ->
+      plan(wrk, output_fact)
+    end)
+    |> activate_through_possible_matches()
+  end
+
+  @doc """
   Invokes all left hand side / match-phase runnables in the workflow for a given input fact until all are satisfied.
 
   Upon calling plan_eagerly/2, the workflow will only have right hand side runnables left to execute that react or react_until_satisfied can execute.
   """
-  def plan_eagerly(%__MODULE__{} = workflow, %Fact{} = input_fact) do
+  def plan_eagerly(%__MODULE__{} = workflow, %Fact{ancestry: nil} = input_fact) do
     workflow
     |> plan(input_fact)
+    |> activate_through_possible_matches()
+  end
+
+  def plan_eagerly(%__MODULE__{} = workflow, %Fact{ancestry: {_, _}} = produced_fact) do
+    workflow
+    |> plan(produced_fact)
     |> activate_through_possible_matches()
   end
 
@@ -1053,26 +1089,10 @@ defmodule Runic.Workflow do
     not Enum.empty?(Graph.edges(graph, by: :matchable))
   end
 
-  defp next_match_runnables(%__MODULE__{graph: graph, generations: generation}) do
-    current_generation_facts = facts_for_generation(graph, generation)
-
-    Enum.flat_map(current_generation_facts, fn current_generation_fact ->
-      for %Graph.Edge{} = edge <- Graph.edges(graph, by: :matchable) do
-        {edge.v2, current_generation_fact}
-      end
-    end)
-  end
-
-  # defp fact_for_generation(graph, generation) do
-  #   for %Graph.Edge{} = edge <- Graph.in_edges(graph, generation, by: :generation) do
-  #     edge.v1
-  #   end
-  #   |> List.first()
-  # end
-
-  defp facts_for_generation(graph, generation) do
-    graph
-    |> Graph.in_neighbors(generation)
+  defp next_match_runnables(%__MODULE__{graph: graph}) do
+    for %{v1: fact, v2: step} <- Graph.edges(graph, by: :matchable) do
+      {step, fact}
+    end
   end
 
   @spec is_runnable?(Runic.Workflow.t()) :: boolean()

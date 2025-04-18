@@ -172,7 +172,7 @@ defmodule RunicTest do
   end
 
   describe "Runic.state_machine/1" do
-    test "constructs a Flowable %StateMachine{} given a name, init, and a reducer expression" do
+    test "constructs a %StateMachine{} given a name, init, and a reducer expression" do
       state_machine =
         Runic.state_machine(
           name: "adds integers of some factor to its state up until 30 then stops",

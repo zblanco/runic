@@ -6,7 +6,8 @@ defmodule Runic.Workflow.StateMachine do
     :reducer,
     :reactors,
     :workflow,
-    :source
+    :source,
+    :hash
   ]
 
   def last_known_state(accumulator, workflow) do

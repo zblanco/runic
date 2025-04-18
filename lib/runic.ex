@@ -450,6 +450,10 @@ defmodule Runic do
     end)
   end
 
+  defp traverse_expression({:&, _, _} = expression, _env) do
+    {expression, []}
+  end
+
   @doc """
   Defines a statemachine that can be evaluated within a Runic workflow.
 
@@ -514,7 +518,8 @@ defmodule Runic do
         reducer: unquote(reducer),
         reactors: unquote(reactors),
         workflow: unquote(workflow) |> Map.put(:name, unquote(name)),
-        source: unquote(Macro.escape(source))
+        source: unquote(Macro.escape(source)),
+        hash: unquote(Components.fact_hash({init, reducer, reactors}))
       }
     end
   end
@@ -1087,15 +1092,16 @@ defmodule Runic do
               )
             end
 
-          arity_check =
-            quote do
-              Condition.new(Components.is_of_arity?(1))
-            end
+          # arity_check =
+          #   quote do
+          #     Condition.new(Components.is_of_arity?(1))
+          #   end
 
           quote generated: true do
             unquote(wrk)
-            |> Workflow.add_step(unquote(arity_check))
-            |> Workflow.add_step(unquote(arity_check), unquote(state_condition))
+            |> Workflow.add_step(unquote(state_condition))
+            # |> Workflow.add_step(unquote(arity_check))
+            # |> Workflow.add_step(unquote(arity_check), unquote(state_condition))
             |> Workflow.add_step(unquote(state_condition), unquote(accumulator))
           end
       end
@@ -1109,7 +1115,7 @@ defmodule Runic do
       {:fn, _meta, [{:->, _, [[lhs], _rhs]}]} = reactor, wrk ->
         memory_assertion_fun =
           quote generated: true do
-            fn workflow ->
+            fn workflow, _fact ->
               last_known_state = StateMachine.last_known_state(unquote(accumulator), workflow)
 
               check = fn
@@ -1155,6 +1161,7 @@ defmodule Runic do
       StateReaction.new(
         work: unquote(reactor_ast),
         state_hash: Map.get(unquote(accumulator), :hash),
+        hash: unquote(Components.fact_hash(reactor_ast)),
         arity: 1,
         ast: unquote(Macro.escape(reactor_ast))
       )

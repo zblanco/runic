@@ -21,11 +21,11 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Root do
   alias Runic.Workflow.Fact
   alias Runic.Workflow
 
-  def invoke(%Root{}, workflow, %Fact{ancestry: {parent_hash, _parent_fact_hash}} = fact) do
-    workflow
-    |> Workflow.log_fact(fact)
-    |> Workflow.prepare_next_runnables(Map.get(workflow.flow.vertices, parent_hash), fact)
-  end
+  # def invoke(%Root{}, workflow, %Fact{ancestry: {parent_hash, _parent_fact_hash}} = fact) do
+  #   workflow
+  #   |> Workflow.log_fact(fact)
+  #   |> Workflow.prepare_next_runnables(Map.get(workflow.graph.vertices, parent_hash), fact)
+  # end
 
   def invoke(%Root{} = root, workflow, fact) do
     workflow
@@ -90,6 +90,7 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Condition do
       run_work(work, fact_value, arity)
     rescue
       FunctionClauseError -> false
+      BadArityError -> false
     catch
       true ->
         true
@@ -233,11 +234,11 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.MemoryAssertion do
         %Workflow{} = workflow,
         %Fact{} = fact
       ) do
-    if ma.memory_assertion.(workflow) do
+    if ma.memory_assertion.(workflow, fact) do
       workflow
-      |> Workflow.prepare_next_runnables(ma, fact)
       |> Workflow.draw_connection(fact, ma, :satisfied)
       |> Workflow.mark_runnable_as_ran(ma, fact)
+      |> Workflow.prepare_next_runnables(ma, fact)
     else
       Workflow.mark_runnable_as_ran(workflow, ma, fact)
     end
