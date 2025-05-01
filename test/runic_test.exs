@@ -330,4 +330,185 @@ defmodule RunicTest do
       assert %Workflow{} = Runic.transmute([step, rule, state_machine, condition])
     end
   end
+
+  test "all runic components can be recovered from a log with bindings and their original environment" do
+    some_var = 1
+    some_other_var = 2
+
+    step = Runic.step(fn num -> num + ^some_var end, name: :step_1)
+    rule = Runic.rule(fn num when is_integer(num) -> num + ^some_var end, name: :rule_1)
+
+    state_machine =
+      Runic.state_machine(
+        name: "state_machine",
+        init: 0,
+        reducer: fn num, state -> state + num + ^some_var end
+      )
+
+    map = Runic.map(fn num -> num + ^some_var end, name: :map_1)
+
+    reduce =
+      Runic.reduce(0, fn num, acc -> num + acc + ^some_var end, name: :reduce_1, map: :map_1)
+
+    # Assert that some_var is present in the bindings of each component
+    assert step.bindings[:some_var] == 1
+    assert rule.bindings[:some_var] == 1
+    assert state_machine.bindings[:some_var] == 1
+    assert map.bindings[:some_var] == 1
+    assert reduce.bindings[:some_var] == 1
+
+    # Assert that some_other_var is NOT present in the bindings of any component
+    refute Map.has_key?(step.bindings, :some_other_var)
+    refute Map.has_key?(rule.bindings, :some_other_var)
+    refute Map.has_key?(state_machine.bindings, :some_other_var)
+    refute Map.has_key?(map.bindings, :some_other_var)
+    refute Map.has_key?(reduce.bindings, :some_other_var)
+
+    # Create workflows using explicit add to ensure components are properly added
+    step_workflow =
+      Workflow.new()
+      |> Workflow.add(step)
+
+    rule_workflow =
+      Workflow.new()
+      |> Workflow.add(rule)
+
+    state_machine_workflow =
+      Workflow.new()
+      |> Workflow.add(state_machine)
+
+    map_workflow =
+      Workflow.new()
+      |> Workflow.add(map)
+
+    reduce_with_map_workflow =
+      map_workflow
+      |> Workflow.add(reduce, to: :map_1)
+
+    step_results =
+      step_workflow
+      |> Workflow.react_until_satisfied(2)
+      |> Workflow.raw_productions()
+
+    rule_results =
+      rule_workflow
+      |> Workflow.react_until_satisfied(2)
+      |> Workflow.raw_productions()
+
+    state_machine_results =
+      state_machine_workflow
+      |> Workflow.plan_eagerly(2)
+      |> Workflow.react_until_satisfied()
+      |> Workflow.raw_productions()
+
+    reduce_results =
+      reduce_with_map_workflow
+      |> Workflow.plan_eagerly([1, 2, 3])
+      |> Workflow.react_until_satisfied()
+      |> Workflow.raw_productions()
+
+    map_results =
+      map_workflow
+      |> Workflow.plan_eagerly([1, 2, 3])
+      |> Workflow.react_until_satisfied()
+      |> Workflow.raw_productions()
+
+    step_log = Workflow.build_log(step_workflow)
+    rule_log = Workflow.build_log(rule_workflow)
+    state_machine_log = Workflow.build_log(state_machine_workflow)
+    map_log = Workflow.build_log(map_workflow)
+    reduce_log = Workflow.build_log(reduce_with_map_workflow)
+
+    recovery_code = """
+    defmodule TestRecovery do
+      # This is a separate module that doesn't have access to our test's bindings
+
+      def recover_and_test(step_log, rule_log, state_machine_log, map_log, reduce_log) do
+        require Runic
+        alias Runic.Workflow
+
+        # Recover workflows from logs
+        recovered_step_workflow = Workflow.from_log(step_log)
+
+        recovered_rule_workflow = Workflow.from_log(rule_log)
+
+        recovered_state_machine_workflow = Workflow.from_log(state_machine_log)
+        recovered_map_workflow = Workflow.from_log(map_log)
+        recovered_reduce_workflow = Workflow.from_log(reduce_log)
+
+        recovered_reduce_workflow.graph
+
+        # evaluate rebuilt workflows
+
+        rule_result =
+          recovered_rule_workflow
+          |> Workflow.react_until_satisfied(2)
+          |> Workflow.raw_productions()
+
+        state_machine_result =
+          recovered_state_machine_workflow
+          |> Workflow.plan_eagerly(2)
+          |> Workflow.react_until_satisfied()
+          |> Workflow.raw_productions()
+
+        map_result =
+          recovered_map_workflow
+          |> Workflow.plan_eagerly([1, 2, 3])
+          |> Workflow.react_until_satisfied()
+          |> Workflow.raw_productions()
+
+        reduce_result =
+          recovered_reduce_workflow
+          |> Workflow.plan_eagerly([1, 2, 3])
+          |> Workflow.react_until_satisfied()
+          |> Workflow.raw_productions()
+
+        step_result =
+          recovered_step_workflow
+          |> Workflow.react_until_satisfied(2)
+          |> Workflow.raw_productions()
+
+        %{
+          step_result: step_result,
+          rule_result: rule_result,
+          state_machine_result: state_machine_result,
+          map_result: map_result,
+          reduce_result: reduce_result
+        }
+      end
+    end
+
+    TestRecovery.recover_and_test(step_log, rule_log, state_machine_log, map_log, reduce_log)
+    """
+
+    # Evaluate the recovery code in a separate context
+    {results, _binding} =
+      Code.eval_string(recovery_code,
+        step_log: step_log,
+        rule_log: rule_log,
+        state_machine_log: state_machine_log,
+        map_log: map_log,
+        reduce_log: reduce_log
+      )
+
+    for result <- step_results do
+      assert result in results.step_result
+    end
+
+    for result <- rule_results do
+      assert result in results.rule_result
+    end
+
+    for result <- state_machine_results do
+      assert result in results.state_machine_result
+    end
+
+    for result <- map_results do
+      assert result in results.map_result
+    end
+
+    for result <- reduce_results do
+      assert result in results.reduce_result
+    end
+  end
 end

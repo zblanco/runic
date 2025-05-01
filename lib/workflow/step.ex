@@ -3,10 +3,14 @@ defmodule Runic.Workflow.Step do
   alias Runic.Workflow.Fact
   alias Runic.Workflow.Components
 
-  defstruct [:name, :work, :hash, :source]
+  defstruct [:name, :work, :hash, :source, :bindings]
 
   def new(params) do
-    struct!(__MODULE__, params)
+    params_map = if Keyword.keyword?(params), do: Map.new(params), else: params
+
+    params_with_default_bindings = Map.put_new(params_map, :bindings, %{})
+
+    struct!(__MODULE__, params_with_default_bindings)
     |> maybe_hash_work()
     |> maybe_set_name()
   end

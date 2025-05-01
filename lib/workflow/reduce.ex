@@ -4,5 +4,5 @@ defmodule Runic.Workflow.Reduce do
   for connecting a reduce to other components in a workflow.
   """
 
-  defstruct [:name, :fan_in, :hash, :source]
+  defstruct [:name, :fan_in, :hash, :source, :bindings]
 end

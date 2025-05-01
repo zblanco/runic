@@ -99,10 +99,12 @@ defmodule Runic.Workflow do
   def root(), do: %Root{}
 
   def add(%__MODULE__{} = workflow, component, opts \\ []) do
+    to = opts[:to]
+
     parent_step =
-      if not is_nil(opts[:to]) do
-        get_component(workflow, opts[:to]) ||
-          get_by_hash(workflow, opts[:to]) ||
+      if not is_nil(to) do
+        get_component(workflow, to) ||
+          get_by_hash(workflow, to) ||
           root()
       else
         root()
@@ -110,7 +112,7 @@ defmodule Runic.Workflow do
 
     component
     |> Component.connect(parent_step, workflow)
-    |> append_build_log(component, parent_step)
+    |> append_build_log(component, to)
     |> maybe_put_component(component)
   end
 
@@ -124,21 +126,21 @@ defmodule Runic.Workflow do
     end)
   end
 
-  defp append_build_log(%__MODULE__{} = workflow, component, %{hash: parent_hash}) do
-    do_append_build_log(workflow, component, parent_hash)
+  defp append_build_log(%__MODULE__{} = workflow, component, %{name: name}) do
+    do_append_build_log(workflow, component, name)
   end
 
-  defp append_build_log(%__MODULE__{} = workflow, component, parent) do
-    do_append_build_log(workflow, component, Component.hash(parent))
+  defp append_build_log(%__MODULE__{} = workflow, component, to) do
+    do_append_build_log(workflow, component, to)
   end
 
-  defp do_append_build_log(%__MODULE__{build_log: bl} = workflow, component, parent_step_hash) do
+  defp do_append_build_log(%__MODULE__{build_log: bl} = workflow, component, parent) do
     %__MODULE__{
       workflow
       | build_log: [
           %ComponentAdded{
             source: Component.source(component),
-            to: parent_step_hash,
+            to: parent,
             bindings:
               Map.get(
                 component,
@@ -175,8 +177,11 @@ defmodule Runic.Workflow do
   def from_log(events) do
     Enum.reduce(events, new(), fn
       %ComponentAdded{source: source, to: to, bindings: bindings}, wrk ->
-        {ctx, bindings} =
-          case bindings[:__caller_context__] do
+        caller_context = bindings[:__caller_context__]
+
+        # Build evaluation environment
+        {env, clean_bindings} =
+          case caller_context do
             nil ->
               {build_eval_env(), bindings}
 
@@ -197,13 +202,13 @@ defmodule Runic.Workflow do
               {env, Map.delete(bindings, :__caller_context__)}
           end
 
-        {component, _binding} =
-          Code.eval_quoted(
-            source,
-            Map.to_list(bindings),
-            ctx
-          )
+        # Convert bindings map to keyword list for evaluation
+        binding_list = Map.to_list(clean_bindings)
 
+        # Evaluate the source with bindings
+        {component, _binding} = Code.eval_quoted(source, binding_list, env)
+
+        # Add the component to the workflow
         add(wrk, component, to: to)
 
       %ReactionOccurred{} = ro, wrk ->

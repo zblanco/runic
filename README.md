@@ -47,7 +47,7 @@ alias Runic.Workflow
 
 workflow
 |> Workflow.react_until_satisfied(2)
-|> Worfklow.raw_productions()
+|> Workflow.raw_productions()
 
 [3, 4, 1]
 ```
