@@ -279,6 +279,7 @@ defmodule Runic.Workflow do
     workflow.components
   end
 
+  # extend with I/O contract checks
   def connectables(%__MODULE__{graph: g} = _wrk, %{} = step) do
     impls =
       case Component.__protocol__(:impls) do
@@ -861,6 +862,17 @@ defmodule Runic.Workflow do
     end
   end
 
+  @doc """
+  Lists all facts produced in the workflow so far.
+
+  Does not return input facts only facts generated as a result of the workflow execution.
+
+  ## Examples
+
+      iex> workflow = Workflow.new()
+      ...> workflow |> Workflow.add(Runic.step(fn fact -> fact end)) |> Workflow.react("hello") |> Workflow.facts()
+      [%Fact{value: "hello"}]
+  """
   def productions(%__MODULE__{graph: graph}) do
     for %Graph.Edge{} = edge <-
           Graph.edges(graph, by: [:produced, :state_produced, :state_initiated, :reduced]) do
@@ -868,6 +880,33 @@ defmodule Runic.Workflow do
     end
   end
 
+  @doc """
+  Returns all productions of a component or sub component by name.
+
+  Many components are made up of sub components so this may return multiple facts for each part.
+  """
+  def productions(%__MODULE__{} = wrk, component_name) do
+  end
+
+  @doc """
+  Returns all facts produced in the workflow so far by component name and sub component.
+
+  Returns a map where each key is the name of the component and the value is a list of facts produced by that component.
+  """
+  def productions_by_component(%__MODULE__{graph: graph, components: components}) do
+  end
+
+  @doc """
+  Lists all raw values of facts produced in the workflow so far.
+
+  Does not return input fact values only those generated as a result of the workflow execution.
+
+  ## Examples
+
+      iex> workflow = Workflow.new()
+      ...> workflow |> Workflow.add(Runic.step(fn fact -> fact end)) |> Workflow.react("hello") |> Workflow.raw_productions()
+      ["hello"]
+  """
   def raw_productions(%__MODULE__{graph: graph}) do
     for %Graph.Edge{} = edge <-
           Graph.edges(graph, by: [:produced, :state_produced, :state_initiated, :reduced]) do
@@ -875,9 +914,23 @@ defmodule Runic.Workflow do
     end
   end
 
+  def raw_productions(%__MODULE__{graph: graph}, component_name) do
+  end
+
+  def raw_productions_by_component(%__MODULE__{graph: graph}) do
+  end
+
   @spec facts(Runic.Workflow.t()) :: list(Runic.Workflow.Fact.t())
   @doc """
-  Lists facts produced in the workflow so far.
+  Lists facts processed in the workflow so far.
+
+  Includes input facts with a `nil` ancestry and all facts generated as a result of the workflow execution.
+
+  ## Examples
+
+      iex> workflow = Workflow.new()
+      ...> workflow |> Workflow.add(Runic.step(fn fact -> fact <> " world" end)) |> Workflow.react("hello") |> Workflow.facts()
+      [%Fact{value: "hello", ancestry: nil}, %Fact{value: "hello world"}]
   """
   def facts(%__MODULE__{graph: graph}) do
     for v <- Graph.vertices(graph), match?(%Fact{}, v), do: v
@@ -891,7 +944,7 @@ defmodule Runic.Workflow do
   end
 
   @doc """
-  Cycles eagerly through a prepared agenda in the match phase.
+  Cycles eagerly through a prepared agenda in the match phase and executes a single cycle of right hand side runnables.
   """
   def react(%__MODULE__{generations: generations} = wrk) when generations > 0 do
     Enum.reduce(next_runnables(wrk), wrk, fn {node, fact}, wrk ->

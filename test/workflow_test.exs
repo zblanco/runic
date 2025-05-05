@@ -423,13 +423,87 @@ defmodule WorkflowTest do
 
       assert not is_nil(Workflow.get_component(wrk, "state_machine_test"))
       assert Enum.any?(wrk.graph |> Graph.vertices(), &match?(%Runic.Workflow.Accumulator{}, &1))
+    end
 
+    test "productions/2 returns facts produced by the named component" do
       wrk =
-        wrk
-        |> Workflow.react_until_satisfied(1)
-        |> Workflow.plan_eagerly()
+        Runic.workflow(
+          name: "named components",
+          steps: [
+            {Runic.step(name: "step 1", work: fn num -> num + 1 end),
+             [
+               Runic.step(name: "step 2", work: fn num -> num + 2 end),
+               Runic.step(name: "step 3", work: fn num -> num + 3 end)
+             ]}
+          ]
+        )
+        |> IO.inspect()
 
-      Workflow.productions(wrk)
+      wrk = Workflow.react_until_satisfied(wrk, 1)
+
+      assert Workflow.productions(wrk, "step 1") == [%Fact{value: 2}]
+    end
+
+    test "productions_by_component/1 returns all facts produced grouped by the component names" do
+      wrk =
+        Runic.workflow(
+          name: "named components",
+          steps: [
+            {Runic.step(name: "step 1", work: fn num -> num + 1 end),
+             [
+               Runic.step(name: "step 2", work: fn num -> num + 2 end),
+               Runic.step(name: "step 3", work: fn num -> num + 3 end)
+             ]}
+          ]
+        )
+
+      wrk = Workflow.react_until_satisfied(wrk, 1)
+
+      assert Workflow.productions_by_component(wrk) == %{
+               "step 1" => [%Fact{value: 2}],
+               "step 2" => [%Fact{value: 3}],
+               "step 3" => [%Fact{value: 4}]
+             }
+    end
+
+    test "raw_productions/2 returns raw values produced by the named component" do
+      wrk =
+        Runic.workflow(
+          name: "named components",
+          steps: [
+            {Runic.step(name: "step 1", work: fn num -> num + 1 end),
+             [
+               Runic.step(name: "step 2", work: fn num -> num + 2 end),
+               Runic.step(name: "step 3", work: fn num -> num + 3 end)
+             ]}
+          ]
+        )
+
+      wrk = Workflow.react_until_satisfied(wrk, 1)
+
+      assert Workflow.raw_productions(wrk, "step 1") == [2]
+    end
+
+    test "raw_productions_by_component/1 returns all fact values produced grouped by the component names" do
+      wrk =
+        Runic.workflow(
+          name: "named components",
+          steps: [
+            {Runic.step(name: "step 1", work: fn num -> num + 1 end),
+             [
+               Runic.step(name: "step 2", work: fn num -> num + 2 end),
+               Runic.step(name: "step 3", work: fn num -> num + 3 end)
+             ]}
+          ]
+        )
+
+      wrk = Workflow.react_until_satisfied(wrk, 1)
+
+      assert Workflow.raw_productions_by_component(wrk) == %{
+               "step 1" => [2],
+               "step 2" => [3],
+               "step 3" => [4]
+             }
     end
 
     test "adding a component with a name that is already in use raises an error" do

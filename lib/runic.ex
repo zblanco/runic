@@ -88,17 +88,7 @@ defmodule Runic do
       work_bindings
       |> Enum.uniq()
 
-    bindings =
-      quote do
-        %{
-          unquote_splicing(
-            Enum.map(variable_bindings, fn {:=, _, [{left_var, _, _}, right]} ->
-              {left_var, right}
-            end)
-          ),
-          __caller_context__: unquote(Macro.escape(__CALLER__))
-        }
-      end
+    bindings = build_bindings(variable_bindings, __CALLER__)
 
     quote do
       unquote_splicing(Enum.reverse(variable_bindings))
@@ -141,17 +131,7 @@ defmodule Runic do
       work_bindings
       |> Enum.uniq()
 
-    bindings =
-      quote do
-        %{
-          unquote_splicing(
-            Enum.map(variable_bindings, fn {:=, _, [{left_var, _, _}, right]} ->
-              {left_var, right}
-            end)
-          ),
-          __caller_context__: unquote(Macro.escape(__CALLER__))
-        }
-      end
+    bindings = build_bindings(variable_bindings, __CALLER__)
 
     quote do
       unquote_splicing(Enum.reverse(variable_bindings))
@@ -178,17 +158,7 @@ defmodule Runic do
       work_bindings
       |> Enum.uniq()
 
-    bindings =
-      quote do
-        %{
-          unquote_splicing(
-            Enum.map(variable_bindings, fn {:=, _, [{left_var, _, _}, right]} ->
-              {left_var, right}
-            end)
-          ),
-          __caller_context__: unquote(Macro.escape(__CALLER__))
-        }
-      end
+    bindings = build_bindings(variable_bindings, __CALLER__)
 
     quote do
       unquote_splicing(Enum.reverse(variable_bindings))
@@ -323,37 +293,6 @@ defmodule Runic do
     |> Workflow.add_after_hooks(after_hooks)
   end
 
-  # defmacro workflow_from_log(events) do
-  #   Enum.reduce(unquote(events), Workflow.new(), fn
-  #     %ComponentAdded{source: source, to: to}, wrk ->
-  #       dbg(source, label: "source")
-  #       {component, _binding} = Code.eval_quoted(source, [], __CALLER__)
-  #       Workflow.add(wrk, component, to: to)
-
-  #     %ReactionOccurred{} = ro, wrk ->
-  #       reaction_edge =
-  #         Graph.Edge.new(
-  #           ro.from,
-  #           ro.to,
-  #           label: ro.reaction,
-  #           properties: ro.properties
-  #         )
-
-  #       generation =
-  #         if(ro.reaction == :generation and ro.from > wrk.generations) do
-  #           ro.from
-  #         else
-  #           wrk.generations
-  #         end
-
-  #       %Workflow{
-  #         wrk
-  #         | graph: Graph.add_edge(wrk.graph, reaction_edge),
-  #           generations: generation
-  #       }
-  #   end)
-  # end
-
   @doc """
   Rules are a way to define conditional reactions within a Runic workflow.
 
@@ -416,17 +355,7 @@ defmodule Runic do
       reaction_bindings
       |> Enum.uniq()
 
-    bindings =
-      quote do
-        %{
-          unquote_splicing(
-            Enum.map(variable_bindings, fn {:=, _, [{left_var, _, _}, right]} ->
-              {left_var, right}
-            end)
-          ),
-          __caller_context__: unquote(Macro.escape(__CALLER__))
-        }
-      end
+    bindings = build_bindings(variable_bindings, __CALLER__)
 
     workflow = workflow_of_rule({condition, rewritten_reaction}, arity)
 
@@ -486,17 +415,7 @@ defmodule Runic do
       expression_bindings
       |> Enum.uniq()
 
-    bindings =
-      quote do
-        %{
-          unquote_splicing(
-            Enum.map(variable_bindings, fn {:=, _, [{left_var, _, _}, right]} ->
-              {left_var, right}
-            end)
-          ),
-          __caller_context__: unquote(Macro.escape(__CALLER__))
-        }
-      end
+    bindings = build_bindings(variable_bindings, __CALLER__)
 
     workflow = workflow_of_rule(rewritten_expression, arity)
 
@@ -601,17 +520,7 @@ defmodule Runic do
       reducer_bindings
       |> Enum.uniq()
 
-    bindings =
-      quote do
-        %{
-          unquote_splicing(
-            Enum.map(variable_bindings, fn {:=, _, [{left_var, _, _}, right]} ->
-              {left_var, right}
-            end)
-          ),
-          __caller_context__: unquote(Macro.escape(__CALLER__))
-        }
-      end
+    bindings = build_bindings(variable_bindings, __CALLER__)
 
     workflow = workflow_of_state_machine(init, rewritten_reducer, reactors, name)
 
@@ -683,17 +592,7 @@ defmodule Runic do
       expression_bindings
       |> Enum.uniq()
 
-    bindings =
-      quote do
-        %{
-          unquote_splicing(
-            Enum.map(variable_bindings, fn {:=, _, [{left_var, _, _}, right]} ->
-              {left_var, right}
-            end)
-          ),
-          __caller_context__: unquote(Macro.escape(__CALLER__))
-        }
-      end
+    bindings = build_bindings(variable_bindings, __CALLER__)
 
     pipeline_graph_of_ast =
       pipeline_graph_of_map_expression(rewritten_expression, name)
@@ -808,17 +707,7 @@ defmodule Runic do
       reducer_bindings
       |> Enum.uniq()
 
-    bindings =
-      quote do
-        %{
-          unquote_splicing(
-            Enum.map(variable_bindings, fn {:=, _, [{left_var, _, _}, right]} ->
-              {left_var, right}
-            end)
-          ),
-          __caller_context__: unquote(Macro.escape(__CALLER__))
-        }
-      end
+    bindings = build_bindings(variable_bindings, __CALLER__)
 
     source =
       quote do
@@ -842,6 +731,25 @@ defmodule Runic do
         source: unquote(Macro.escape(source)),
         bindings: unquote(bindings)
       }
+    end
+  end
+
+  defp build_bindings(variable_bindings, caller_context) do
+    if not Enum.empty?(variable_bindings) do
+      quote do
+        %{
+          unquote_splicing(
+            Enum.map(variable_bindings, fn {:=, _, [{left_var, _, _}, right]} ->
+              {left_var, right}
+            end)
+          ),
+          __caller_context__: unquote(Macro.escape(caller_context))
+        }
+      end
+    else
+      quote do
+        %{}
+      end
     end
   end
 
