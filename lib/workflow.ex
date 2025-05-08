@@ -51,8 +51,11 @@ defmodule Runic.Workflow do
           # name -> %{before: list(fun), after: list(fun)}
           before_hooks: map(),
           after_hooks: map(),
-          mapped: map()
           # hash of parent fact for fan_out -> path_to_fan_in e.g. [fan_out, step1, step2, fan_in]
+          mapped: map(),
+          # generation -> list(input_fact_hash)
+          # or input_fact_hash -> MapSet.new([produced_facts])
+          inputs: map()
         }
 
   @type runnable() :: {fun(), term()}
@@ -65,7 +68,8 @@ defmodule Runic.Workflow do
             before_hooks: %{},
             after_hooks: %{},
             mapped: %{},
-            build_log: []
+            build_log: [],
+            inputs: %{}
 
   def new(), do: new([])
 
@@ -84,6 +88,7 @@ defmodule Runic.Workflow do
     |> Map.put(:before_hooks, %{})
     |> Map.put(:after_hooks, %{})
     |> Map.put(:build_log, [])
+    |> Map.put(:inputs, %{})
     |> Map.put(:mapped, %{mapped_paths: MapSet.new()})
   end
 
@@ -1138,9 +1143,92 @@ defmodule Runic.Workflow do
     wrk
   end
 
+  @doc """
+  Executes the Invokable protocol for a runnable step and fact.
+
+  This is a lower level API than as with the react or plan functions intended for process based
+  scheduling and execution of workflows.
+
+  See `invoke_with_events/2` for a version that returns events produced by the invokation that can be
+  persisted incrementally as the workflow is executed for durable execution of long running workflows.
+  """
   def invoke(%__MODULE__{} = wrk, step, fact) do
     wrk = run_before_hooks(wrk, step, fact)
     Invokable.invoke(step, wrk, fact)
+  end
+
+  @doc false
+  def causal_generation(
+        %__MODULE__{graph: graph},
+        %Fact{ancestry: {_parent_step_hash, _parent_fact_hash}} = production_fact
+      ) do
+    graph
+    |> Graph.edges(production_fact, by: [:produced, :state_produced, :state_initiated, :fan_out])
+    |> hd()
+    |> Map.get(:weight)
+
+    +1
+  end
+
+  def causal_generation(
+        %__MODULE__{graph: graph},
+        %Fact{ancestry: nil} = input_fact
+      ) do
+    graph
+    |> Graph.in_neighbors(input_fact)
+    |> Enum.filter(&is_integer/1)
+    |> hd()
+  end
+
+  @doc """
+  Executes the Invokable protocol for a runnable step and fact and returns the all newly caused events produced by the invokation.
+
+  This API is intended to enable durable execution of long running workflows by returning events that can be persisted elsewhere
+  and used to rebuild the workflow state with `from_log/1`.
+  """
+  def invoke_with_events(%__MODULE__{} = wrk, step, fact) do
+    wrk = invoke(wrk, step, fact)
+    new_events = events_produced_since(wrk, fact)
+
+    {wrk, new_events}
+  end
+
+  @doc """
+  Returns all %ReactionOccurred{} events caused since the given fact.
+  """
+  def events_produced_since(
+        %__MODULE__{} = wrk,
+        %Fact{ancestry: {_parent_step_hash, _parent_fact_hash}} = fact
+      ) do
+    # return reaction edges transformed to %ReactionOccurred{} events that do not involve productions known since the given fact
+
+    fact_generation =
+      wrk.graph
+      |> Graph.in_edges(fact, by: :produced)
+      |> hd()
+      |> Map.get(:weight)
+
+    Graph.edges(wrk.graph,
+      by: [
+        :produced,
+        :state_produced,
+        :reduced,
+        :satisfied,
+        :state_initiated,
+        :fan_out,
+        :reduced,
+        :joined
+      ],
+      where: fn edge -> edge.weight > fact_generation end
+    )
+    |> Enum.map(fn edge ->
+      %ReactionOccurred{
+        from: edge.v1,
+        to: edge.v2,
+        reaction: edge.label,
+        properties: edge.properties
+      }
+    end)
   end
 
   defp any_match_phase_runnables?(%__MODULE__{graph: graph}) do
@@ -1273,7 +1361,6 @@ defmodule Runic.Workflow do
     end
   end
 
-  @spec prepare_next_generation(Workflow.t(), Fact.t() | list(Fact.t())) :: Workflow.t()
   @doc false
   def prepare_next_generation(%__MODULE__{} = workflow, %Fact{} = fact) do
     next_generation = workflow.generations + 1
@@ -1292,8 +1379,9 @@ defmodule Runic.Workflow do
     end)
   end
 
-  def draw_connection(%__MODULE__{graph: g} = wrk, node_1, node_2, connection) do
-    %__MODULE__{wrk | graph: Graph.add_edge(g, node_1, node_2, label: connection)}
+  def draw_connection(%__MODULE__{graph: g} = wrk, node_1, node_2, connection, opts \\ []) do
+    opts = Keyword.put(opts, :label, connection)
+    %__MODULE__{wrk | graph: Graph.add_edge(g, node_1, node_2, opts)}
   end
 
   @doc false
@@ -1312,7 +1400,7 @@ defmodule Runic.Workflow do
     }
   end
 
-  @spec prepare_next_runnables(Workflow.t(), any(), Fact.t()) :: any
+  @spec prepare_next_runnables(Workflow.t(), any(), Fact.t()) :: Workflow.t()
   @doc false
   def prepare_next_runnables(%__MODULE__{} = workflow, node, fact) do
     workflow

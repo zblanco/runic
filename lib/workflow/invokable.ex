@@ -38,11 +38,11 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Root do
   # def runnable_connection(_root), do: :root
   # def resolved_connection(_root), do: :root
 
-  def replay(_root, workflow, fact) do
-    workflow
-    |> Workflow.log_fact(fact)
-    |> Workflow.prepare_next_generation(fact)
-  end
+  # def replay(_root, workflow, fact) do
+  #   workflow
+  #   |> Workflow.log_fact(fact)
+  #   |> Workflow.prepare_next_generation(fact)
+  # end
 end
 
 defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Condition do
@@ -78,12 +78,12 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Condition do
 
   def match_or_execute(_condition), do: :match
 
-  def replay(condition, workflow, fact) do
-    workflow
-    |> Workflow.prepare_next_runnables(condition, fact)
-    |> Workflow.draw_connection(fact, condition, :satisfied)
-    |> Workflow.mark_runnable_as_ran(condition, fact)
-  end
+  # def replay(condition, workflow, fact) do
+  #   workflow
+  #   |> Workflow.prepare_next_runnables(condition, fact)
+  #   |> Workflow.draw_connection(fact, condition, :satisfied)
+  #   |> Workflow.mark_runnable_as_ran(condition, fact)
+  # end
 
   defp try_to_run_work(work, fact_value, arity) do
     try do
@@ -141,25 +141,27 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Step do
 
     result_fact = Fact.new(value: result, ancestry: {step.hash, fact.hash})
 
+    causal_generation = Workflow.causal_generation(workflow, fact)
+
     workflow
     |> Workflow.log_fact(result_fact)
-    |> Workflow.draw_connection(step, result_fact, :produced)
+    |> Workflow.draw_connection(step, result_fact, :produced, weight: causal_generation)
     |> Workflow.mark_runnable_as_ran(step, fact)
     |> Workflow.run_after_hooks(step, result_fact)
     |> Workflow.prepare_next_runnables(step, result_fact)
     |> maybe_prepare_map_reduce(step, result_fact)
   end
 
-  def replay(step, workflow, fact) do
-    parent_fact = Map.get(workflow.graph.vertices, elem(fact.ancestry, 1))
+  # def replay(step, workflow, fact) do
+  #   parent_fact = Map.get(workflow.graph.vertices, elem(fact.ancestry, 1))
 
-    workflow
-    |> Workflow.log_fact(fact)
-    |> Workflow.draw_connection(step, fact, :produced)
-    |> Workflow.mark_runnable_as_ran(step, parent_fact)
-    |> Workflow.prepare_next_runnables(step, fact)
-    |> maybe_prepare_map_reduce(step, fact)
-  end
+  #   workflow
+  #   |> Workflow.log_fact(fact)
+  #   |> Workflow.draw_connection(step, fact, :produced, weight: workflow.generations)
+  #   |> Workflow.mark_runnable_as_ran(step, parent_fact)
+  #   |> Workflow.prepare_next_runnables(step, fact)
+  #   |> maybe_prepare_map_reduce(step, fact)
+  # end
 
   def match_or_execute(_step), do: :execute
 
@@ -200,11 +202,13 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Conjunction do
       ) do
     satisfied_conditions = Workflow.satisfied_condition_hashes(workflow, fact)
 
+    causal_generation = Workflow.causal_generation(workflow, fact)
+
     if conj.hash not in satisfied_conditions and
          Enum.all?(conj.condition_hashes, &(&1 in satisfied_conditions)) do
       workflow
       |> Workflow.prepare_next_runnables(conj, fact)
-      |> Workflow.draw_connection(fact, conj, :satisfied)
+      |> Workflow.draw_connection(fact, conj, :satisfied, weight: causal_generation)
       |> Workflow.mark_runnable_as_ran(conj, fact)
     else
       Workflow.mark_runnable_as_ran(workflow, conj, fact)
@@ -235,8 +239,10 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.MemoryAssertion do
         %Fact{} = fact
       ) do
     if ma.memory_assertion.(workflow, fact) do
+      causal_generation = Workflow.causal_generation(workflow, fact)
+
       workflow
-      |> Workflow.draw_connection(fact, ma, :satisfied)
+      |> Workflow.draw_connection(fact, ma, :satisfied, weight: causal_generation)
       |> Workflow.mark_runnable_as_ran(ma, fact)
       |> Workflow.prepare_next_runnables(ma, fact)
     else
@@ -270,9 +276,11 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.StateReaction do
     unless result == {:error, :no_match_of_lhs_in_reactor_fn} do
       result_fact = Fact.new(value: result, ancestry: {sr.hash, fact.hash})
 
+      causal_generation = Workflow.causal_generation(workflow, fact)
+
       workflow
       |> Workflow.log_fact(result_fact)
-      |> Workflow.draw_connection(sr, result_fact, :produced)
+      |> Workflow.draw_connection(sr, result_fact, :produced, weight: causal_generation)
       |> Workflow.run_after_hooks(sr, result_fact)
       |> Workflow.prepare_next_runnables(sr, result_fact)
       |> Workflow.mark_runnable_as_ran(sr, fact)
@@ -308,9 +316,11 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.StateCondition do
     sc_result = sc.work.(fact.value, last_known_state)
 
     if sc_result do
+      causal_generation = Workflow.causal_generation(workflow, fact)
+
       workflow
       |> Workflow.prepare_next_runnables(sc, fact)
-      |> Workflow.draw_connection(fact, sc, :satisfied)
+      |> Workflow.draw_connection(fact, sc, :satisfied, weight: causal_generation)
       |> Workflow.mark_runnable_as_ran(sc, fact)
     else
       Workflow.mark_runnable_as_ran(workflow, sc, fact)
@@ -345,9 +355,11 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Accumulator do
 
       next_state_produced_fact = Fact.new(value: next_state, ancestry: {acc.hash, fact.hash})
 
+      causal_generation = Workflow.causal_generation(workflow, fact)
+
       workflow
       |> Workflow.log_fact(next_state_produced_fact)
-      |> Workflow.draw_connection(acc, fact, :state_produced)
+      |> Workflow.draw_connection(acc, fact, :state_produced, weight: causal_generation)
       |> Workflow.mark_runnable_as_ran(acc, fact)
       |> Workflow.run_after_hooks(acc, next_state_produced_fact)
       |> Workflow.prepare_next_runnables(acc, fact)
@@ -358,11 +370,15 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Accumulator do
 
       next_state_produced_fact = Fact.new(value: next_state, ancestry: {acc.hash, fact.hash})
 
+      causal_generation = Workflow.causal_generation(workflow, fact)
+
       workflow
       |> Workflow.log_fact(init_fact)
-      |> Workflow.draw_connection(acc, init_fact, :state_initiated)
+      |> Workflow.draw_connection(acc, init_fact, :state_initiated, weight: causal_generation)
       |> Workflow.log_fact(next_state_produced_fact)
-      |> Workflow.draw_connection(acc, next_state_produced_fact, :state_produced)
+      |> Workflow.draw_connection(acc, next_state_produced_fact, :state_produced,
+        weight: causal_generation
+      )
       |> Workflow.mark_runnable_as_ran(acc, fact)
       |> Workflow.run_after_hooks(acc, next_state_produced_fact)
       |> Workflow.prepare_next_runnables(acc, fact)
@@ -376,8 +392,7 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Accumulator do
 
   defp last_known_state(workflow, accumulator) do
     workflow.graph
-    |> Graph.out_edges(accumulator)
-    |> Enum.filter(&(&1.label == :state_produced))
+    |> Graph.out_edges(accumulator, by: :state_produced)
     |> List.first(%{})
     |> Map.get(:v2)
   end
@@ -407,7 +422,10 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Join do
     # a join's parent steps are either part of a runnable (for a partially satisfied join)
     # or each step has a produced edge to a new fact for whom the current fact is the ancestor
 
-    workflow = Workflow.draw_connection(workflow, fact, join, :joined)
+    causal_generation = Workflow.causal_generation(workflow, fact)
+
+    workflow =
+      Workflow.draw_connection(workflow, fact, join, :joined, weight: causal_generation)
 
     join_order_weights =
       join.joins
@@ -447,7 +465,9 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Join do
                 wrk.graph |> Graph.update_labelled_edge(v1, v2, :joined, label: :join_satisfied)
           }
       end)
-      |> Workflow.draw_connection(join, join_bindings_fact, :produced)
+      |> Workflow.draw_connection(join, join_bindings_fact, :produced,
+        weight: workflow.generations
+      )
       |> Workflow.run_after_hooks(join, join_bindings_fact)
     else
       workflow
@@ -473,6 +493,8 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.FanOut do
     unless is_nil(Enumerable.impl_for(source_fact.value)) do
       is_reduced? = is_reduced?(workflow, fan_out)
 
+      causal_generation = Workflow.causal_generation(workflow, source_fact)
+
       Enum.reduce(source_fact.value, workflow, fn value, wrk ->
         fact =
           Fact.new(value: value, ancestry: {fan_out.hash, source_fact.hash})
@@ -480,7 +502,7 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.FanOut do
         wrk
         |> Workflow.log_fact(fact)
         |> Workflow.prepare_next_runnables(fan_out, fact)
-        |> Workflow.draw_connection(fan_out, fact, :fan_out)
+        |> Workflow.draw_connection(fan_out, fact, :fan_out, weight: causal_generation)
         |> maybe_prepare_map_reduce(is_reduced?, fan_out, fact)
       end)
       |> Workflow.mark_runnable_as_ran(fan_out, source_fact)
@@ -530,6 +552,8 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.FanIn do
       |> List.first(%{})
       |> Map.get(:v1)
 
+    causal_generation = Workflow.causal_generation(workflow, fact)
+
     case fan_out do
       nil ->
         # basic step w/ enummerable output -> fan_in
@@ -542,7 +566,7 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.FanIn do
         |> Workflow.log_fact(reduced_fact)
         |> Workflow.run_after_hooks(fan_in, reduced_fact)
         |> Workflow.prepare_next_runnables(fan_in, reduced_fact)
-        |> Workflow.draw_connection(fact, fan_in, :reduced)
+        |> Workflow.draw_connection(fact, fan_in, :reduced, weight: causal_generation)
         |> Workflow.mark_runnable_as_ran(fan_in, fact)
 
       %FanOut{} ->
@@ -590,7 +614,7 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.FanIn do
           |> Workflow.log_fact(fact)
           |> Workflow.run_after_hooks(fan_in, fact)
           |> Workflow.prepare_next_runnables(fan_in, fact)
-          |> Workflow.draw_connection(fan_in, fact, :reduced)
+          |> Workflow.draw_connection(fan_in, fact, :reduced, weight: causal_generation)
           |> Workflow.mark_runnable_as_ran(fan_in, fact)
           |> Map.put(
             :mapped,

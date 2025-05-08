@@ -70,6 +70,63 @@ defmodule WorkflowTest do
     def unlock(_), do: :unlocked
   end
 
+  describe "Runic.Workflow" do
+    test "invoke_with_events/2 returns a tuple containing the new workflow, a list of runnables, and events produced from the invokation" do
+      wrk =
+        Runic.workflow(
+          name: "test workflow",
+          steps: [
+            {Runic.step(fn num -> num + 1 end),
+             [
+               Runic.step(fn num -> num + 2 end),
+               Runic.step(fn num -> num + 4 end)
+             ]}
+          ]
+        )
+        |> Workflow.plan_eagerly(2)
+        |> Workflow.react()
+
+      [{step, fact} | _] = Workflow.next_runnables(wrk)
+
+      {invoked_wrk, events} = result = Workflow.invoke_with_events(wrk, step, fact)
+
+      assert {%Workflow{name: "test workflow"}, [%ReactionOccurred{}]} = result
+    end
+
+    test "events_produced_since/2 returns all events produced since the given fact was produced" do
+      wrk =
+        Runic.workflow(
+          name: "test workflow",
+          steps: [
+            {Runic.step(fn num -> num + 1 end),
+             [
+               Runic.step(fn num -> num + 2 end),
+               Runic.step(fn num -> num + 4 end)
+             ]}
+          ]
+        )
+        |> Workflow.plan_eagerly(2)
+        |> Workflow.react()
+
+      [fact | _] = Workflow.productions(wrk)
+
+      assert fact.value == 3
+
+      wrk =
+        wrk
+        |> Workflow.react()
+
+      events = Workflow.events_produced_since(wrk, fact)
+
+      for event <- events do
+        assert match?(%ReactionOccurred{to: %{value: 5}, reaction: :produced}, event) or
+                 match?(%ReactionOccurred{to: %{value: 7}, reaction: :produced}, event)
+
+        assert event.to.value !== fact.value
+      end
+    end
+  end
+
   describe "example workflows" do
     test "text processing dag" do
       wrk = TextProcessing.text_processing_workflow()
@@ -437,7 +494,6 @@ defmodule WorkflowTest do
              ]}
           ]
         )
-        |> IO.inspect()
 
       wrk = Workflow.react_until_satisfied(wrk, 1)
 
