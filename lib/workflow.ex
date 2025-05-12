@@ -222,6 +222,7 @@ defmodule Runic.Workflow do
             ro.from,
             ro.to,
             label: ro.reaction,
+            weight: ro.weight,
             properties: ro.properties
           )
 
@@ -262,6 +263,7 @@ defmodule Runic.Workflow do
         from: edge.v1,
         to: edge.v2,
         reaction: edge.label,
+        weight: edge.weight,
         properties: edge.properties
       }
     end
@@ -1181,10 +1183,10 @@ defmodule Runic.Workflow do
   end
 
   @doc """
-  Executes the Invokable protocol for a runnable step and fact and returns the all newly caused events produced by the invokation.
+  Executes the Invokable protocol for a runnable step and fact and returns all newly caused events produced by the invokation.
 
   This API is intended to enable durable execution of long running workflows by returning events that can be persisted elsewhere
-  and used to rebuild the workflow state with `from_log/1`.
+  so the workflow state can be rebuilt with `from_log/1`.
   """
   def invoke_with_events(%__MODULE__{} = wrk, step, fact) do
     wrk = invoke(wrk, step, fact)
@@ -1226,6 +1228,7 @@ defmodule Runic.Workflow do
         from: edge.v1,
         to: edge.v2,
         reaction: edge.label,
+        weight: edge.weight,
         properties: edge.properties
       }
     end)

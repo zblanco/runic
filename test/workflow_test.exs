@@ -515,6 +515,8 @@ defmodule WorkflowTest do
 
       wrk = Workflow.react_until_satisfied(wrk, 1)
 
+      dbg(wrk.graph, structs: false, label: :wrk)
+
       assert Workflow.productions_by_component(wrk) == %{
                "step 1" => [%Fact{value: 2}],
                "step 2" => [%Fact{value: 3}],
