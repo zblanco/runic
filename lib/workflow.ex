@@ -1200,7 +1200,7 @@ defmodule Runic.Workflow do
   """
   def events_produced_since(
         %__MODULE__{} = wrk,
-        %Fact{ancestry: {_parent_step_hash, _parent_fact_hash}} = fact
+        %Fact{} = fact
       ) do
     # return reaction edges transformed to %ReactionOccurred{} events that do not involve productions known since the given fact
 
