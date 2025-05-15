@@ -91,6 +91,13 @@ defmodule WorkflowTest do
       {invoked_wrk, events} = result = Workflow.invoke_with_events(wrk, step, fact)
 
       assert {%Workflow{name: "test workflow"}, [%ReactionOccurred{}]} = result
+
+      invoked_wrk
+      |> Workflow.next_runnables()
+      |> Enum.reduce(invoked_wrk, fn {step, fact}, wrk ->
+        {invoked_wrk, events} = Workflow.invoke_with_events(wrk, step, fact)
+        invoked_wrk
+      end)
     end
 
     test "events_produced_since/2 returns all events produced since the given fact was produced" do

@@ -1200,7 +1200,7 @@ defmodule Runic.Workflow do
   """
   def events_produced_since(
         %__MODULE__{} = wrk,
-        %Fact{} = fact
+        %Fact{ancestry: {_parent_step_hash, _parent_fact_hash}} = fact
       ) do
     # return reaction edges transformed to %ReactionOccurred{} events that do not involve productions known since the given fact
 
@@ -1233,6 +1233,34 @@ defmodule Runic.Workflow do
       }
     end)
   end
+
+  def events_produced_since(
+        %__MODULE__{graph: graph},
+        %Fact{ancestry: nil} = fact
+      ) do
+    # return reaction edges transformed to %ReactionOccurred{} events that do not involve productions known since the given fact
+
+    fact_generation =
+      graph
+      |> Graph.in_edges(fact, by: :generation)
+      |> hd()
+      |> Map.get(:v1)
+
+    Graph.edges(graph,
+      by: [
+        :produced,
+        :state_produced,
+        :reduced,
+        :satisfied,
+        :state_initiated,
+        :fan_out,
+        :reduced,
+        :joined
+      ],
+      where: fn edge -> edge.weight > fact_generation end
+    )
+  end
+
 
   defp any_match_phase_runnables?(%__MODULE__{graph: graph}) do
     not Enum.empty?(Graph.edges(graph, by: :matchable))
