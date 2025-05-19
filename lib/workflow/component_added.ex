@@ -1,6 +1,6 @@
 defmodule Runic.Workflow.ComponentAdded do
   # @derive JSON.Encoder
-  defstruct [:source, :to, :bindings]
+  defstruct [:source, :to, :bindings, :name]
 
   # defimpl JSON.Encoder, for: __MODULE__ do
   #   def encode(%Runic.Workflow.ComponentAdded{} = event, _encoder) do

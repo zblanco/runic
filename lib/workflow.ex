@@ -145,6 +145,7 @@ defmodule Runic.Workflow do
       | build_log: [
           %ComponentAdded{
             source: Component.source(component),
+            name: component.name,
             to: parent,
             bindings:
               Map.get(
@@ -1260,7 +1261,6 @@ defmodule Runic.Workflow do
       where: fn edge -> edge.weight > fact_generation end
     )
   end
-
 
   defp any_match_phase_runnables?(%__MODULE__{graph: graph}) do
     not Enum.empty?(Graph.edges(graph, by: :matchable))

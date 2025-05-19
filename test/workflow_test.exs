@@ -1211,6 +1211,10 @@ defmodule WorkflowTest do
       # log of JSON/binary encodeable structs e.g. `[%WorkflowComponentAdded{}, ...]`
       assert [%Runic.Workflow.ComponentAdded{} | _] = build_log
 
+      event = List.first(build_log)
+
+      assert not is_nil(event.name)
+
       # rebuild just the workflow steps from log
       built_wrk = Workflow.from_log(build_log)
 
