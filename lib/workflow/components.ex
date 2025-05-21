@@ -1,5 +1,6 @@
 defmodule Runic.Workflow.Components do
   # common functions across workflow components
+  @doc false
   @max_phash 4_294_967_296
 
   def fact_hash(value), do: :erlang.phash2(value, @max_phash)
@@ -43,6 +44,8 @@ defmodule Runic.Workflow.Components do
   def arity_of([{:->, _meta, [lhs | _rhs]} | _]), do: arity_of(lhs)
 
   def arity_of(args) when is_list(args), do: length(args)
+
+  def arity_of(%{work: work}), do: arity_of(work)
 
   def arity_of(_term), do: 1
 

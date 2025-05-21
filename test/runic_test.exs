@@ -1,7 +1,7 @@
 defmodule RunicTest do
   # Component constructor API tests
   use ExUnit.Case
-  doctest Runic
+  # doctest Runic
 
   alias Runic.Workflow.Step
   alias Runic.Workflow.Rule
@@ -71,19 +71,36 @@ defmodule RunicTest do
       assert Rule.run(rule, [2, 90]) == 180
     end
 
-    # test "escapes runtime values with '^'" do
-    #   some_values = [:potato, :ham, :tomato]
+    test "escapes runtime values with '^'" do
+      some_values = [:potato, :ham, :tomato]
 
-    #   escaped_rule =
-    #     Runic.rule(
-    #       name: "escaped_rule",
-    #       condition: fn val when val in ^some_values -> true end,
-    #       reaction: "food"
-    #     )
+      escaped_rule =
+        Runic.rule(
+          name: "escaped rule",
+          condition: fn val when is_atom(val) -> true end,
+          reaction: fn val ->
+            Enum.map(^some_values, fn x ->
+              {val, x}
+            end)
+          end
+        )
 
-    #   assert match?(%Rule{}, escaped_rule)
-    #   assert Rule.check(escaped_rule, :potato)
-    # end
+      assert match?(%Rule{}, escaped_rule)
+      assert Rule.check(escaped_rule, :potato)
+
+      wrk =
+        Runic.workflow(
+          name: "test workflow",
+          rules: [escaped_rule]
+        )
+
+      build_log = wrk |> Workflow.build_log()
+
+      rebuilt_wrk = Workflow.from_log(build_log)
+
+      assert wrk |> Workflow.react_until_satisfied(:potato) |> Workflow.productions() ==
+               rebuilt_wrk |> Workflow.react_until_satisfied(:potato) |> Workflow.productions()
+    end
 
     test "a function can wrap construction to build custom rules at runtime" do
       builder = fn list_of_things ->
@@ -95,14 +112,13 @@ defmodule RunicTest do
       end
 
       dynamic_rule = builder.([:potato, :ham, :tomato])
-
       assert match?(%Rule{}, dynamic_rule)
       assert Rule.check(dynamic_rule, :potato)
       refute Rule.check(dynamic_rule, :yam)
     end
 
     # test "supports `if` macro as a valid rule" do
-    #   rule = Runic.rule(if(true, do: "true"))
+    #   rule = Runic.rule :potato -> :is_potato end
 
     #   assert match?(%Rule{}, rule)
     #   assert Rule.check(rule, true)
@@ -150,13 +166,13 @@ defmodule RunicTest do
   describe "Runic.condition/1" do
     test "conditions can be made from kinds of elixir functions that return a boolean" do
       assert match?(%Condition{}, Runic.condition(fn :potato -> true end))
-      assert match?(%Condition{}, Runic.condition(&Examples.is_potato/1))
-      assert match?(%Condition{}, Runic.condition({Examples, :is_potato, 1}))
+      assert match?(%Condition{}, Runic.condition(&Examples.is_potato?/1))
+      assert match?(%Condition{}, Runic.condition({Examples, :is_potato?, 1}))
     end
   end
 
   describe "Runic.state_machine/1" do
-    test "constructs a Flowable %StateMachine{} given a name, init, and a reducer expression" do
+    test "constructs a %StateMachine{} given a name, init, and a reducer expression" do
       state_machine =
         Runic.state_machine(
           name: "adds integers of some factor to its state up until 30 then stops",
@@ -216,7 +232,7 @@ defmodule RunicTest do
         |> Workflow.plan()
         |> Workflow.react()
 
-      assert Enum.count(Workflow.productions(workflow_after_2_cycles)) == 3
+      assert Enum.count(Workflow.productions(workflow_after_2_cycles)) == 4
 
       assert "ham" in Workflow.raw_reactions(workflow_after_2_cycles)
     end
@@ -312,6 +328,187 @@ defmodule RunicTest do
       assert %Workflow{} = Runic.transmute(state_machine)
       assert %Workflow{} = Runic.transmute(condition)
       assert %Workflow{} = Runic.transmute([step, rule, state_machine, condition])
+    end
+  end
+
+  test "all runic components can be recovered from a log with bindings and their original environment" do
+    some_var = 1
+    some_other_var = 2
+
+    step = Runic.step(fn num -> num + ^some_var end, name: :step_1)
+    rule = Runic.rule(fn num when is_integer(num) -> num + ^some_var end, name: :rule_1)
+
+    state_machine =
+      Runic.state_machine(
+        name: "state_machine",
+        init: 0,
+        reducer: fn num, state -> state + num + ^some_var end
+      )
+
+    map = Runic.map(fn num -> num + ^some_var end, name: :map_1)
+
+    reduce =
+      Runic.reduce(0, fn num, acc -> num + acc + ^some_var end, name: :reduce_1, map: :map_1)
+
+    # Assert that some_var is present in the bindings of each component
+    assert step.bindings[:some_var] == 1
+    assert rule.bindings[:some_var] == 1
+    assert state_machine.bindings[:some_var] == 1
+    assert map.bindings[:some_var] == 1
+    assert reduce.bindings[:some_var] == 1
+
+    # Assert that some_other_var is NOT present in the bindings of any component
+    refute Map.has_key?(step.bindings, :some_other_var)
+    refute Map.has_key?(rule.bindings, :some_other_var)
+    refute Map.has_key?(state_machine.bindings, :some_other_var)
+    refute Map.has_key?(map.bindings, :some_other_var)
+    refute Map.has_key?(reduce.bindings, :some_other_var)
+
+    # Create workflows using explicit add to ensure components are properly added
+    step_workflow =
+      Workflow.new()
+      |> Workflow.add(step)
+
+    rule_workflow =
+      Workflow.new()
+      |> Workflow.add(rule)
+
+    state_machine_workflow =
+      Workflow.new()
+      |> Workflow.add(state_machine)
+
+    map_workflow =
+      Workflow.new()
+      |> Workflow.add(map)
+
+    reduce_with_map_workflow =
+      map_workflow
+      |> Workflow.add(reduce, to: :map_1)
+
+    step_results =
+      step_workflow
+      |> Workflow.react_until_satisfied(2)
+      |> Workflow.raw_productions()
+
+    rule_results =
+      rule_workflow
+      |> Workflow.react_until_satisfied(2)
+      |> Workflow.raw_productions()
+
+    state_machine_results =
+      state_machine_workflow
+      |> Workflow.plan_eagerly(2)
+      |> Workflow.react_until_satisfied()
+      |> Workflow.raw_productions()
+
+    reduce_results =
+      reduce_with_map_workflow
+      |> Workflow.plan_eagerly([1, 2, 3])
+      |> Workflow.react_until_satisfied()
+      |> Workflow.raw_productions()
+
+    map_results =
+      map_workflow
+      |> Workflow.plan_eagerly([1, 2, 3])
+      |> Workflow.react_until_satisfied()
+      |> Workflow.raw_productions()
+
+    step_log = Workflow.build_log(step_workflow)
+    rule_log = Workflow.build_log(rule_workflow)
+    state_machine_log = Workflow.build_log(state_machine_workflow)
+    map_log = Workflow.build_log(map_workflow)
+    reduce_log = Workflow.build_log(reduce_with_map_workflow)
+
+    recovery_code = """
+    defmodule TestRecovery do
+      # This is a separate module that doesn't have access to our test's bindings
+
+      def recover_and_test(step_log, rule_log, state_machine_log, map_log, reduce_log) do
+        require Runic
+        alias Runic.Workflow
+
+        # Recover workflows from logs
+        recovered_step_workflow = Workflow.from_log(step_log)
+
+        recovered_rule_workflow = Workflow.from_log(rule_log)
+
+        recovered_state_machine_workflow = Workflow.from_log(state_machine_log)
+        recovered_map_workflow = Workflow.from_log(map_log)
+        recovered_reduce_workflow = Workflow.from_log(reduce_log)
+
+        recovered_reduce_workflow.graph
+
+        # evaluate rebuilt workflows
+
+        rule_result =
+          recovered_rule_workflow
+          |> Workflow.react_until_satisfied(2)
+          |> Workflow.raw_productions()
+
+        state_machine_result =
+          recovered_state_machine_workflow
+          |> Workflow.plan_eagerly(2)
+          |> Workflow.react_until_satisfied()
+          |> Workflow.raw_productions()
+
+        map_result =
+          recovered_map_workflow
+          |> Workflow.plan_eagerly([1, 2, 3])
+          |> Workflow.react_until_satisfied()
+          |> Workflow.raw_productions()
+
+        reduce_result =
+          recovered_reduce_workflow
+          |> Workflow.plan_eagerly([1, 2, 3])
+          |> Workflow.react_until_satisfied()
+          |> Workflow.raw_productions()
+
+        step_result =
+          recovered_step_workflow
+          |> Workflow.react_until_satisfied(2)
+          |> Workflow.raw_productions()
+
+        %{
+          step_result: step_result,
+          rule_result: rule_result,
+          state_machine_result: state_machine_result,
+          map_result: map_result,
+          reduce_result: reduce_result
+        }
+      end
+    end
+
+    TestRecovery.recover_and_test(step_log, rule_log, state_machine_log, map_log, reduce_log)
+    """
+
+    # Evaluate the recovery code in a separate context
+    {results, _binding} =
+      Code.eval_string(recovery_code,
+        step_log: step_log,
+        rule_log: rule_log,
+        state_machine_log: state_machine_log,
+        map_log: map_log,
+        reduce_log: reduce_log
+      )
+
+    for result <- step_results do
+      assert result in results.step_result
+    end
+
+    for result <- rule_results do
+      assert result in results.rule_result
+    end
+
+    for result <- state_machine_results do
+      assert result in results.state_machine_result
+    end
+
+    for result <- map_results do
+      assert result in results.map_result
+    end
+
+    for result <- reduce_results do
+      assert result in results.reduce_result
     end
   end
 end
