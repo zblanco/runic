@@ -188,8 +188,13 @@ defmodule Runic do
   Invokes the Transmutable protocol of a component to convert it into a workflow.
   """
   def transmute(component) do
-    Runic.Transmutable.transmute(component)
+    component
+    |> Runic.Transmutable.transmute()
+    |> do_transmute()
   end
+
+  defp do_transmute(%Workflow{} = workflow), do: workflow
+  defp do_transmute(component), do: transmute(component)
 
   @doc """
   Define a Runic.Workflow with options.

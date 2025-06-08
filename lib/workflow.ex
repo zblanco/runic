@@ -103,6 +103,9 @@ defmodule Runic.Workflow do
   @doc false
   def root(), do: %Root{}
 
+  @doc """
+  Adds a component to the workflow, connecting it to the parent step or root if no parent is specified.
+  """
   def add(%__MODULE__{} = workflow, component, opts \\ []) do
     to = opts[:to]
 
@@ -119,6 +122,63 @@ defmodule Runic.Workflow do
     |> Component.connect(parent_step, workflow)
     |> append_build_log(component, to)
     |> maybe_put_component(component)
+  end
+
+  def add_with_events(%__MODULE__{} = workflow, component, opts \\ []) do
+    to = opts[:to]
+
+    parent_step =
+      if not is_nil(to) do
+        get_component(workflow, to) ||
+          get_by_hash(workflow, to) ||
+          root()
+      else
+        root()
+      end
+
+    events = build_events(component, to)
+
+    workflow =
+      component
+      |> Component.connect(parent_step, workflow)
+      |> append_build_log(events)
+      |> maybe_put_component(component)
+
+    {workflow, events}
+  end
+
+  defp build_events(component, parents) when is_list(parents) do
+    Enum.reduce(parents, [], fn parent, events ->
+      events ++ build_events(component, parent)
+    end)
+  end
+
+  defp build_events(component, %{name: name}) do
+    build_events(component, name)
+  end
+
+  defp build_events(component, parent) do
+    [
+      %ComponentAdded{
+        source: Component.source(component),
+        name: component.name,
+        to: parent,
+        bindings:
+          Map.get(
+            component,
+            :bindings,
+            %{}
+          )
+      }
+    ]
+
+  end
+
+  defp append_build_log(%__MODULE__{build_log: bl} = workflow, events) when is_list(events) do
+    %__MODULE__{
+      workflow
+      | build_log: bl ++ events
+    }
   end
 
   defp append_build_log(%__MODULE__{} = workflow, component, %Root{} = parent) do
@@ -177,13 +237,20 @@ defmodule Runic.Workflow do
     Enum.reverse(wrk.build_log)
   end
 
-  @doc """
-  Rebuilds a workflow from a list of `%ComponentAdded{}` and/or `%Fact{}` events.
-  """
-  def from_log(events) do
-    Enum.reduce(events, new(), fn
-      %ComponentAdded{source: source, to: to, bindings: bindings}, wrk ->
-        caller_context = bindings[:__caller_context__]
+  def apply_event(%__MODULE__{} = wrk, %ComponentAdded{} = event) do
+    component = component_from_added(event)
+
+    add(wrk, component, to: event.to)
+  end
+
+  def apply_events(%__MODULE__{} = wrk, events) when is_list(events) do
+    Enum.reduce(events, wrk, fn event, acc ->
+      apply_event(acc, event)
+    end)
+  end
+
+  defp component_from_added(%ComponentAdded{source: source, to: to, bindings: bindings} = event) do
+    caller_context = bindings[:__caller_context__]
 
         # Build evaluation environment
         {env, clean_bindings} =
@@ -214,8 +281,19 @@ defmodule Runic.Workflow do
         # Evaluate the source with bindings
         {component, _binding} = Code.eval_quoted(source, binding_list, env)
 
+    component
+  end
+
+  @doc """
+  Rebuilds a workflow from a list of `%ComponentAdded{}` and/or `%ReactionOccurred{}` events.
+  """
+  def from_log(events) do
+    Enum.reduce(events, new(), fn
+      %ComponentAdded{} = event, wrk ->
+        component = component_from_added(event)
+
         # Add the component to the workflow
-        add(wrk, component, to: to)
+        add(wrk, component, to: event.to)
 
       %ReactionOccurred{} = ro, wrk ->
         reaction_edge =
@@ -323,7 +401,7 @@ defmodule Runic.Workflow do
   end
 
   def connectable?(_wrk, _component) do
-    true
+    :ok
   end
 
   defp arity_match(component, add_to_component) do
