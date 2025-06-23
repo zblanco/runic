@@ -77,4 +77,17 @@ defmodule Runic.Workflow.Components do
     do: apply(work, fact_value)
 
   def run(work, fact_value, _arity) when is_function(work), do: apply(work, [fact_value])
+
+  @doc """
+  Validates enumerable protocol implementation of values as a NimbleOptions custom type.
+  """
+  def enumerable_type(values, _args) do
+    case Enumerable.impl_for(values) do
+      nil ->
+        {:error, "#{inspect(values)} is not Enumerable"}
+
+      _impl ->
+        {:ok, values}
+    end
+  end
 end

@@ -32,7 +32,89 @@ defprotocol Runic.Component do
 
   def hash(component)
 
+  @doc """
+  Returns the nimble_options schema for component inputs.
+  Schema is nested within subcomponent keys (e.g., :step, :condition, :fan_out).
+  """
+  def inputs(component)
+
+  @doc """
+  Returns the nimble_options schema for component outputs.
+  Schema is nested within subcomponent keys (e.g., :step, :reaction, :leaf).
+  """
+  def outputs(component)
+
   # def remove(component, workflow)
+end
+
+# Type compatibility helper functions for Component protocol
+defmodule Runic.Component.TypeCompatibility do
+  @moduledoc false
+
+  def types_compatible?(producer_type, consumer_type) do
+    case {producer_type, consumer_type} do
+      # Any type is compatible with anything
+      {:any, _} ->
+        true
+
+      {_, :any} ->
+        true
+
+      # Exact type match
+      {same, same} ->
+        true
+
+      # Lists are compatible if their element types are compatible
+      {{:list, producer_elem}, {:list, consumer_elem}} ->
+        types_compatible?(producer_elem, consumer_elem)
+
+      # One_of types - check if there's overlap or compatibility
+      {{:one_of, producer_opts}, {:one_of, consumer_opts}} ->
+        # If any option in producer matches any option in consumer
+        Enum.any?(producer_opts, fn p_opt ->
+          Enum.any?(consumer_opts, fn c_opt -> types_compatible?(p_opt, c_opt) end)
+        end)
+
+      # One_of producer can match a specific consumer type
+      {{:one_of, producer_opts}, consumer_type} ->
+        Enum.any?(producer_opts, fn opt -> types_compatible?(opt, consumer_type) end)
+
+      # Specific producer type can match one_of consumer
+      {producer_type, {:one_of, consumer_opts}} ->
+        Enum.any?(consumer_opts, fn opt -> types_compatible?(producer_type, opt) end)
+
+      # Custom types - be optimistic and assume compatibility
+      {{:custom, _, _, _}, _} ->
+        true
+
+      {_, {:custom, _, _, _}} ->
+        true
+
+      # Default to false for unhandled cases
+      _ ->
+        false
+    end
+  end
+
+  def schemas_compatible?(producer_outputs, consumer_inputs) do
+    # Find matching subcomponent keys and check type compatibility
+    producer_keys = Keyword.keys(producer_outputs)
+    consumer_keys = Keyword.keys(consumer_inputs)
+
+    # Look for any matching keys with compatible types
+    Enum.any?(producer_keys, fn p_key ->
+      Enum.any?(consumer_keys, fn c_key ->
+        # For now, keys don't need to match exactly - be lenient
+        p_schema = Keyword.get(producer_outputs, p_key, [])
+        c_schema = Keyword.get(consumer_inputs, c_key, [])
+
+        p_type = Keyword.get(p_schema, :type, :any)
+        c_type = Keyword.get(c_schema, :type, :any)
+
+        types_compatible?(p_type, c_type)
+      end)
+    end)
+  end
 end
 
 defimpl Runic.Component, for: Runic.Workflow.Map do
@@ -72,16 +154,25 @@ defimpl Runic.Component, for: Runic.Workflow.Map do
     Map.get(components, sub_component_name)
   end
 
-  def connectables(%Runic.Workflow.Map{} = map, _other_component) do
-    components(map)
+  def connectables(%Runic.Workflow.Map{} = map, other_component) do
+    # Filter components based on compatibility
+    map
+    |> components()
+    |> Enum.filter(fn {_name, component} ->
+      connectable?(component, other_component)
+    end)
   end
 
   def components(%Runic.Workflow.Map{components: components}) do
     Keyword.new(components)
   end
 
-  def connectable?(_component, _other_component) do
-    true
+  def connectable?(component, other_component) do
+    # Use schema-based compatibility checking
+    producer_outputs = outputs(component)
+    consumer_inputs = Runic.Component.inputs(other_component)
+
+    Runic.Component.TypeCompatibility.schemas_compatible?(producer_outputs, consumer_inputs)
   end
 
   def source(%Runic.Workflow.Map{source: source}) do
@@ -90,6 +181,33 @@ defimpl Runic.Component, for: Runic.Workflow.Map do
 
   def hash(map) do
     map.hash
+  end
+
+  def inputs(%Runic.Workflow.Map{inputs: nil}) do
+    # Default schema for maps without user-defined inputs
+    [
+      fan_out: [
+        type: :any,
+        doc: "Input data to be distributed across the map pipeline"
+      ]
+    ]
+  end
+
+  def inputs(%Runic.Workflow.Map{inputs: user_inputs}) do
+    user_inputs
+  end
+
+  def outputs(%Runic.Workflow.Map{outputs: nil}) do
+    [
+      leaf: [
+        type: {:custom, Runic.Components, :enumerable_type, []},
+        doc: "Output result from a Runic map operation, typically a list of processed items"
+      ]
+    ]
+  end
+
+  def outputs(%Runic.Workflow.Map{outputs: user_outputs}) do
+    user_outputs
   end
 
   # def remove(%Runic.Workflow.Map{pipeline: map_wrk} = map, workflow) do
@@ -169,16 +287,32 @@ defimpl Runic.Component, for: Runic.Workflow.Reduce do
     [fan_in: reduce]
   end
 
-  def connectables(reduce, _other_component) do
-    components(reduce)
+  def connectables(reduce, other_component) do
+    # Filter components based on compatibility
+    reduce
+    |> components()
+    |> Enum.filter(fn {_name, component} ->
+      connectable?(component, other_component)
+    end)
   end
 
-  def connectable?(_reduce, other_component) do
-    case other_component do
-      %Workflow.Map{} -> true
-      %Workflow.Step{} -> true
-      _otherwise -> false
-    end
+  def connectable?(reduce, other_component) do
+    # Use schema-based compatibility checking with structural fallback
+    producer_outputs = outputs(reduce)
+    consumer_inputs = Runic.Component.inputs(other_component)
+
+    schema_compatible =
+      Runic.Component.TypeCompatibility.schemas_compatible?(producer_outputs, consumer_inputs)
+
+    # Fallback to structural compatibility for known component types
+    structural_compatible =
+      case other_component do
+        %Workflow.Map{} -> true
+        %Workflow.Step{} -> true
+        _otherwise -> false
+      end
+
+    schema_compatible or structural_compatible
   end
 
   def source(reduce) do
@@ -187,6 +321,34 @@ defimpl Runic.Component, for: Runic.Workflow.Reduce do
 
   def hash(reduce) do
     reduce.hash
+  end
+
+  def inputs(%Runic.Workflow.Reduce{inputs: nil}) do
+    # Default schema for reduces without user-defined inputs
+    [
+      fan_in: [
+        type: {:custom, Runic.Components, :enumerable_type, []},
+        doc: "Enumerable of values to be reduced"
+      ]
+    ]
+  end
+
+  def inputs(%Runic.Workflow.Reduce{inputs: user_inputs}) do
+    user_inputs
+  end
+
+  def outputs(%Runic.Workflow.Reduce{outputs: nil}) do
+    # Default schema for reduces without user-defined outputs
+    [
+      fan_in: [
+        type: :any,
+        doc: "Reduced value produced by the Runic.reduce operation"
+      ]
+    ]
+  end
+
+  def outputs(%Runic.Workflow.Reduce{outputs: user_outputs}) do
+    user_outputs
   end
 end
 
@@ -216,12 +378,21 @@ defimpl Runic.Component, for: Runic.Workflow.Step do
     step
   end
 
-  def connectables(step, _other_component) do
-    components(step)
+  def connectables(step, other_component) do
+    # Filter components based on compatibility
+    step
+    |> components()
+    |> Enum.filter(fn {_name, component} ->
+      connectable?(component, other_component)
+    end)
   end
 
-  def connectable?(_step, _other_component) do
-    true
+  def connectable?(step, other_component) do
+    # Use schema-based compatibility checking
+    producer_outputs = outputs(step)
+    consumer_inputs = Runic.Component.inputs(other_component)
+
+    Runic.Component.TypeCompatibility.schemas_compatible?(producer_outputs, consumer_inputs)
   end
 
   def source(step) do
@@ -230,6 +401,34 @@ defimpl Runic.Component, for: Runic.Workflow.Step do
 
   def hash(step) do
     step.hash
+  end
+
+  def inputs(%Runic.Workflow.Step{inputs: nil}) do
+    # Default schema for steps without user-defined inputs
+    [
+      step: [
+        type: :any,
+        doc: "Input value to be processed by the step function"
+      ]
+    ]
+  end
+
+  def inputs(%Runic.Workflow.Step{inputs: user_inputs}) do
+    user_inputs
+  end
+
+  def outputs(%Runic.Workflow.Step{outputs: nil}) do
+    # Default schema for steps without user-defined outputs
+    [
+      step: [
+        type: :any,
+        doc: "Output value produced by the step function"
+      ]
+    ]
+  end
+
+  def outputs(%Runic.Workflow.Step{outputs: user_outputs}) do
+    user_outputs
   end
 end
 
@@ -251,18 +450,34 @@ defimpl Runic.Component, for: Runic.Workflow.Rule do
     [reaction: rule]
   end
 
-  def connectables(rule, _other_component) do
-    components(rule)
+  def connectables(rule, other_component) do
+    # Filter components based on compatibility
+    rule
+    |> components()
+    |> Enum.filter(fn {_name, component} ->
+      connectable?(component, other_component)
+    end)
   end
 
-  def connectable?(_rule, component) do
-    case component do
-      %Step{} -> true
-      %Map{} -> true
-      %Reduce{} -> true
-      %Workflow{} -> true
-      _otherwise -> false
-    end
+  def connectable?(rule, other_component) do
+    # Use schema-based compatibility checking with structural fallback
+    producer_outputs = outputs(rule)
+    consumer_inputs = Runic.Component.inputs(other_component)
+
+    schema_compatible =
+      Runic.Component.TypeCompatibility.schemas_compatible?(producer_outputs, consumer_inputs)
+
+    # Fallback to structural compatibility for known component types
+    structural_compatible =
+      case other_component do
+        %Step{} -> true
+        %Map{} -> true
+        %Reduce{} -> true
+        %Workflow{} -> true
+        _otherwise -> false
+      end
+
+    schema_compatible or structural_compatible
   end
 
   def source(rule) do
@@ -271,6 +486,34 @@ defimpl Runic.Component, for: Runic.Workflow.Rule do
 
   def hash(rule) do
     Runic.Workflow.Components.fact_hash(rule.source)
+  end
+
+  def inputs(%Runic.Workflow.Rule{inputs: nil}) do
+    # Default schema for rules without user-defined inputs
+    [
+      condition: [
+        type: :any,
+        doc: "Input value to be evaluated by the rule condition"
+      ]
+    ]
+  end
+
+  def inputs(%Runic.Workflow.Rule{inputs: user_inputs}) do
+    user_inputs
+  end
+
+  def outputs(%Runic.Workflow.Rule{outputs: nil}) do
+    # Default schema for rules without user-defined outputs
+    [
+      reaction: [
+        type: :any,
+        doc: "Output value produced by the rule reaction when condition matches"
+      ]
+    ]
+  end
+
+  def outputs(%Runic.Workflow.Rule{outputs: user_outputs}) do
+    user_outputs
   end
 end
 
@@ -399,12 +642,21 @@ defimpl Runic.Component, for: Runic.Workflow.StateMachine do
     ]
   end
 
-  def connectables(state_machine, _other_component) do
-    components(state_machine)
+  def connectables(state_machine, other_component) do
+    # Filter components based on compatibility
+    state_machine
+    |> components()
+    |> Enum.filter(fn {_name, component} ->
+      connectable?(component, other_component)
+    end)
   end
 
-  def connectable?(_state_machine, _other_component) do
-    true
+  def connectable?(state_machine, other_component) do
+    # Use schema-based compatibility checking
+    producer_outputs = outputs(state_machine)
+    consumer_inputs = Runic.Component.inputs(other_component)
+
+    Runic.Component.TypeCompatibility.schemas_compatible?(producer_outputs, consumer_inputs)
   end
 
   def source(state_machine) do
@@ -413,5 +665,33 @@ defimpl Runic.Component, for: Runic.Workflow.StateMachine do
 
   def hash(state_machine) do
     state_machine.hash
+  end
+
+  def inputs(%Runic.Workflow.StateMachine{inputs: nil}) do
+    # Default schema for state machines without user-defined inputs
+    [
+      reactors: [
+        type: {:list, :any},
+        doc: "Input events or data to trigger state transitions"
+      ]
+    ]
+  end
+
+  def inputs(%Runic.Workflow.StateMachine{inputs: user_inputs}) do
+    user_inputs
+  end
+
+  def outputs(%Runic.Workflow.StateMachine{outputs: nil}) do
+    # Default schema for state machines without user-defined outputs
+    [
+      accumulator: [
+        type: :any,
+        doc: "Current state value maintained by the state machine"
+      ]
+    ]
+  end
+
+  def outputs(%Runic.Workflow.StateMachine{outputs: user_outputs}) do
+    user_outputs
   end
 end

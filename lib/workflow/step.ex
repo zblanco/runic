@@ -3,7 +3,7 @@ defmodule Runic.Workflow.Step do
   alias Runic.Workflow.Fact
   alias Runic.Workflow.Components
 
-  defstruct [:name, :work, :hash, :source, :bindings]
+  defstruct [:name, :work, :hash, :source, :bindings, :inputs, :outputs]
 
   def new(params) do
     params_map = if Keyword.keyword?(params), do: Map.new(params), else: params

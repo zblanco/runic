@@ -5,7 +5,9 @@ defmodule Runic.Workflow.Rule do
             arity: nil,
             workflow: nil,
             bindings: %{},
-            source: nil
+            source: nil,
+            inputs: nil,
+            outputs: nil
 
   @typedoc """
   A rule.

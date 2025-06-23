@@ -171,7 +171,6 @@ defmodule Runic.Workflow do
           )
       }
     ]
-
   end
 
   defp append_build_log(%__MODULE__{build_log: bl} = workflow, events) when is_list(events) do
@@ -252,36 +251,37 @@ defmodule Runic.Workflow do
   defp component_from_added(%ComponentAdded{source: source, to: to, bindings: bindings} = event) do
     caller_context = bindings[:__caller_context__]
 
-        # Build evaluation environment
-        {env, clean_bindings} =
-          case caller_context do
-            nil ->
-              {build_eval_env(), bindings}
+    # Build evaluation environment
+    {env, clean_bindings} =
+      case caller_context do
+        nil ->
+          {build_eval_env(), bindings}
 
-            %Macro.Env{context_modules: cms} = caller_context ->
-              env =
-                Enum.reduce(cms, caller_context, fn module, ctx ->
-                  case Macro.Env.define_import(ctx, [], module) do
-                    {:ok, new_ctx} ->
-                      new_ctx
+        %Macro.Env{context_modules: cms} = caller_context ->
+          env =
+            Enum.reduce(cms, caller_context, fn module, ctx ->
+              case Macro.Env.define_import(ctx, [], module) do
+                {:ok, new_ctx} ->
+                  new_ctx
 
-                    {:error, msg} ->
-                      Logger.error(msg)
-                  end
-                end)
-                |> Macro.Env.prune_compile_info()
-                |> Code.env_for_eval()
+                {:error, msg} ->
+                  Logger.error(msg)
+              end
+            end)
+            |> Macro.Env.prune_compile_info()
+            |> Code.env_for_eval()
 
-              {env, Map.delete(bindings, :__caller_context__)}
-          end
+          {env, Map.delete(bindings, :__caller_context__)}
+      end
 
-        # Convert bindings map to keyword list for evaluation
-        binding_list = Map.to_list(clean_bindings)
+    # Convert bindings map to keyword list for evaluation
+    binding_list = Map.to_list(clean_bindings)
 
-        # Evaluate the source with bindings
-        {component, _binding} = Code.eval_quoted(source, binding_list, env)
+    # Evaluate the source with bindings
+    {component, _binding} = Code.eval_quoted(source, binding_list, env)
 
     component
+    |> Map.put(:name, event.name)
   end
 
   @doc """
@@ -1509,7 +1509,6 @@ defmodule Runic.Workflow do
     }
   end
 
-  @spec prepare_next_runnables(Workflow.t(), any(), Fact.t()) :: Workflow.t()
   @doc false
   def prepare_next_runnables(%__MODULE__{} = workflow, node, fact) do
     workflow

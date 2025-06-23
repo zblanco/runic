@@ -97,7 +97,9 @@ defmodule Runic do
         work: unquote(rewritten_work),
         source: unquote(Macro.escape(source)),
         hash: unquote(Components.fact_hash(work)),
-        bindings: unquote(bindings)
+        bindings: unquote(bindings),
+        inputs: nil,
+        outputs: nil
       )
     end
   end
@@ -112,13 +114,18 @@ defmodule Runic do
       Step.new(
         work: unquote(work),
         source: unquote(Macro.escape(source)),
-        hash: unquote(Components.fact_hash(work))
+        hash: unquote(Components.fact_hash(work)),
+        inputs: nil,
+        outputs: nil
       )
     end
   end
 
   defmacro step(opts) when is_list(opts) or is_map(opts) do
-    work = opts[:work]
+    {rewritten_opts, opts_bindings} =
+      if is_list(opts), do: traverse_options(opts, __CALLER__), else: {opts, []}
+
+    work = rewritten_opts[:work]
 
     source =
       quote do
@@ -128,7 +135,7 @@ defmodule Runic do
     {rewritten_work, work_bindings} = traverse_expression(work, __CALLER__)
 
     variable_bindings =
-      work_bindings
+      (work_bindings ++ opts_bindings)
       |> Enum.uniq()
 
     bindings = build_bindings(variable_bindings, __CALLER__)
@@ -139,14 +146,19 @@ defmodule Runic do
       Step.new(
         work: unquote(rewritten_work),
         source: unquote(Macro.escape(source)),
-        name: unquote(opts[:name]),
+        name: unquote(rewritten_opts[:name]),
         hash: unquote(Components.fact_hash(work)),
-        bindings: unquote(bindings)
+        bindings: unquote(bindings),
+        inputs: unquote(rewritten_opts[:inputs]),
+        outputs: unquote(rewritten_opts[:outputs])
       )
     end
   end
 
   defmacro step(work, opts) do
+    {rewritten_opts, opts_bindings} =
+      if is_list(opts), do: traverse_options(opts, __CALLER__), else: {opts, []}
+
     source =
       quote do
         Runic.step(unquote(work), unquote(opts))
@@ -155,7 +167,7 @@ defmodule Runic do
     {rewritten_work, work_bindings} = traverse_expression(work, __CALLER__)
 
     variable_bindings =
-      work_bindings
+      (work_bindings ++ opts_bindings)
       |> Enum.uniq()
 
     bindings = build_bindings(variable_bindings, __CALLER__)
@@ -166,9 +178,11 @@ defmodule Runic do
       Step.new(
         work: unquote(rewritten_work),
         source: unquote(Macro.escape(source)),
-        name: unquote(opts[:name]),
+        name: unquote(rewritten_opts[:name]),
         hash: unquote(Components.fact_hash(work)),
-        bindings: unquote(bindings)
+        bindings: unquote(bindings),
+        inputs: unquote(rewritten_opts[:inputs]),
+        outputs: unquote(rewritten_opts[:outputs])
       )
     end
   end
@@ -185,7 +199,7 @@ defmodule Runic do
   end
 
   @doc """
-  Invokes the Transmutable protocol of a component to convert it into a workflow.
+  Invokes the Transmutable protocol of a component until it becomes a workflow.
   """
   def transmute(component) do
     component
@@ -347,9 +361,11 @@ defmodule Runic do
   ```
   """
   defmacro rule(opts) when is_list(opts) do
-    name = opts[:name]
-    condition = opts[:condition] || opts[:if]
-    reaction = opts[:reaction] || opts[:do]
+    {rewritten_opts, opts_bindings} = traverse_options(opts, __CALLER__)
+
+    name = rewritten_opts[:name]
+    condition = rewritten_opts[:condition] || rewritten_opts[:if]
+    reaction = rewritten_opts[:reaction] || rewritten_opts[:do]
 
     arity = Components.arity_of(reaction)
 
@@ -357,7 +373,7 @@ defmodule Runic do
     {rewritten_reaction, reaction_bindings} = traverse_expression(reaction, __CALLER__)
 
     variable_bindings =
-      reaction_bindings
+      (reaction_bindings ++ opts_bindings)
       |> Enum.uniq()
 
     bindings = build_bindings(variable_bindings, __CALLER__)
@@ -366,11 +382,7 @@ defmodule Runic do
 
     source =
       quote do
-        Runic.rule(
-          name: unquote(name),
-          condition: unquote(condition),
-          reaction: unquote(rewritten_reaction)
-        )
+        Runic.rule(unquote(opts))
       end
 
     quote do
@@ -381,7 +393,9 @@ defmodule Runic do
         arity: unquote(arity),
         workflow: unquote(workflow),
         bindings: unquote(bindings),
-        source: unquote(Macro.escape(source))
+        source: unquote(Macro.escape(source)),
+        inputs: unquote(rewritten_opts[:inputs]),
+        outputs: unquote(rewritten_opts[:outputs])
       }
     end
   end
@@ -410,14 +424,16 @@ defmodule Runic do
   end
 
   defmacro rule(expression, opts) when is_list(opts) do
-    name = opts[:name]
+    {rewritten_opts, opts_bindings} = traverse_options(opts, __CALLER__)
+
+    name = rewritten_opts[:name]
     arity = Components.arity_of(expression)
 
     # Process the expression to extract pinned variables
     {rewritten_expression, expression_bindings} = traverse_expression(expression, __CALLER__)
 
     variable_bindings =
-      expression_bindings
+      (expression_bindings ++ opts_bindings)
       |> Enum.uniq()
 
     bindings = build_bindings(variable_bindings, __CALLER__)
@@ -437,7 +453,9 @@ defmodule Runic do
         arity: unquote(arity),
         workflow: unquote(workflow),
         bindings: unquote(bindings),
-        source: unquote(Macro.escape(source))
+        source: unquote(Macro.escape(source)),
+        inputs: unquote(rewritten_opts[:inputs]),
+        outputs: unquote(rewritten_opts[:outputs])
       }
     end
   end
@@ -468,6 +486,25 @@ defmodule Runic do
   defp traverse_expression({:&, _, _} = expression, _env) do
     {expression, []}
   end
+
+  # Traverse keyword options looking for pinned variables (^var syntax)
+  defp traverse_options(opts, _env) when is_list(opts) do
+    {rewritten_opts, bindings_acc} =
+      Enum.reduce(opts, {[], []}, fn
+        {key, {:^, pin_meta, [{var, _, ctx} = expr]}}, {opts_acc, bindings_acc} ->
+          new_var = Macro.var(var, ctx)
+          binding_assignment = {:=, pin_meta, [new_var, expr]}
+          new_opt = {key, new_var}
+          {[new_opt | opts_acc], [binding_assignment | bindings_acc]}
+
+        {key, value}, {opts_acc, bindings_acc} ->
+          {[{key, value} | opts_acc], bindings_acc}
+      end)
+
+    {Enum.reverse(rewritten_opts), bindings_acc}
+  end
+
+  defp traverse_options(opts, _env), do: {opts, []}
 
   @doc """
   Defines a statemachine that can be evaluated within a Runic workflow.
@@ -509,20 +546,26 @@ defmodule Runic do
   ```
   """
   defmacro state_machine(opts) do
-    init = opts[:init] || raise ArgumentError, "An `init` function or state is required"
+    {rewritten_opts, opts_bindings} = traverse_options(opts, __CALLER__)
+
+    init = rewritten_opts[:init] || raise ArgumentError, "An `init` function or state is required"
 
     reducer =
-      Keyword.get(opts, :reducer) ||
+      Keyword.get(rewritten_opts, :reducer) ||
         raise ArgumentError, "A reducer function is required"
 
-    reactors = opts[:reactors]
+    reactors = rewritten_opts[:reactors]
 
-    name = opts[:name]
+    name = rewritten_opts[:name]
+
+    # Validate input/output schemas for known subcomponents
+    inputs = validate_component_schema(rewritten_opts[:inputs], "state_machine", [:reactors])
+    outputs = validate_component_schema(rewritten_opts[:outputs], "state_machine", [:accumulator])
 
     {rewritten_reducer, reducer_bindings} = traverse_expression(reducer, __CALLER__)
 
     variable_bindings =
-      reducer_bindings
+      (reducer_bindings ++ opts_bindings)
       |> Enum.uniq()
 
     bindings = build_bindings(variable_bindings, __CALLER__)
@@ -545,7 +588,9 @@ defmodule Runic do
         workflow: unquote(workflow) |> Map.put(:name, unquote(name)),
         source: unquote(Macro.escape(source)),
         hash: unquote(Components.fact_hash({init, rewritten_reducer, reactors})),
-        bindings: unquote(bindings)
+        bindings: unquote(bindings),
+        inputs: unquote(inputs),
+        outputs: unquote(outputs)
       }
     end
   end
@@ -585,7 +630,10 @@ defmodule Runic do
   ```
   """
   defmacro map(expression, opts \\ []) do
-    name = opts[:name]
+    {rewritten_opts, opts_bindings} =
+      if is_list(opts), do: traverse_options(opts, __CALLER__), else: {opts, []}
+
+    name = rewritten_opts[:name]
 
     {rewritten_expression, expression_bindings} =
       case expression do
@@ -594,7 +642,7 @@ defmodule Runic do
       end
 
     variable_bindings =
-      expression_bindings
+      (expression_bindings ++ opts_bindings)
       |> Enum.uniq()
 
     bindings = build_bindings(variable_bindings, __CALLER__)
@@ -636,7 +684,9 @@ defmodule Runic do
         pipeline: unquote(map_pipeline),
         hash: unquote(Components.fact_hash({rewritten_expression, name})),
         source: unquote(Macro.escape(source)),
-        bindings: unquote(bindings)
+        bindings: unquote(bindings),
+        inputs: unquote(rewritten_opts[:inputs]),
+        outputs: unquote(rewritten_opts[:outputs])
       }
       |> Runic.Workflow.Map.build_named_components()
     end
@@ -703,13 +753,16 @@ defmodule Runic do
   In this workflow the reduce will be applied to the output of the step that adds 1 to each element in the enumerable produced by the map expression where it multiplies each element by 2.
   """
   defmacro reduce(acc, reducer_fun, opts \\ []) do
-    map_to_reduce = opts[:map]
-    name = opts[:name]
+    {rewritten_opts, opts_bindings} =
+      if is_list(opts), do: traverse_options(opts, __CALLER__), else: {opts, []}
+
+    map_to_reduce = rewritten_opts[:map]
+    name = rewritten_opts[:name]
 
     {rewritten_reducer_fun, reducer_bindings} = traverse_expression(reducer_fun, __CALLER__)
 
     variable_bindings =
-      reducer_bindings
+      (reducer_bindings ++ opts_bindings)
       |> Enum.uniq()
 
     bindings = build_bindings(variable_bindings, __CALLER__)
@@ -734,9 +787,27 @@ defmodule Runic do
           hash: hash
         },
         source: unquote(Macro.escape(source)),
-        bindings: unquote(bindings)
+        bindings: unquote(bindings),
+        inputs: unquote(rewritten_opts[:inputs]),
+        outputs: unquote(rewritten_opts[:outputs])
       }
     end
+  end
+
+  # Schema validation helpers
+  defp validate_component_schema(schema, component_type, known_subcomponents) do
+    if schema do
+      schema_keys = Keyword.keys(schema)
+      invalid_keys = schema_keys -- known_subcomponents
+
+      unless Enum.empty?(invalid_keys) do
+        raise ArgumentError,
+              "Invalid subcomponent keys #{inspect(invalid_keys)} for #{component_type}. " <>
+                "Valid keys are: #{inspect(known_subcomponents)}"
+      end
+    end
+
+    schema
   end
 
   defp build_bindings(variable_bindings, caller_context) do

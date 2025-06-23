@@ -102,6 +102,38 @@ defmodule RunicTest do
                rebuilt_wrk |> Workflow.react_until_satisfied(:potato) |> Workflow.productions()
     end
 
+    test "escapes other opts with `^`" do
+      some_values = [:potato, :ham, :tomato]
+      name = "escaped rule"
+
+      escaped_rule =
+        Runic.rule(
+          name: ^name,
+          condition: fn val when is_atom(val) -> true end,
+          reaction: fn val ->
+            Enum.map(^some_values, fn x ->
+              {val, x}
+            end)
+          end
+        )
+
+      assert match?(%Rule{}, escaped_rule)
+      assert Rule.check(escaped_rule, :potato)
+
+      wrk =
+        Runic.workflow(
+          name: "test workflow",
+          rules: [escaped_rule]
+        )
+
+      build_log = wrk |> Workflow.build_log()
+
+      rebuilt_wrk = Workflow.from_log(build_log)
+
+      assert wrk |> Workflow.react_until_satisfied(:potato) |> Workflow.productions() ==
+               rebuilt_wrk |> Workflow.react_until_satisfied(:potato) |> Workflow.productions()
+    end
+
     test "a function can wrap construction to build custom rules at runtime" do
       builder = fn list_of_things ->
         Runic.rule(
