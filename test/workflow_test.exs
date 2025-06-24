@@ -88,14 +88,14 @@ defmodule WorkflowTest do
 
       [{step, fact} | _] = Workflow.next_runnables(wrk)
 
-      {invoked_wrk, events} = result = Workflow.invoke_with_events(wrk, step, fact)
+      {invoked_wrk, _events} = result = Workflow.invoke_with_events(wrk, step, fact)
 
       assert {%Workflow{name: "test workflow"}, [%ReactionOccurred{}]} = result
 
       invoked_wrk
       |> Workflow.next_runnables()
       |> Enum.reduce(invoked_wrk, fn {step, fact}, wrk ->
-        {invoked_wrk, events} = Workflow.invoke_with_events(wrk, step, fact)
+        {invoked_wrk, _events} = Workflow.invoke_with_events(wrk, step, fact)
         invoked_wrk
       end)
     end
@@ -489,85 +489,85 @@ defmodule WorkflowTest do
       assert Enum.any?(wrk.graph |> Graph.vertices(), &match?(%Runic.Workflow.Accumulator{}, &1))
     end
 
-    # test "productions/2 returns facts produced by the named component" do
-    #   wrk =
-    #     Runic.workflow(
-    #       name: "named components",
-    #       steps: [
-    #         {Runic.step(name: "step 1", work: fn num -> num + 1 end),
-    #          [
-    #            Runic.step(name: "step 2", work: fn num -> num + 2 end),
-    #            Runic.step(name: "step 3", work: fn num -> num + 3 end)
-    #          ]}
-    #       ]
-    #     )
+    test "productions/2 returns facts produced by the named component" do
+      wrk =
+        Runic.workflow(
+          name: "named components",
+          steps: [
+            {Runic.step(name: "step 1", work: fn num -> num + 1 end),
+             [
+               Runic.step(name: "step 2", work: fn num -> num + 2 end),
+               Runic.step(name: "step 3", work: fn num -> num + 3 end)
+             ]}
+          ]
+        )
 
-    #   wrk = Workflow.react_until_satisfied(wrk, 1)
+      wrk = Workflow.react_until_satisfied(wrk, 1)
 
-    #   assert [%Fact{value: 2}] = Workflow.productions(wrk, "step 1")
-    # end
+      assert [%Fact{value: 2}] = Workflow.productions(wrk, "step 1")
+    end
 
-    # test "productions_by_component/1 returns all facts produced grouped by the component names" do
-    #   wrk =
-    #     Runic.workflow(
-    #       name: "named components",
-    #       steps: [
-    #         {Runic.step(name: "step 1", work: fn num -> num + 1 end),
-    #          [
-    #            Runic.step(name: "step 2", work: fn num -> num + 2 end),
-    #            Runic.step(name: "step 3", work: fn num -> num + 3 end)
-    #          ]}
-    #       ]
-    #     )
+    test "productions_by_component/1 returns all facts produced grouped by the component names" do
+      wrk =
+        Runic.workflow(
+          name: "named components",
+          steps: [
+            {Runic.step(name: "step 1", work: fn num -> num + 1 end),
+             [
+               Runic.step(name: "step 2", work: fn num -> num + 2 end),
+               Runic.step(name: "step 3", work: fn num -> num + 3 end)
+             ]}
+          ]
+        )
 
-    #   wrk = Workflow.react_until_satisfied(wrk, 1)
+      wrk = Workflow.react_until_satisfied(wrk, 1)
 
-    #   assert %{
-    #            "step 1" => [%Fact{value: 2}],
-    #            "step 2" => [%Fact{value: 3}],
-    #            "step 3" => [%Fact{value: 4}]
-    #          } = Workflow.productions_by_component(wrk)
-    # end
+      assert %{
+               "step 1" => [%Fact{value: 2}],
+               "step 2" => [%Fact{value: 4}],
+               "step 3" => [%Fact{value: 5}]
+             } = Workflow.productions_by_component(wrk)
+    end
 
-    # test "raw_productions/2 returns raw values produced by the named component" do
-    #   wrk =
-    #     Runic.workflow(
-    #       name: "named components",
-    #       steps: [
-    #         {Runic.step(name: "step 1", work: fn num -> num + 1 end),
-    #          [
-    #            Runic.step(name: "step 2", work: fn num -> num + 2 end),
-    #            Runic.step(name: "step 3", work: fn num -> num + 3 end)
-    #          ]}
-    #       ]
-    #     )
+    test "raw_productions/2 returns raw values produced by the named component" do
+      wrk =
+        Runic.workflow(
+          name: "named components",
+          steps: [
+            {Runic.step(name: "step 1", work: fn num -> num + 1 end),
+             [
+               Runic.step(name: "step 2", work: fn num -> num + 2 end),
+               Runic.step(name: "step 3", work: fn num -> num + 3 end)
+             ]}
+          ]
+        )
 
-    #   wrk = Workflow.react_until_satisfied(wrk, 1)
+      wrk = Workflow.react_until_satisfied(wrk, 1)
 
-    #   assert [2] = Workflow.raw_productions(wrk, "step 1")
-    # end
+      assert [2] = Workflow.raw_productions(wrk, "step 1")
+    end
 
-    # test "raw_productions_by_component/1 returns all fact values produced grouped by the component names" do
-    #   wrk =
-    #     Runic.workflow(
-    #       name: "named components",
-    #       steps: [
-    #         {Runic.step(name: "step 1", work: fn num -> num + 1 end),
-    #          [
-    #            Runic.step(name: "step 2", work: fn num -> num + 2 end),
-    #            Runic.step(name: "step 3", work: fn num -> num + 3 end)
-    #          ]}
-    #       ]
-    #     )
+    test "raw_productions_by_component/1 returns all fact values produced grouped by the component names" do
+      wrk =
+        Runic.workflow(
+          name: "named components",
+          steps: [
+            {Runic.step(name: "step 1", work: fn num -> num + 1 end),
+             [
+               Runic.step(name: "step 2", work: fn num -> num + 2 end),
+               Runic.step(name: "step 3", work: fn num -> num + 3 end)
+             ]}
+          ]
+        )
 
-    #   wrk = Workflow.react_until_satisfied(wrk, 1)
+      wrk = Workflow.react_until_satisfied(wrk, 1)
 
-    #   assert %{
-    #            "step 1" => [2],
-    #            "step 2" => [3],
-    #            "step 3" => [4]
-    #          } = Workflow.raw_productions_by_component(wrk)
-    # end
+      assert %{
+               "step 1" => [2],
+               "step 2" => [4],
+               "step 3" => [5]
+             } = Workflow.raw_productions_by_component(wrk)
+    end
 
     test "adding a component with a name that is already in use raises an error" do
     end
@@ -629,6 +629,8 @@ defmodule WorkflowTest do
           )
         )
 
+      assert %Workflow{} = wrk
+
       # connection API should allow compatible components to be connected to eachother in the workflow
       # it should delegate to the component protocol for how to connect and if its possible
 
@@ -641,6 +643,8 @@ defmodule WorkflowTest do
           as: "reaction2"
         )
 
+      assert %Workflow{} = wrk
+
       # The component impl should know how to attach common components to each other
       wrk =
         Workflow.add(
@@ -649,12 +653,16 @@ defmodule WorkflowTest do
           to: "state_machine"
         )
 
+      assert %Workflow{} = wrk
+
       wrk =
         Workflow.add(
           wrk,
           Runic.step(fn n -> n + 1 end, name: "reaction4"),
           to: "rule2"
         )
+
+      assert %Workflow{} = wrk
 
       # assert %Step{} = Runic.component_of(wrk, "rule1", :reaction)
       # assert %Workflow.Condition{} = Workflow.component_of(wrk, "rule1", :condition)
@@ -786,6 +794,8 @@ defmodule WorkflowTest do
         )
 
       wrk = Workflow.react_until_satisfied(wrk, 1)
+
+      assert %Workflow{} = wrk
     end
 
     test "steps in a map pipeline can have names" do
@@ -822,6 +832,8 @@ defmodule WorkflowTest do
         )
 
       wrk = Workflow.react_until_satisfied(wrk, 2)
+
+      assert %Workflow{} = wrk
     end
 
     test "map pipelines can include nested map expressions" do
@@ -884,6 +896,8 @@ defmodule WorkflowTest do
              ]}
           ]
         )
+
+      assert %Workflow{} = wrk1
     end
   end
 
@@ -958,6 +972,8 @@ defmodule WorkflowTest do
              ]}
           ]
         )
+
+      assert %Workflow{} = wrk
     end
 
     test "reduce can be added to a step in a map expression and reduce over each fanned out fact of the map" do
@@ -1020,7 +1036,7 @@ defmodule WorkflowTest do
           ]
         )
 
-      ran_wrk = Workflow.react_until_satisfied(wrk, 2)
+      _ran_wrk = Workflow.react_until_satisfied(wrk, 2)
 
       assert {:messages, [:before, :after]} = Process.info(self(), :messages)
     end
@@ -1058,7 +1074,7 @@ defmodule WorkflowTest do
           ]
         )
 
-      ran_wrk = Workflow.react_until_satisfied(wrk, 2)
+      _ran_wrk = Workflow.react_until_satisfied(wrk, 2)
 
       assert {:messages, [:before_1, :before_2, :after_1, :after_2]} =
                Process.info(self(), :messages)
@@ -1093,7 +1109,7 @@ defmodule WorkflowTest do
           end
         )
 
-      ran_wrk = Workflow.react_until_satisfied(wrk, 2)
+      _ran_wrk = Workflow.react_until_satisfied(wrk, 2)
 
       assert {:messages, [:before, :after]} = Process.info(self(), :messages)
     end

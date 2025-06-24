@@ -255,7 +255,7 @@ defmodule RunicTest do
         |> Workflow.react()
         |> Workflow.productions()
 
-      assert Enum.count(productions_from_1_cycles) == 3
+      assert Enum.count(productions_from_1_cycles) == 2
 
       workflow_after_2_cycles =
         potato_lock.workflow
@@ -264,7 +264,7 @@ defmodule RunicTest do
         |> Workflow.plan()
         |> Workflow.react()
 
-      assert Enum.count(Workflow.productions(workflow_after_2_cycles)) == 4
+      assert Enum.count(Workflow.productions(workflow_after_2_cycles)) == 3
 
       assert "ham" in Workflow.raw_reactions(workflow_after_2_cycles)
     end

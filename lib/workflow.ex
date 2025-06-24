@@ -248,7 +248,7 @@ defmodule Runic.Workflow do
     end)
   end
 
-  defp component_from_added(%ComponentAdded{source: source, to: to, bindings: bindings} = event) do
+  defp component_from_added(%ComponentAdded{source: source, bindings: bindings} = event) do
     caller_context = bindings[:__caller_context__]
 
     # Build evaluation environment
@@ -971,7 +971,28 @@ defmodule Runic.Workflow do
 
   Many components are made up of sub components so this may return multiple facts for each part.
   """
-  def productions(%__MODULE__{} = wrk, component_name) do
+  def productions(%__MODULE__{} = wrk, component_name)
+      when is_atom(component_name) or is_binary(component_name) do
+    cmp = get_component(wrk, component_name)
+
+    productions(wrk, cmp)
+  end
+
+  def productions(%__MODULE__{} = wrk, component) do
+    component
+    |> Component.components()
+    |> Keyword.values()
+    |> Enum.reduce([], fn sub_component, acc ->
+      productions =
+        for %Graph.Edge{} = edge <-
+              Graph.out_edges(wrk.graph, sub_component,
+                by: [:produced, :state_produced, :state_initiated, :reduced]
+              ) do
+          edge.v2
+        end
+
+      acc ++ productions
+    end)
   end
 
   @doc """
@@ -979,7 +1000,12 @@ defmodule Runic.Workflow do
 
   Returns a map where each key is the name of the component and the value is a list of facts produced by that component.
   """
-  def productions_by_component(%__MODULE__{graph: graph, components: components}) do
+  def productions_by_component(%__MODULE__{components: components} = wrk) do
+    Map.new(components, fn {name, component} ->
+      productions = productions(wrk, component)
+
+      {name, productions}
+    end)
   end
 
   @doc """
@@ -1000,10 +1026,36 @@ defmodule Runic.Workflow do
     end
   end
 
-  def raw_productions(%__MODULE__{graph: graph}, component_name) do
+  def raw_productions_by_component(%__MODULE__{components: components} = wrk) do
+    Map.new(components, fn {name, component} ->
+      productions = raw_productions(wrk, component)
+
+      {name, productions}
+    end)
   end
 
-  def raw_productions_by_component(%__MODULE__{graph: graph}) do
+  def raw_productions(%__MODULE__{} = wrk, component_name)
+      when is_atom(component_name) or is_binary(component_name) do
+    cmp = get_component(wrk, component_name)
+
+    raw_productions(wrk, cmp)
+  end
+
+  def raw_productions(%__MODULE__{} = wrk, component) do
+    component
+    |> Component.components()
+    |> Keyword.values()
+    |> Enum.reduce([], fn sub_component, acc ->
+      productions =
+        for %Graph.Edge{} = edge <-
+              Graph.out_edges(wrk.graph, sub_component,
+                by: [:produced, :state_produced, :state_initiated, :reduced]
+              ) do
+          edge.v2.value
+        end
+
+      acc ++ productions
+    end)
   end
 
   @spec facts(Runic.Workflow.t()) :: list(Runic.Workflow.Fact.t())
