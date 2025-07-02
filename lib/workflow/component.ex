@@ -695,3 +695,83 @@ defimpl Runic.Component, for: Runic.Workflow.StateMachine do
     user_outputs
   end
 end
+
+defimpl Runic.Component, for: Runic.Workflow.Accumulator do
+  alias Runic.Workflow
+
+  def components(accumulator) do
+    [accumulator: accumulator]
+  end
+
+  def connect(accumulator, to, workflow) when is_list(to) do
+    join =
+      to
+      |> Enum.map(& &1.hash)
+      |> Workflow.Join.new()
+
+    workflow
+    |> Workflow.add_step(to, join)
+    |> Workflow.add_step(join, accumulator)
+  end
+
+  def connect(accumulator, to, workflow) do
+    Workflow.add_step(workflow, to, accumulator)
+  end
+
+  def get_component(accumulator, _kind) do
+    accumulator
+  end
+
+  def connectables(accumulator, other_component) do
+    # Filter components based on compatibility
+    accumulator
+    |> components()
+    |> Enum.filter(fn {_name, component} ->
+      connectable?(component, other_component)
+    end)
+  end
+
+  def connectable?(accumulator, other_component) do
+    # Use schema-based compatibility checking
+    producer_outputs = outputs(accumulator)
+    consumer_inputs = Runic.Component.inputs(other_component)
+
+    Runic.Component.TypeCompatibility.schemas_compatible?(producer_outputs, consumer_inputs)
+  end
+
+  def source(accumulator) do
+    accumulator.source
+  end
+
+  def hash(accumulator) do
+    accumulator.hash
+  end
+
+  def inputs(%Runic.Workflow.Accumulator{inputs: nil}) do
+    # Default schema for accumulators without user-defined inputs
+    [
+      accumulator: [
+        type: :any,
+        doc: "Input value to be accumulated with the current state"
+      ]
+    ]
+  end
+
+  def inputs(%Runic.Workflow.Accumulator{inputs: user_inputs}) do
+    user_inputs
+  end
+
+  def outputs(%Runic.Workflow.Accumulator{outputs: nil}) do
+    # Default schema for accumulators without user-defined outputs
+    [
+      accumulator: [
+        type: :any,
+        doc: "Accumulated value after applying the reducer function"
+      ]
+    ]
+  end
+
+  def outputs(%Runic.Workflow.Accumulator{outputs: user_outputs}) do
+    user_outputs
+  end
+end

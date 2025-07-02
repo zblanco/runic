@@ -168,6 +168,63 @@ defmodule RunicTest do
     # end
   end
 
+  describe "Runic.accumulator/3 macro" do
+    test "creates an accumulator using anonymous functions" do
+      acc1 = Runic.accumulator(0, fn x, acc -> x + acc end)
+      acc2 = Runic.accumulator(1, fn x, acc -> x * acc end)
+
+      assert match?(%Runic.Workflow.Accumulator{}, acc1)
+      assert match?(%Runic.Workflow.Accumulator{}, acc2)
+    end
+
+    test "accumulators can be named" do
+      acc1 = Runic.accumulator(0, fn x, acc -> x + acc end, name: "adder")
+      acc2 = Runic.accumulator(1, fn x, acc -> x * acc end, name: "multiplier")
+
+      assert match?(%Runic.Workflow.Accumulator{name: "adder"}, acc1)
+      assert match?(%Runic.Workflow.Accumulator{name: "multiplier"}, acc2)
+    end
+
+    test "other components can be added to a named accumulator" do
+      acc = Runic.accumulator(0, fn x, acc -> x + acc end, name: "adder")
+
+      step = Runic.step(fn x -> x * 2 end, name: "doubler")
+      rule = Runic.rule(fn x when is_integer(x) -> x * 3 end, name: "tripler")
+
+      workflow =
+        Runic.workflow(name: "test workflow with accumulator")
+        |> Workflow.add(acc)
+        |> Workflow.add(step, to: "adder")
+        |> Workflow.add(rule, to: "adder")
+
+      assert match?(%Workflow{}, workflow)
+    end
+
+    # test "`^` captured bindings can be used in accumulators" do
+    #   some_var = 10
+
+    #   acc =
+    #     Runic.accumulator(0, fn x, acc -> x + acc + ^some_var end, name: "adder_with_binding")
+
+    #   assert match?(%Runic.Workflow.Accumulator{}, acc)
+    #   assert acc.bindings[:some_var] == 10
+
+    #   workflow =
+    #     Runic.workflow(name: "test workflow with accumulator")
+    #     |> Workflow.add(acc)
+
+    #   assert match?(%Workflow{}, workflow)
+
+    #   result =
+    #     workflow
+    #     |> Workflow.plan_eagerly([1, 2, 3])
+    #     |> Workflow.react_until_satisfied()
+    #     |> Workflow.raw_productions()
+
+    #   assert result == [11, 13, 15]
+    # end
+  end
+
   describe "Runic.step constructors" do
     test "a Step can be created with params using Runic.step/1" do
       assert match?(%Step{}, Runic.step(work: fn -> :potato end, name: "potato"))

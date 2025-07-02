@@ -795,6 +795,61 @@ defmodule Runic do
   end
 
   # Schema validation helpers
+  @doc """
+  accumulator/2 creates an accumulator that reduces parent facts starting with the init value.
+
+  An accumulator differs from reduce in that it only runs once per fact during invoke 
+  and does not expect an enumerable or a fan-in/fan-out/map-reduce scenario.
+
+  ## Examples
+
+  ```elixir
+  require Runic
+  import Runic
+
+  # Simple accumulator
+  acc = Runic.accumulator(0, fn x, acc -> x + acc end)
+
+  # Named accumulator
+  acc = Runic.accumulator(0, fn x, acc -> x + acc end, name: "adder")
+  ```
+  """
+  defmacro accumulator(init, reducer_fun, opts \\ []) do
+    {rewritten_opts, opts_bindings} =
+      if is_list(opts), do: traverse_options(opts, __CALLER__), else: {opts, []}
+
+    name = rewritten_opts[:name]
+
+    {rewritten_reducer_fun, reducer_bindings} = traverse_expression(reducer_fun, __CALLER__)
+
+    variable_bindings =
+      (reducer_bindings ++ opts_bindings)
+      |> Enum.uniq()
+
+    bindings = build_bindings(variable_bindings, __CALLER__)
+
+    source =
+      quote do
+        Runic.accumulator(unquote(init), unquote(reducer_fun), unquote(opts))
+      end
+
+    quote do
+      unquote_splicing(Enum.reverse(variable_bindings))
+
+      %Accumulator{
+        name: unquote(name),
+        init: fn -> unquote(init) end,
+        reducer: unquote(rewritten_reducer_fun),
+        hash: unquote(Components.fact_hash({init, rewritten_reducer_fun})),
+        source: unquote(Macro.escape(source)),
+        binds: unquote(bindings),
+        inputs: unquote(rewritten_opts[:inputs]),
+        outputs: unquote(rewritten_opts[:outputs])
+      }
+    end
+  end
+
+  # Schema validation helpers
   defp validate_component_schema(schema, component_type, known_subcomponents) do
     if schema do
       schema_keys = Keyword.keys(schema)

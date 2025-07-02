@@ -132,6 +132,9 @@ defmodule WorkflowTest do
         assert event.to.value !== fact.value
       end
     end
+
+    test "react_until_satisfied/3 accepts a check function to halt reactions" do
+    end
   end
 
   describe "example workflows" do

@@ -4,7 +4,7 @@ defmodule Runic.MixProject do
   def project do
     [
       app: :runic,
-      version: "0.1.0",
+      version: "0.1.0-alpha.1",
       elixir: "~> 1.18",
       start_permanent: Mix.env() == :prod,
       deps: deps()
@@ -22,9 +22,7 @@ defmodule Runic.MixProject do
   defp deps do
     [
       {:uniq, "~> 0.6.1"},
-      {:nimble_options, "~> 1.1"},
-      {:libgraph, "~> 0.16.0",
-       git: "https://github.com/zblanco/libgraph.git", branch: "zw/multigraph-indexes"}
+      {:libgraph, git: "https://github.com/zblanco/libgraph.git", branch: "zw/multigraph-indexes"}
       # {:libgraph, "~> 0.16.0", path: "~/wrk/oss/libgraph"}
     ]
   end
