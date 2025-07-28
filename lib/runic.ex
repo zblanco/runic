@@ -2,6 +2,7 @@ defmodule Runic do
   @external_resource "README.md"
   @moduledoc "README.md" |> File.read!() |> String.split("<!-- MDOC !-->") |> Enum.fetch!(1)
 
+  alias Runic.Workflow.CompilationUtils
   alias Runic.Workflow.StateCondition
   alias Runic.Workflow.Accumulator
   alias Runic.Workflow.StateMachine
@@ -29,6 +30,11 @@ defmodule Runic do
   #   not
   #   =~
   # )a
+
+  # Helper function to generate default component names
+  defp default_component_name(component_kind, hash) do
+    "#{component_kind}_#{hash}"
+  end
 
   @doc """
   Creates a %Step{}: a basic lambda expression that can be added to a workflow.
@@ -90,13 +96,18 @@ defmodule Runic do
 
     bindings = build_bindings(variable_bindings, __CALLER__)
 
+    step_hash = Components.fact_hash(source)
+    work_hash = Components.fact_hash(work)
+
     quote do
       unquote_splicing(Enum.reverse(variable_bindings))
 
       Step.new(
         work: unquote(rewritten_work),
         source: unquote(Macro.escape(source)),
-        hash: unquote(Components.fact_hash(work)),
+        name: unquote(default_component_name("step", step_hash)),
+        hash: unquote(step_hash),
+        work_hash: unquote(work_hash),
         bindings: unquote(bindings),
         inputs: nil,
         outputs: nil
@@ -110,11 +121,16 @@ defmodule Runic do
         Runic.step(unquote(work))
       end
 
+    step_hash = Components.fact_hash(source)
+    work_hash = Components.fact_hash(work)
+
     quote do
       Step.new(
         work: unquote(work),
         source: unquote(Macro.escape(source)),
-        hash: unquote(Components.fact_hash(work)),
+        name: unquote(default_component_name("step", step_hash)),
+        hash: unquote(step_hash),
+        work_hash: unquote(work_hash),
         inputs: nil,
         outputs: nil
       )
@@ -140,14 +156,19 @@ defmodule Runic do
 
     bindings = build_bindings(variable_bindings, __CALLER__)
 
+    step_hash = Components.fact_hash(source)
+    work_hash = Components.fact_hash(work)
+    step_name = rewritten_opts[:name] || default_component_name("step", step_hash)
+
     quote do
       unquote_splicing(Enum.reverse(variable_bindings))
 
       Step.new(
         work: unquote(rewritten_work),
         source: unquote(Macro.escape(source)),
-        name: unquote(rewritten_opts[:name]),
-        hash: unquote(Components.fact_hash(work)),
+        name: unquote(step_name),
+        hash: unquote(step_hash),
+        work_hash: unquote(work_hash),
         bindings: unquote(bindings),
         inputs: unquote(rewritten_opts[:inputs]),
         outputs: unquote(rewritten_opts[:outputs])
@@ -172,14 +193,19 @@ defmodule Runic do
 
     bindings = build_bindings(variable_bindings, __CALLER__)
 
+    step_hash = Components.fact_hash(source)
+    work_hash = Components.fact_hash(work)
+    step_name = rewritten_opts[:name] || default_component_name("step", step_hash)
+
     quote do
       unquote_splicing(Enum.reverse(variable_bindings))
 
       Step.new(
         work: unquote(rewritten_work),
         source: unquote(Macro.escape(source)),
-        name: unquote(rewritten_opts[:name]),
-        hash: unquote(Components.fact_hash(work)),
+        name: unquote(step_name),
+        hash: unquote(step_hash),
+        work_hash: unquote(work_hash),
         bindings: unquote(bindings),
         inputs: unquote(rewritten_opts[:inputs]),
         outputs: unquote(rewritten_opts[:outputs])
@@ -378,20 +404,27 @@ defmodule Runic do
 
     bindings = build_bindings(variable_bindings, __CALLER__)
 
-    workflow = workflow_of_rule({condition, rewritten_reaction}, arity)
+    {workflow, condition_hash, reaction_hash} =
+      workflow_of_rule({condition, rewritten_reaction}, arity)
 
     source =
       quote do
         Runic.rule(unquote(opts))
       end
 
+    rule_hash = Components.fact_hash(source)
+    rule_name = name || default_component_name("rule", rule_hash)
+
     quote do
       unquote_splicing(Enum.reverse(variable_bindings))
 
       %Rule{
-        name: unquote(name),
+        name: unquote(rule_name),
         arity: unquote(arity),
         workflow: unquote(workflow),
+        condition_hash: unquote(condition_hash),
+        reaction_hash: unquote(reaction_hash),
+        hash: unquote(rule_hash),
         bindings: unquote(bindings),
         source: unquote(Macro.escape(source)),
         inputs: unquote(rewritten_opts[:inputs]),
@@ -403,21 +436,32 @@ defmodule Runic do
   defmacro rule(expression) do
     arity = Components.arity_of(expression)
 
-    workflow = workflow_of_rule(expression, arity)
+    {workflow, condition_hash, reaction_hash} = workflow_of_rule(expression, arity)
 
     source =
       quote do
         Runic.rule(unquote(expression))
       end
 
+    rule_hash = Components.fact_hash(source)
+    rule_name = default_component_name("rule", rule_hash)
+
     quote bind_quoted: [
             arity: arity,
             workflow: workflow,
-            source: Macro.escape(source)
+            condition_hash: condition_hash,
+            reaction_hash: reaction_hash,
+            rule_hash: rule_hash,
+            source: Macro.escape(source),
+            rule_name: rule_name
           ] do
       %Rule{
+        name: rule_name,
         arity: arity,
         workflow: workflow,
+        hash: rule_hash,
+        condition_hash: condition_hash,
+        reaction_hash: reaction_hash,
         source: source
       }
     end
@@ -438,20 +482,26 @@ defmodule Runic do
 
     bindings = build_bindings(variable_bindings, __CALLER__)
 
-    workflow = workflow_of_rule(rewritten_expression, arity)
+    {workflow, condition_hash, reaction_hash} = workflow_of_rule(rewritten_expression, arity)
 
     source =
       quote do
         Runic.rule(unquote(expression), unquote(opts))
       end
 
+    rule_hash = Components.fact_hash(source)
+    rule_name = name || default_component_name("rule", rule_hash)
+
     quote do
       unquote_splicing(Enum.reverse(variable_bindings))
 
       %Rule{
-        name: unquote(name),
+        name: unquote(rule_name),
         arity: unquote(arity),
         workflow: unquote(workflow),
+        hash: unquote(rule_hash),
+        condition_hash: unquote(condition_hash),
+        reaction_hash: unquote(reaction_hash),
         bindings: unquote(bindings),
         source: unquote(Macro.escape(source)),
         inputs: unquote(rewritten_opts[:inputs]),
@@ -570,7 +620,10 @@ defmodule Runic do
 
     bindings = build_bindings(variable_bindings, __CALLER__)
 
-    workflow = workflow_of_state_machine(init, rewritten_reducer, reactors, name)
+    state_machine_hash = Components.fact_hash({init, rewritten_reducer, reactors})
+    state_machine_name = name || default_component_name("state_machine", state_machine_hash)
+
+    workflow = workflow_of_state_machine(init, rewritten_reducer, reactors, state_machine_name)
 
     source =
       quote do
@@ -581,13 +634,13 @@ defmodule Runic do
       unquote_splicing(Enum.reverse(variable_bindings))
 
       %StateMachine{
-        name: unquote(name),
+        name: unquote(state_machine_name),
         init: unquote(init),
         reducer: unquote(rewritten_reducer),
         reactors: unquote(reactors),
-        workflow: unquote(workflow) |> Map.put(:name, unquote(name)),
+        workflow: unquote(workflow) |> Map.put(:name, unquote(state_machine_name)),
         source: unquote(Macro.escape(source)),
-        hash: unquote(Components.fact_hash({init, rewritten_reducer, reactors})),
+        hash: unquote(state_machine_hash),
         bindings: unquote(bindings),
         inputs: unquote(inputs),
         outputs: unquote(outputs)
@@ -647,42 +700,59 @@ defmodule Runic do
 
     bindings = build_bindings(variable_bindings, __CALLER__)
 
-    pipeline_graph_of_ast =
-      pipeline_graph_of_map_expression(rewritten_expression, name)
-
     source =
       quote do
         Runic.map(unquote(rewritten_expression), unquote(opts))
       end
 
-    map_pipeline =
-      quote do
-        unquote(
-          pipeline_graph_of_ast
-          |> Graph.edges()
-          |> Enum.reduce(quote(do: Workflow.new()), fn
-            %{v1: :root, v2: v2}, wrk ->
-              quote do
-                unquote(wrk)
-                |> Workflow.add_step(unquote(v2))
-              end
+    map_hash = Components.fact_hash(source)
+    map_name = name || default_component_name("map", map_hash)
 
-            %{v1: v1, v2: v2}, wrk ->
-              quote do
-                unquote(wrk)
-                |> Workflow.add_step(unquote(v1), unquote(v2))
-              end
-          end)
-        )
-      end
+    map_pipeline =
+      pipeline_workflow_of_map_expression(
+        rewritten_expression,
+        map_name
+      )
+
+    # map_pipeline =
+    #   Runic.Workflow.CompilationUtils.workflow_graph_of_pipeline_tree_expression(
+    #     rewritten_expression,
+    #     map_name
+    #   )
+
+    # pipeline_graph_of_ast =
+    #   pipeline_graph_of_map_expression(rewritten_expression, name)
+
+    # map_pipeline =
+    #   quote do
+    #     unquote(
+    #       pipeline_graph_of_ast
+    #       |> Graph.edges()
+    #       |> Enum.reduce(quote(do: Workflow.new()), fn
+    #         %{v1: :root, v2: v2}, wrk ->
+    #           quote do
+    #             unquote(wrk)
+    #             |> Workflow.add_step(unquote(v2))
+    #           end
+
+    #         %{v1: v1, v2: v2}, wrk ->
+    #           quote do
+    #             unquote(wrk)
+    #             |> Workflow.add_step(unquote(v1), unquote(v2))
+    #           end
+    #       end)
+    #     )
+    #   end
+
+    dbg(Macro.to_string(map_pipeline), label: "Map Pipeline")
 
     quote do
       unquote_splicing(Enum.reverse(variable_bindings))
 
       %Runic.Workflow.Map{
-        name: unquote(name),
+        name: unquote(map_name),
         pipeline: unquote(map_pipeline),
-        hash: unquote(Components.fact_hash({rewritten_expression, name})),
+        hash: unquote(map_hash),
         source: unquote(Macro.escape(source)),
         bindings: unquote(bindings),
         inputs: unquote(rewritten_opts[:inputs]),
@@ -767,6 +837,9 @@ defmodule Runic do
 
     bindings = build_bindings(variable_bindings, __CALLER__)
 
+    reduce_hash = Components.fact_hash({acc, rewritten_reducer_fun})
+    reduce_name = name || default_component_name("reduce", reduce_hash)
+
     source =
       quote do
         Runic.reduce(unquote(acc), unquote(reducer_fun), unquote(opts))
@@ -775,16 +848,14 @@ defmodule Runic do
     quote do
       unquote_splicing(Enum.reverse(variable_bindings))
 
-      hash = unquote(Components.fact_hash({acc, rewritten_reducer_fun}))
-
       %Runic.Workflow.Reduce{
-        name: unquote(name),
-        hash: hash,
+        name: unquote(reduce_name),
+        hash: unquote(reduce_hash),
         fan_in: %FanIn{
           map: unquote(map_to_reduce),
           init: fn -> unquote(acc) end,
           reducer: unquote(rewritten_reducer_fun),
-          hash: hash
+          hash: unquote(reduce_hash)
         },
         source: unquote(Macro.escape(source)),
         bindings: unquote(bindings),
@@ -798,7 +869,7 @@ defmodule Runic do
   @doc """
   accumulator/2 creates an accumulator that reduces parent facts starting with the init value.
 
-  An accumulator differs from reduce in that it only runs once per fact during invoke 
+  An accumulator differs from reduce in that it only runs once per fact during invoke
   and does not expect an enumerable or a fan-in/fan-out/map-reduce scenario.
 
   ## Examples
@@ -833,14 +904,19 @@ defmodule Runic do
         Runic.accumulator(unquote(init), unquote(reducer_fun), unquote(opts))
       end
 
+    accumulator_hash = Components.fact_hash(source)
+    reduce_hash = Components.fact_hash({init, rewritten_reducer_fun})
+    accumulator_name = name || default_component_name("accumulator", accumulator_hash)
+
     quote do
       unquote_splicing(Enum.reverse(variable_bindings))
 
       %Accumulator{
-        name: unquote(name),
+        name: unquote(accumulator_name),
         init: fn -> unquote(init) end,
         reducer: unquote(rewritten_reducer_fun),
-        hash: unquote(Components.fact_hash({init, rewritten_reducer_fun})),
+        hash: unquote(accumulator_hash),
+        reduce_hash: unquote(reduce_hash),
         source: unquote(Macro.escape(source)),
         binds: unquote(bindings),
         inputs: unquote(rewritten_opts[:inputs]),
@@ -884,6 +960,197 @@ defmodule Runic do
     end
   end
 
+  # direct to ast pipeline workflow
+  defp pipeline_workflow_of_map_expression(expression, name) do
+    pipeline_workflow_of_map_expression(
+      quote generated: true do
+        require Runic
+        alias Runic.Workflow
+
+        Runic.workflow(name: unquote(name))
+      end,
+      expression,
+      name
+    )
+  end
+
+  defp pipeline_workflow_of_map_expression(wrk_expression, {:fn, _, _} = expression, name) do
+    fan_out_hash = Components.fact_hash({:fan_out, expression})
+
+    fan_out =
+      quote do
+        %FanOut{
+          hash: unquote(fan_out_hash),
+          name: unquote(name)
+        }
+      end
+
+    step = pipeline_step(expression)
+
+    quote do
+      unquote(wrk_expression)
+      |> Workflow.add_step(unquote(fan_out))
+      |> Workflow.add(unquote(step), to: unquote(fan_out_hash))
+
+      # |> Workflow.draw_connection(:self, unquote(fan_out), :component_of, properties: %{
+      #   kind: :fan_out,
+      # })
+      # |> Workflow.draw_connection(:self, unquote(step), :component_of, properties: %{
+      #   kind: :leaf,
+      # })
+    end
+  end
+
+  defp pipeline_workflow_of_map_expression(wrk_expression, {:step, _, _} = expression, name) do
+    fan_out_hash = Components.fact_hash({:fan_out, expression})
+
+    fan_out =
+      quote do
+        %FanOut{
+          hash: unquote(fan_out_hash),
+          name: unquote(name)
+        }
+      end
+
+    step = pipeline_step(expression)
+
+    quote do
+      unquote(wrk_expression)
+      |> Workflow.add_step(unquote(fan_out))
+      |> Workflow.add(unquote(step), to: unquote(fan_out_hash))
+    end
+  end
+
+  defp pipeline_workflow_of_map_expression(
+         wrk_expression,
+         {[_ | _] = parent_steps, [_ | _] = dependent_steps} = pipeline_expression,
+         name
+       ) do
+    fan_out_hash = Components.fact_hash({:fan_out, pipeline_expression})
+
+    fan_out =
+      quote do
+        %FanOut{
+          hash: unquote(fan_out_hash),
+          name: unquote(name)
+        }
+      end
+
+    parent_steps_with_hashes =
+      Enum.map(parent_steps, fn step_ast ->
+        {Components.fact_hash(step_ast), pipeline_step(step_ast)}
+      end)
+
+    parent_hashes = Enum.map(parent_steps_with_hashes, &elem(&1, 0))
+
+    join_hash = Components.fact_hash(Enum.map(parent_steps_with_hashes, &elem(&1, 0)))
+
+    join =
+      quote do
+        %Join{
+          hash: unquote(join_hash),
+          joins: unquote(parent_hashes)
+        }
+      end
+
+    wrk_expression =
+      quote generated: true do
+        unquote(wrk_expression)
+        |> Workflow.add_step(unquote(fan_out))
+        |> then(fn wrk_expression ->
+          Enum.reduce(unquote(parent_steps_with_hashes), wrk_expression, fn {_, join_step}, acc ->
+            Workflow.add_step(acc, unquote(fan_out), join_step)
+          end)
+        end)
+        |> then(fn wrk_expression ->
+          Enum.reduce(unquote(parent_steps_with_hashes), wrk_expression, fn {_, join_step}, acc ->
+            Workflow.add_step(acc, join_step, unquote(join))
+          end)
+        end)
+      end
+
+    Enum.reduce(dependent_steps, wrk_expression, fn dstep, wrk_acc ->
+      dependent_pipeline_workflow =
+        CompilationUtils.workflow_graph_of_pipeline_tree_expression(
+          dstep,
+          name
+        )
+
+      quote generated: true do
+        unquote(wrk_acc)
+        |> Workflow.add(unquote(dependent_pipeline_workflow), to: unquote(join_hash))
+      end
+    end)
+  end
+
+  defp pipeline_workflow_of_map_expression(
+         wrk_expression,
+         {step_expression, [_ | _] = dependent_steps} = pipeline_expression,
+         name
+       ) do
+    fan_out_hash = Components.fact_hash({:fan_out, pipeline_expression})
+
+    fan_out =
+      quote do
+        %FanOut{
+          hash: unquote(fan_out_hash),
+          name: unquote(name)
+        }
+      end
+
+    step = pipeline_step(step_expression)
+
+    wrk_expression =
+      quote generated: true do
+        unquote(wrk_expression)
+        |> Workflow.add_step(unquote(fan_out))
+        |> Workflow.add(unquote(step), to: unquote(fan_out_hash))
+      end
+
+    Enum.reduce(dependent_steps, wrk_expression, fn dstep, wrk_acc ->
+      dependent_pipeline_workflow =
+        CompilationUtils.workflow_graph_of_pipeline_tree_expression(dstep, name)
+
+      quote generated: true do
+        unquote(wrk_acc)
+        |> Workflow.add(unquote(dependent_pipeline_workflow), to: unquote(step))
+      end
+    end)
+  end
+
+  defp pipeline_workflow_of_map_expression(
+         wrk_expression,
+         [_ | _] = pipeline_expression,
+         name
+       ) do
+    fan_out_hash = Components.fact_hash({:fan_out, pipeline_expression})
+
+    fan_out =
+      quote do
+        %FanOut{
+          hash: unquote(fan_out_hash),
+          name: unquote(name)
+        }
+      end
+
+    wrk_expression =
+      quote generated: true do
+        unquote(wrk_expression)
+        |> Workflow.add_step(unquote(fan_out))
+      end
+
+    Enum.reduce(pipeline_expression, wrk_expression, fn dstep, wrk_acc ->
+      dependent_pipeline_workflow =
+        CompilationUtils.workflow_graph_of_pipeline_tree_expression(dstep, name)
+
+      quote generated: true do
+        unquote(wrk_acc)
+        |> Workflow.add(unquote(dependent_pipeline_workflow), to: unquote(fan_out_hash))
+      end
+    end)
+  end
+
+  # old version
   defp pipeline_graph_of_map_expression(expression, name \\ nil)
 
   defp pipeline_graph_of_map_expression(expression, name) do
@@ -1138,7 +1405,7 @@ defmodule Runic do
     step_ast_hash = Components.fact_hash(expression)
 
     quote do
-      Step.new(work: unquote(expression), hash: unquote(step_ast_hash))
+      Runic.step(work: unquote(expression), hash: unquote(step_ast_hash))
     end
   end
 
@@ -1146,7 +1413,7 @@ defmodule Runic do
     step_ast_hash = Components.fact_hash(expression)
 
     quote do
-      Step.new(work: unquote(expression), hash: unquote(step_ast_hash))
+      Runic.step(work: unquote(expression), hash: unquote(step_ast_hash))
     end
   end
 
@@ -1156,7 +1423,7 @@ defmodule Runic do
     name = rest[:name]
 
     quote do
-      Step.new(work: unquote(expression), hash: unquote(step_ast_hash), name: unquote(name))
+      Runic.step(work: unquote(expression), hash: unquote(step_ast_hash), name: unquote(name))
     end
   end
 
@@ -1164,7 +1431,7 @@ defmodule Runic do
     step_ast_hash = Components.fact_hash(expression)
 
     quote do
-      Step.new(work: unquote(expression), hash: unquote(step_ast_hash))
+      Runic.step(work: unquote(expression), hash: unquote(step_ast_hash))
     end
   end
 
@@ -1174,7 +1441,7 @@ defmodule Runic do
     name = rest[:name]
 
     quote do
-      Step.new(work: unquote(expression), hash: unquote(step_ast_hash), name: unquote(name))
+      Runic.step(work: unquote(expression), hash: unquote(step_ast_hash), name: unquote(name))
     end
   end
 
@@ -1182,7 +1449,7 @@ defmodule Runic do
     step_ast_hash = Components.fact_hash(expression)
 
     quote do
-      Step.new(work: unquote(expression), hash: unquote(step_ast_hash))
+      Runic.step(work: unquote(expression), hash: unquote(step_ast_hash))
     end
   end
 
@@ -1381,13 +1648,16 @@ defmodule Runic do
           )
       )
 
-    quote do
-      import Runic
+    workflow =
+      quote do
+        import Runic
 
-      Workflow.new()
-      |> Workflow.add_step(unquote(condition))
-      |> Workflow.add_step(unquote(condition), unquote(reaction))
-    end
+        Workflow.new()
+        |> Workflow.add_step(unquote(condition))
+        |> Workflow.add_step(unquote(condition), unquote(reaction))
+      end
+
+    {workflow, condition_ast_hash, reaction_ast_hash}
   end
 
   defp workflow_of_rule({:fn, _, [{:->, _, [[], _rhs]}]} = expression, 0 = _arity) do
@@ -1395,12 +1665,16 @@ defmodule Runic do
 
     reaction = quote(do: Step.new(work: unquote(expression), hash: unquote(reaction_ast_hash)))
 
-    quote do
-      import Runic
+    workflow =
+      quote do
+        import Runic
 
-      Workflow.new()
-      |> Workflow.add_step(unquote(reaction))
-    end
+        Workflow.new()
+        |> Workflow.add_step(unquote(reaction))
+      end
+
+    # For zero-arity rules, there is no condition, so condition_hash should be nil
+    {workflow, nil, reaction_ast_hash}
   end
 
   defp workflow_of_rule(
@@ -1443,11 +1717,13 @@ defmodule Runic do
         end
       end
 
+    condition_ast_hash = Components.fact_hash(condition_fun)
+
     condition =
       quote do
         Condition.new(
           work: unquote(condition_fun),
-          hash: unquote(Components.fact_hash(condition_fun)),
+          hash: unquote(condition_ast_hash),
           arity: unquote(arity)
         )
       end
@@ -1461,52 +1737,63 @@ defmodule Runic do
         |> Workflow.add_step(unquote(condition), unquote(reaction))
       end
 
-    quoted_workflow
+    {quoted_workflow, condition_ast_hash, reaction_ast_hash}
   end
 
   # matches: fn true -> _ end | fn nil -> _ end
   defp workflow_of_rule({:fn, _, [{:->, _, [[lhs], rhs]}]} = _expression, 1 = _arity)
        when lhs in [true, nil] do
-    condition = quote(do: Condition.new(fn _lhs -> true end))
-    reaction = quote(do: step(fn _ -> unquote(rhs) end))
+    condition_fun = fn _lhs -> true end
+    condition_ast_hash = Components.fact_hash(condition_fun)
+
+    condition = quote(do: Condition.new(unquote(condition_fun)))
+
+    reaction_fun = quote(do: fn _ -> unquote(rhs) end)
+    reaction_ast_hash = Components.fact_hash(reaction_fun)
+
+    reaction = quote(do: step(unquote(reaction_fun)))
 
     arity_condition =
       quote do
         Condition.new(Components.is_of_arity?(1))
       end
 
-    quote do
-      import Runic
+    workflow =
+      quote do
+        import Runic
 
-      Workflow.new()
-      |> Workflow.add_step(unquote(arity_condition))
-      |> Workflow.add_step(unquote(arity_condition), unquote(condition))
-      |> Workflow.add_step(unquote(condition), unquote(reaction))
-    end
+        Workflow.new()
+        |> Workflow.add_step(unquote(arity_condition))
+        |> Workflow.add_step(unquote(arity_condition), unquote(condition))
+        |> Workflow.add_step(unquote(condition), unquote(reaction))
+      end
+
+    {workflow, condition_ast_hash, reaction_ast_hash}
   end
 
   defp workflow_of_rule(
          {:fn, head_meta, [{:->, clause_meta, [[lhs], _rhs]}]} = expression,
          1 = arity
        ) do
-    condition =
+    condition_fun =
       {:fn, head_meta,
        [
          {:->, clause_meta, [[lhs], true]},
          {:->, clause_meta, [[{:_otherwise, [if_undefined: :apply], Elixir}], false]}
        ]}
 
-    condition_ast_hash = Components.fact_hash(condition)
+    condition_ast_hash = Components.fact_hash(condition_fun)
 
     condition =
       quote do
         Condition.new(
-          work: unquote(condition),
+          work: unquote(condition_fun),
           hash: unquote(condition_ast_hash),
           arity: unquote(arity)
         )
       end
 
+    reaction_ast_hash = Components.fact_hash(expression)
     reaction = quote(do: step(unquote(expression)))
 
     arity_condition =
@@ -1514,14 +1801,17 @@ defmodule Runic do
         Condition.new(Components.is_of_arity?(unquote(arity)), unquote(arity))
       end
 
-    quote do
-      import Runic
+    workflow =
+      quote do
+        import Runic
 
-      Workflow.new()
-      |> Workflow.add_step(unquote(arity_condition))
-      |> Workflow.add_step(unquote(arity_condition), unquote(condition))
-      |> Workflow.add_step(unquote(condition), unquote(reaction))
-    end
+        Workflow.new()
+        |> Workflow.add_step(unquote(arity_condition))
+        |> Workflow.add_step(unquote(arity_condition), unquote(condition))
+        |> Workflow.add_step(unquote(condition), unquote(reaction))
+      end
+
+    {workflow, condition_ast_hash, reaction_ast_hash}
   end
 
   defp binds_of_guarded_anonymous(

@@ -46,7 +46,7 @@ defmodule Runic.Workflow do
           graph: Graph.t(),
           hash: binary(),
           generations: integer(),
-          # name -> component struct
+          # name -> component hash
           components: map(),
           # name -> %{before: list(fun), after: list(fun)}
           before_hooks: map(),
@@ -76,7 +76,7 @@ defmodule Runic.Workflow do
   @doc """
   Constructs a new Runic Workflow.
   """
-  def new(name) when is_binary(name) do
+  def new(name) when is_binary(name) or is_atom(name) do
     new(name: name)
   end
 
@@ -107,21 +107,55 @@ defmodule Runic.Workflow do
   Adds a component to the workflow, connecting it to the parent step or root if no parent is specified.
   """
   def add(%__MODULE__{} = workflow, component, opts \\ []) do
-    to = opts[:to]
+    case opts[:to] do
+      nil ->
+        # If no parent is specified, we assume the component is a root step
+        parent_step = root()
+        do_add_component(workflow, component, parent_step)
 
-    parent_step =
-      if not is_nil(to) do
-        get_component(workflow, to) ||
-          get_by_hash(workflow, to) ||
-          root()
-      else
-        root()
-      end
+      component_name when is_atom(component_name) or is_binary(component_name) ->
+        parent_step = get_component!(workflow, component_name)
+        do_add_component(workflow, component, parent_step)
 
-    component
-    |> Component.connect(parent_step, workflow)
-    |> append_build_log(component, to)
-    |> maybe_put_component(component)
+      hash when is_integer(hash) ->
+        parent_step = get_by_hash(workflow, hash)
+        do_add_component(workflow, component, parent_step)
+
+      %{} = parent_step ->
+        do_add_component(workflow, component, parent_step)
+
+      parent_steps when is_list(parent_steps) ->
+        parent_steps = Enum.map(parent_steps, &get_component!(workflow, &1))
+
+        join =
+          parent_steps
+          |> Enum.map(& &1.hash)
+          |> Join.new()
+
+        Enum.reduce(parent_steps, workflow, fn parent_step, acc ->
+          acc = add_step(acc, parent_step, join)
+          do_add_component(acc, component, join)
+        end)
+    end
+  end
+
+  defp do_add_component(%__MODULE__{} = workflow, component, parent) do
+    case {
+      component.__struct__ in Components.component_impls(),
+      component.__struct__ in Components.invokable_impls()
+    } do
+      {true, _invokable?} ->
+        component
+        |> Component.connect(parent, workflow)
+        |> append_build_log(component, parent)
+
+      {_is_component?, true} ->
+        add_step(workflow, parent, component)
+
+      _otherwise ->
+        raise ArgumentError,
+              "Cannot add component #{inspect(component)} to #{inspect(parent)} in workflow, it does not implement Runic.Component protocol."
+    end
   end
 
   def add_with_events(%__MODULE__{} = workflow, component, opts \\ []) do
@@ -142,7 +176,8 @@ defmodule Runic.Workflow do
       component
       |> Component.connect(parent_step, workflow)
       |> append_build_log(events)
-      |> maybe_put_component(component)
+
+    # |> maybe_put_component(component)
 
     {workflow, events}
   end
@@ -361,17 +396,49 @@ defmodule Runic.Workflow do
   #   end)
   # end
 
+  @doc false
+  def register_component(%__MODULE__{} = workflow, component) do
+    hash = Component.hash(component)
+
+    workflow =
+      %__MODULE__{
+        workflow
+        | components: Map.put(workflow.components, component.name, hash)
+      }
+
+    # For Map components, also register their sub-components with proper namespacing
+    case component do
+      %Runic.Workflow.Map{components: map_components, name: map_name}
+      when not is_nil(map_components) ->
+        Enum.reduce(map_components, workflow, fn {sub_name, sub_component}, acc ->
+          case sub_name do
+            :fan_out ->
+              # Register fan_out as {map_name, :fan_out}
+              components = Map.put(acc.components, {map_name, :fan_out}, sub_component.hash)
+              %__MODULE__{acc | components: components}
+
+            _ ->
+              acc
+          end
+        end)
+
+      _ ->
+        workflow
+    end
+  end
+
+  @doc """
+  Returns a map of all registered components in the workflow by the registered component name.
+  """
   def components(%__MODULE__{} = workflow) do
-    workflow.components
+    Map.new(workflow.components, fn {name, hash} ->
+      {name, Map.get(workflow.graph.vertices, hash)}
+    end)
   end
 
   # extend with I/O contract checks
   def connectables(%__MODULE__{graph: g} = _wrk, %{} = step) do
-    impls =
-      case Component.__protocol__(:impls) do
-        :not_consolidated -> []
-        {:consolidated, impls} -> impls
-      end
+    impls = Components.component_impls()
 
     arity = Components.arity_of(step)
 
@@ -558,7 +625,8 @@ defmodule Runic.Workflow do
           |> Graph.add_vertex(child_step, child_step.hash)
           |> Graph.add_edge(%Root{}, child_step, label: :flow, weight: 0)
     }
-    |> maybe_put_component(child_step)
+
+    # |> maybe_put_component(child_step)
   end
 
   def add_step(
@@ -589,7 +657,8 @@ defmodule Runic.Workflow do
           |> Graph.add_vertex(child_step, to_string(child_step.hash))
           |> Graph.add_edge(parent_step, child_step, label: :flow, weight: 0)
     }
-    |> maybe_put_component(child_step)
+
+    # |> maybe_put_component(child_step)
   end
 
   def add_step(%__MODULE__{} = workflow, parent_steps, %{} = child_step)
@@ -643,7 +712,8 @@ defmodule Runic.Workflow do
       {[_step | _] = parent_steps, dependent_steps}, wrk ->
         wrk =
           Enum.reduce(parent_steps, wrk, fn step, wrk ->
-            add_step(wrk, parent_step, step)
+            # add_step(wrk, parent_step, step)
+            add(wrk, step, to: parent_step)
           end)
 
         join =
@@ -718,51 +788,46 @@ defmodule Runic.Workflow do
     g.vertices |> Map.get(hash)
   end
 
-  @doc """
-  Retrieves a sub component by name of the given kind allowing it to be connected to another component in a workflow.
+  def get_component(
+        %__MODULE__{} = wrk,
+        {component_name, subcomponent_kind_or_name}
+      ) do
+    cmp = get_component(wrk, component_name)
 
-  ## Examples
+    for edge <-
+          Graph.out_edges(wrk.graph, cmp,
+            by: :component_of,
+            where: fn edge ->
+              edge.properties[:kind] == subcomponent_kind_or_name or
+                edge.v2.name == subcomponent_kind_or_name
+            end
+          ) do
+      edge.v2
+    end
+  end
 
-  ```elixir
+  def get_component(%__MODULE__{} = wrk, %{name: name}) do
+    get_component(wrk, name)
+  end
 
-  iex> Runic.Workflow.component_of(workflow, :my_state_machine, :reducer)
-
-  > %Accumulator{}
-
-  iex> Runic.Workflow.component_of(workflow, :my_map, :fan_out)
-
-  > %FanOut{}
-
-  iex> Runic.Workflow.component_of(workflow, :my_map, :leafs)
-
-  > [%Step{}, %Step{}]
-  ```
-  """
-  def component_of(workflow, component_name, kind) do
-    workflow
-    |> get_component(component_name)
-    |> Component.get_component(kind)
+  # def get_component(%__MODULE__{components: components}, names) when is_list(names) do
+  #   Enum.map(names, fn name -> Map.get(components, name) end)
+  # end
+  def get_component(%__MODULE__{} = workflow, names) when is_list(names) do
+    Enum.map(names, &get_component(workflow, &1))
   end
 
   def get_component(
-        %__MODULE__{components: components},
-        {component_name, subcomponent_kind_or_name}
+        %__MODULE__{components: components, graph: g},
+        component_name
       ) do
-    component = Map.get(components, component_name)
-    Component.get_component(component, subcomponent_kind_or_name)
+    component_hash = Map.get(components, component_name)
+    Map.get(g.vertices, component_hash)
   end
 
-  def get_component(%__MODULE__{components: components}, %{name: name}) do
-    Map.get(components, name)
-  end
-
-  def get_component(%__MODULE__{components: components}, names) when is_list(names) do
-    Enum.map(names, fn name -> Map.get(components, name) end)
-  end
-
-  def get_component(%__MODULE__{components: components}, name) do
-    Map.get(components, name)
-  end
+  # def get_component(%__MODULE__{components: components}, name) do
+  #   Map.get(components, name)
+  # end
 
   def get_component!(wrk, name) do
     get_component(wrk, name) || raise(KeyError, "No component found with name #{name}")
@@ -772,10 +837,14 @@ defmodule Runic.Workflow do
     fetch_component(wrk, name)
   end
 
-  def fetch_component(%__MODULE__{components: components}, name) do
+  def fetch_component(%__MODULE__{components: components} = wrk, name) do
     case Map.fetch(components, name) do
-      :error -> {:error, :no_component_by_name}
-      {:ok, component} -> {:ok, component}
+      :error ->
+        {:error, :no_component_by_name}
+
+      {:ok, cmp_hash} ->
+        component = Map.get(wrk.graph.vertices, cmp_hash)
+        {:ok, component}
     end
   end
 
@@ -784,6 +853,12 @@ defmodule Runic.Workflow do
   """
   def next_steps(%__MODULE__{graph: g}, parent_step) do
     next_steps(g, parent_step)
+  end
+
+  def next_steps(%Graph{} = g, parent_steps) when is_list(parent_steps) do
+    Enum.flat_map(parent_steps, fn parent_step ->
+      next_steps(g, parent_step)
+    end)
   end
 
   def next_steps(%Graph{} = g, parent_step) do
@@ -979,20 +1054,31 @@ defmodule Runic.Workflow do
   end
 
   def productions(%__MODULE__{} = wrk, component) do
-    component
-    |> Component.components()
-    |> Keyword.values()
-    |> Enum.reduce([], fn sub_component, acc ->
-      productions =
-        for %Graph.Edge{} = edge <-
-              Graph.out_edges(wrk.graph, sub_component,
-                by: [:produced, :state_produced, :state_initiated, :reduced]
-              ) do
-          edge.v2
-        end
-
-      acc ++ productions
+    wrk.graph
+    |> Graph.out_edges(component, by: :component_of)
+    |> Enum.flat_map(fn %{v2: invokable} ->
+      for edge <-
+            Graph.out_edges(wrk.graph, invokable,
+              by: [:produced, :state_produced, :state_initiated, :reduced]
+            ) do
+        edge.v2
+      end
     end)
+
+    # component
+    # |> Component.components()
+    # |> Keyword.values()
+    # |> Enum.reduce([], fn sub_component, acc ->
+    #   productions =
+    #     for %Graph.Edge{} = edge <-
+    #           Graph.out_edges(wrk.graph, sub_component,
+    #             by: [:produced, :state_produced, :state_initiated, :reduced]
+    #           ) do
+    #       edge.v2
+    #     end
+
+    #   acc ++ productions
+    # end)
   end
 
   @doc """
@@ -1042,19 +1128,15 @@ defmodule Runic.Workflow do
   end
 
   def raw_productions(%__MODULE__{} = wrk, component) do
-    component
-    |> Component.components()
-    |> Keyword.values()
-    |> Enum.reduce([], fn sub_component, acc ->
-      productions =
-        for %Graph.Edge{} = edge <-
-              Graph.out_edges(wrk.graph, sub_component,
-                by: [:produced, :state_produced, :state_initiated, :reduced]
-              ) do
-          edge.v2.value
-        end
-
-      acc ++ productions
+    wrk.graph
+    |> Graph.out_edges(component, by: :component_of)
+    |> Enum.flat_map(fn %{v2: invokable} ->
+      for edge <-
+            Graph.out_edges(wrk.graph, invokable,
+              by: [:produced, :state_produced, :state_initiated, :reduced]
+            ) do
+        edge.v2.value
+      end
     end)
   end
 

@@ -9,6 +9,11 @@ defprotocol Runic.Component do
   def get_component(component, sub_component_name)
 
   @doc """
+  Get the sub component from the workflow by name.
+  """
+  def get_component(component, workflow, sub_component_name)
+
+  @doc """
   List all connectable sub-components of a component.
   """
   def components(component)
@@ -120,38 +125,89 @@ end
 defimpl Runic.Component, for: Runic.Workflow.Map do
   alias Runic.Workflow
   alias Runic.Workflow.Root
+  alias Runic.Workflow.Step
+  alias Runic.Workflow.Join
 
   def connect(
         %Runic.Workflow.Map{
-          pipeline: pipeline_workflow,
-          components: %{fan_out: fan_out} = components
-        },
+          pipeline: pipeline_workflow
+        } = map,
         to,
         workflow
       ) do
+    fan_out_step =
+      pipeline_workflow.graph
+      |> Graph.out_neighbors(Workflow.root())
+      |> List.first()
+
     wrk =
       workflow
-      # only add top level fanout in cases with nested map expressions
-      |> Workflow.add_step(to, fan_out)
+      |> Workflow.add_step(to, fan_out_step)
+      |> Workflow.register_component(map)
+      |> Workflow.draw_connection(map, fan_out_step, :component_of, properties: %{kind: :fan_out})
 
-    wrk =
-      pipeline_workflow.graph
-      |> Graph.edges()
-      |> Enum.reduce(wrk, fn
-        %{v1: %Root{}, v2: _fan_out}, wrk ->
+    pipeline_workflow.graph
+    |> Graph.edges()
+    |> Enum.reduce(wrk, fn
+      %{v1: %Root{}, v2: _fan_out}, wrk ->
+        wrk
+
+      %{v1: v1, v2: %Step{} = step, label: :flow}, wrk ->
+        wrk =
           wrk
+          |> Workflow.add_step(v1, step)
+          |> Workflow.register_component(step)
+          |> Workflow.draw_connection(step, step, :component_of, properties: %{kind: :step})
 
-        %{v1: v1, v2: v2}, wrk ->
-          Workflow.add_step(wrk, v1, v2)
-      end)
+        if is_leaf?(wrk.graph, step) do
+          Workflow.draw_connection(wrk, map, step, :component_of, properties: %{kind: :leaf})
+        else
+          wrk
+        end
 
-    Enum.reduce(components, wrk, fn {name, component}, wrk ->
-      Map.put(wrk, :components, Map.put(wrk.components, name, component))
+      %{v1: _v1, v2: %Runic.Workflow.Map{} = nested_map} = edge, wrk ->
+        # Handle nested map components by registering them
+        wrk = Map.put(wrk, :graph, Graph.add_edge(wrk.graph, edge))
+
+        # Get the nested map's fan_out step
+        nested_fan_out_step =
+          nested_map.pipeline.graph
+          |> Graph.out_neighbors(Workflow.root())
+          |> List.first()
+
+        wrk
+        |> Workflow.register_component(nested_map)
+        |> Workflow.draw_connection(nested_map, nested_fan_out_step, :component_of,
+          properties: %{kind: :fan_out}
+        )
+
+      %{v1: _, v2: _} = edge, wrk ->
+        # for non-components such as joins, just add the edge
+        %Workflow{wrk | graph: Graph.add_edge(wrk.graph, edge)}
     end)
   end
 
+  defp is_leaf?(g, v), do: g |> Graph.out_edges(v, by: :flow) |> Enum.count() == 0
+
   def get_component(%Runic.Workflow.Map{components: components}, sub_component_name) do
     Map.get(components, sub_component_name)
+  end
+
+  def get_component(
+        %Runic.Workflow.Map{} = map,
+        %Workflow{} = workflow,
+        kind
+      ) do
+    case Graph.out_edges(workflow.graph, Map.get(workflow.graph.vertices, map.hash),
+           by: :component_of,
+           where: fn edge ->
+             edge.properties[:kind] == kind
+           end
+         )
+         |> List.first() do
+      %{v2: component} -> component
+      nil -> nil
+    end
   end
 
   def connectables(%Runic.Workflow.Map{} = map, other_component) do
@@ -226,15 +282,31 @@ end
 defimpl Runic.Component, for: Runic.Workflow.Reduce do
   alias Runic.Workflow
 
-  def connect(reduce, %Runic.Workflow.Map{components: components}, workflow) do
+  def connect(reduce, %Runic.Workflow.Map{} = map, workflow) do
+    map_leaf = Workflow.get_component!(workflow, {map.name, :leaf}) |> List.first()
+
+    if is_nil(map_leaf) do
+      raise ArgumentError,
+            "Cannot connect reduce to map #{map.name} because it has no leaf component. Ensure the map has a leaf component defined."
+    end
+
+    map_fan_out = Workflow.get_component!(workflow, {map.name, :fan_out}) |> List.first()
+
     wrk =
       workflow
-      |> Workflow.add_step(components.leaf, reduce.fan_in)
-      |> Workflow.draw_connection(components.fan_out, reduce.fan_in, :fan_in)
+      |> Workflow.draw_connection(map_leaf, reduce.fan_in, :flow)
+      |> Workflow.register_component(reduce)
+      |> Workflow.draw_connection(reduce, reduce.fan_in, :component_of,
+        properties: %{kind: :fan_in}
+      )
+      |> Workflow.draw_connection(map_fan_out, reduce.fan_in, :fan_in)
+      |> Workflow.draw_connection(reduce, reduce.fan_in, :component_of,
+        properties: %{kind: :fan_in}
+      )
 
     path_to_fan_out =
       wrk.graph
-      |> Graph.get_shortest_path(components.fan_out, reduce.fan_in)
+      |> Graph.get_shortest_path(map_fan_out, reduce.fan_in)
 
     wrk
     |> Map.put(
@@ -251,16 +323,20 @@ defimpl Runic.Component, for: Runic.Workflow.Reduce do
 
   def connect(%{fan_in: %{map: mapped}} = reduce, %Workflow.Step{} = step, workflow)
       when not is_nil(mapped) do
-    map = Workflow.get_component!(workflow, mapped)
+    map_fanout = Workflow.get_component!(workflow, {mapped, :fan_out}) |> List.first()
 
     wrk =
       workflow
       |> Workflow.add_step(step, reduce.fan_in)
-      |> Workflow.draw_connection(map.components.fan_out, reduce.fan_in, :fan_in)
+      |> Workflow.draw_connection(map_fanout, reduce.fan_in, :fan_in)
+      |> Workflow.draw_connection(reduce, reduce.fan_in, :component_of,
+        properties: %{kind: :fan_in}
+      )
+      |> Workflow.register_component(reduce)
 
     path_to_fan_out =
       wrk.graph
-      |> Graph.get_shortest_path(map.components.fan_out, reduce.fan_in)
+      |> Graph.get_shortest_path(map_fanout, reduce.fan_in)
 
     wrk
     |> Map.put(
@@ -276,15 +352,24 @@ defimpl Runic.Component, for: Runic.Workflow.Reduce do
   end
 
   def connect(reduce, to, workflow) do
-    Workflow.add_step(workflow, to, reduce.fan_in)
+    workflow
+    |> Workflow.add_step(to, reduce.fan_in)
+    |> Workflow.register_component(reduce)
+    |> Workflow.draw_connection(reduce, reduce.fan_in, :component_of,
+      properties: %{kind: :fan_in}
+    )
   end
 
   def get_component(%Runic.Workflow.Reduce{fan_in: fan_in}, _kind) do
     fan_in
   end
 
+  def get_component(%Runic.Workflow.Reduce{fan_in: fan_in}, _workflow, _kind) do
+    fan_in
+  end
+
   def components(reduce) do
-    [fan_in: reduce]
+    [fan_in: reduce.fan_in]
   end
 
   def connectables(reduce, other_component) do
@@ -368,10 +453,15 @@ defimpl Runic.Component, for: Runic.Workflow.Step do
     workflow
     |> Workflow.add_step(to, join)
     |> Workflow.add_step(join, step)
+    |> Workflow.draw_connection(step, step, :component_of, properties: %{kind: :step})
+    |> Workflow.register_component(step)
   end
 
   def connect(step, to, workflow) do
-    Workflow.add_step(workflow, to, step)
+    workflow
+    |> Workflow.add_step(to, step)
+    |> Workflow.draw_connection(step, step, :component_of, properties: %{kind: :step})
+    |> Workflow.register_component(step)
   end
 
   def get_component(step, _kind) do
@@ -435,19 +525,41 @@ end
 defimpl Runic.Component, for: Runic.Workflow.Rule do
   alias Runic.Workflow
   alias Runic.Workflow.Step
-  alias Runic.Workflow.Map
   alias Runic.Workflow.Reduce
 
-  def connect(rule, _to, workflow) do
+  def connect(rule, nil, workflow) do
     Workflow.merge(workflow, rule.workflow)
   end
 
+  def connect(rule, %Runic.Workflow.Root{}, workflow) do
+    Workflow.merge(workflow, rule.workflow)
+  end
+
+  def connect(rule, to, workflow) do
+    condition = Map.get(rule.workflow.graph.vertices, rule.condition_hash)
+    reaction = Map.get(rule.workflow.graph.vertices, rule.reaction_hash)
+
+    workflow
+    |> Workflow.add_step(to, condition)
+    |> Workflow.add_step(condition, reaction)
+    |> Workflow.register_component(rule)
+    |> Workflow.draw_connection(rule, reaction, :component_of, properties: %{kind: :reaction})
+    |> Workflow.draw_connection(rule, condition, :component_of, properties: %{kind: :condition})
+  end
+
   def get_component(rule, :reaction) do
-    rule.workflow.components |> Elixir.Map.values() |> List.first()
+    Map.get(rule.workflow.graph.vertices, rule.reaction_hash)
+  end
+
+  def get_component(rule, :condition) do
+    Map.get(rule.workflow.graph.vertices, rule.condition_hash)
   end
 
   def components(rule) do
-    [reaction: rule]
+    condition = Map.get(rule.workflow.graph.vertices, rule.condition_hash)
+    reaction = Map.get(rule.workflow.graph.vertices, rule.reaction_hash)
+
+    [condition: condition, reaction: reaction]
   end
 
   def connectables(rule, other_component) do
@@ -471,7 +583,7 @@ defimpl Runic.Component, for: Runic.Workflow.Rule do
     structural_compatible =
       case other_component do
         %Step{} -> true
-        %Map{} -> true
+        %Runic.Workflow.Map{} -> true
         %Reduce{} -> true
         %Workflow{} -> true
         _otherwise -> false
@@ -485,7 +597,7 @@ defimpl Runic.Component, for: Runic.Workflow.Rule do
   end
 
   def hash(rule) do
-    Runic.Workflow.Components.fact_hash(rule.source)
+    rule.hash
   end
 
   def inputs(%Runic.Workflow.Rule{inputs: nil}) do
@@ -712,10 +824,18 @@ defimpl Runic.Component, for: Runic.Workflow.Accumulator do
     workflow
     |> Workflow.add_step(to, join)
     |> Workflow.add_step(join, accumulator)
+    |> Workflow.draw_connection(accumulator, accumulator, :component_of,
+      properties: %{kind: :accumulator}
+    )
   end
 
   def connect(accumulator, to, workflow) do
-    Workflow.add_step(workflow, to, accumulator)
+    workflow
+    |> Workflow.add_step(to, accumulator)
+    |> Workflow.draw_connection(accumulator, accumulator, :component_of,
+      properties: %{kind: :accumulator}
+    )
+    |> Workflow.register_component(accumulator)
   end
 
   def get_component(accumulator, _kind) do
@@ -773,5 +893,105 @@ defimpl Runic.Component, for: Runic.Workflow.Accumulator do
 
   def outputs(%Runic.Workflow.Accumulator{outputs: user_outputs}) do
     user_outputs
+  end
+end
+
+defimpl Runic.Component, for: Runic.Workflow do
+  alias Runic.Workflow
+
+  def connect(%Workflow{} = child_workflow, parent_component, workflow) do
+    # Register the child workflow as a component if it has a name
+    wrk =
+      if child_workflow.name do
+        Workflow.register_component(workflow, child_workflow)
+      else
+        workflow
+      end
+
+    # Add all components from the child workflow graph to the parent workflow
+    child_workflow.graph
+    |> Graph.vertices()
+    |> Enum.reduce(wrk, fn vertex, acc ->
+      case vertex do
+        %Runic.Workflow.Root{} ->
+          acc
+
+        component ->
+          acc
+          |> Workflow.add_step(parent_component, component)
+          |> then(fn new_acc ->
+            # Register the component with its name if it has one
+            case component do
+              %{name: name} when name != nil ->
+                Map.put(new_acc, :components, Map.put(new_acc.components, name, component.hash))
+
+              _ ->
+                new_acc
+            end
+          end)
+      end
+    end)
+  end
+
+  def get_component(%Workflow{} = workflow, sub_component_name) do
+    Workflow.get_component(workflow, sub_component_name)
+  end
+
+  def get_component(%Workflow{} = workflow, %Workflow{}, sub_component_name) do
+    get_component(workflow, sub_component_name)
+  end
+
+  def components(%Workflow{components: components}) do
+    Enum.map(components, fn {name, _hash} -> {name, name} end)
+  end
+
+  def connectables(%Workflow{} = workflow, _other_component) do
+    components(workflow)
+  end
+
+  def connectable?(%Workflow{}, _other_component), do: true
+
+  def source(%Workflow{} = workflow) do
+    quote do
+      %Runic.Workflow{
+        name: unquote(workflow.name),
+        components: unquote(Macro.escape(workflow.components))
+      }
+    end
+  end
+
+  def hash(%Workflow{hash: hash}) when not is_nil(hash), do: hash
+
+  def hash(%Workflow{} = workflow) do
+    Runic.Workflow.Components.fact_hash(workflow)
+  end
+
+  def inputs(%Workflow{}), do: []
+
+  def outputs(%Workflow{}), do: []
+end
+
+defimpl Runic.Component, for: Tuple do
+  def connect({parent, children} = _pipeline, parent_component_in_workflow, workflow)
+      when is_list(children) do
+    # Connect the parent component to each child component
+    wrk = Runic.Workflow.add_step(workflow, parent_component_in_workflow, parent)
+
+    Enum.reduce(children, wrk, fn child, acc ->
+      Runic.Component.connect(child, parent, acc)
+    end)
+  end
+
+  def get_component(_tuple, _sub_component_name), do: nil
+  def get_component(_tuple, _workflow, _sub_component_name), do: nil
+  def components(_tuple), do: []
+  def connectables(_tuple, _other_component), do: []
+  def connectable?(_tuple, _other_component), do: false
+  def source(tuple), do: Macro.escape(tuple)
+  def inputs(_tuple), do: []
+  def outputs(_tuple), do: []
+
+  def hash(pipeline) do
+    Runic.Workflow.Components.fact_hash(pipeline)
   end
 end

@@ -90,4 +90,18 @@ defmodule Runic.Workflow.Components do
         {:ok, values}
     end
   end
+
+  def component_impls do
+    case Runic.Component.__protocol__(:impls) do
+      :not_consolidated -> []
+      {:consolidated, impls} -> impls
+    end
+  end
+
+  def invokable_impls do
+    case Runic.Workflow.Invokable.__protocol__(:impls) do
+      :not_consolidated -> []
+      {:consolidated, impls} -> impls
+    end
+  end
 end

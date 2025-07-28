@@ -1,14 +1,16 @@
 defmodule Runic.Workflow.Map do
   @moduledoc """
-  Map steps are part of a map operator that expands enumerable facts into separate facts.
-
-  Map just splits input facts - separate steps as defined in the map expression will do the processing.
+  Map operations contain a FanOut operator and LambdaStep operations to produce facts split from the input and process each.
   """
   alias Runic.Workflow.FanOut
   defstruct [:hash, :name, :pipeline, :components, :source, :bindings, :inputs, :outputs]
 
   # def build_named_components(%__MODULE__{pipeline: pipeline} = map) do
   #   %__MODULE__{map | components: named_steps(pipeline, %{})}
+  # end
+
+  # def build_named_components(%__MODULE__{pipeline: pipeline} = map) do
+
   # end
 
   def build_named_components(%__MODULE__{pipeline: pipeline} = map) do

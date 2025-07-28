@@ -149,6 +149,20 @@ defmodule RunicTest do
       refute Rule.check(dynamic_rule, :yam)
     end
 
+    test "created rules include a condition_hash and reaction_hash" do
+      rule =
+        Runic.rule(fn item when is_integer(item) and item > 41 and item < 43 -> "fourty two" end)
+
+      assert match?(%Rule{}, rule)
+      assert is_integer(rule.condition_hash)
+      assert is_integer(rule.reaction_hash)
+
+      wrk_of_rule = Runic.transmute(rule)
+
+      assert Map.has_key?(wrk_of_rule.graph.vertices, rule.condition_hash)
+      assert Map.has_key?(wrk_of_rule.graph.vertices, rule.reaction_hash)
+    end
+
     # test "supports `if` macro as a valid rule" do
     #   rule = Runic.rule :potato -> :is_potato end
 
@@ -312,7 +326,7 @@ defmodule RunicTest do
         |> Workflow.react()
         |> Workflow.productions()
 
-      assert Enum.count(productions_from_1_cycles) == 2
+      assert Enum.count(productions_from_1_cycles) == 3
 
       workflow_after_2_cycles =
         potato_lock.workflow
@@ -321,7 +335,7 @@ defmodule RunicTest do
         |> Workflow.plan()
         |> Workflow.react()
 
-      assert Enum.count(Workflow.productions(workflow_after_2_cycles)) == 3
+      assert Enum.count(Workflow.productions(workflow_after_2_cycles)) == 4
 
       assert "ham" in Workflow.raw_reactions(workflow_after_2_cycles)
     end
@@ -368,6 +382,8 @@ defmodule RunicTest do
              ]}
           ]
         )
+
+      IO.inspect(workflow.components, label: "Workflow Components")
 
       assert match?(%Workflow{}, workflow)
     end
@@ -435,6 +451,8 @@ defmodule RunicTest do
       )
 
     map = Runic.map(fn num -> num + ^some_var end, name: :map_1)
+
+    IO.inspect(Graph.edges(map.pipeline.graph), label: "Map Pipeline Edges")
 
     reduce =
       Runic.reduce(0, fn num, acc -> num + acc + ^some_var end, name: :reduce_1, map: :map_1)

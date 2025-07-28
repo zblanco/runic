@@ -5,6 +5,9 @@ defmodule Runic.Workflow.Rule do
             arity: nil,
             workflow: nil,
             bindings: %{},
+            condition_hash: nil,
+            reaction_hash: nil,
+            hash: nil,
             source: nil,
             inputs: nil,
             outputs: nil
@@ -16,19 +19,12 @@ defmodule Runic.Workflow.Rule do
           name: String.t(),
           arity: arity(),
           workflow: Workflow.t(),
+          hash: integer(),
+          condition_hash: integer(),
+          reaction_hash: integer(),
           bindings: map(),
           source: tuple()
         }
-
-  @typedoc """
-  The left hand side of a clause correlating with the pattern or condition of a function.
-  """
-  @type lhs() :: any()
-
-  @typedoc """
-  The right hand side of a clause correlating with the block or reaction of a function.
-  """
-  @type rhs() :: any()
 
   def new(opts \\ []) do
     __MODULE__
