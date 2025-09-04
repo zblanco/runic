@@ -113,6 +113,12 @@ defmodule Runic.Workflow do
         parent_step = root()
         do_add_component(workflow, component, parent_step)
 
+      {component_name, _component_kind} = name
+      when is_atom(component_name) or is_binary(component_name) ->
+        parent_step = get_component!(workflow, name) |> List.first()
+
+        do_add_component(workflow, component, parent_step)
+
       component_name when is_atom(component_name) or is_binary(component_name) ->
         parent_step = get_component!(workflow, component_name)
         do_add_component(workflow, component, parent_step)
@@ -677,7 +683,7 @@ defmodule Runic.Workflow do
 
   def add_rules(workflow, rules) do
     Enum.reduce(rules, workflow, fn %Rule{} = rule, wrk ->
-      add_rule(wrk, rule)
+      add(wrk, rule)
     end)
   end
 
@@ -799,7 +805,7 @@ defmodule Runic.Workflow do
             by: :component_of,
             where: fn edge ->
               edge.properties[:kind] == subcomponent_kind_or_name or
-                edge.v2.name == subcomponent_kind_or_name
+                Map.get(edge.v2, :name) == subcomponent_kind_or_name
             end
           ) do
       edge.v2

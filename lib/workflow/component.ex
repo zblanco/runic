@@ -3,15 +3,15 @@ defprotocol Runic.Component do
   Protocol defining common behaviour of Runic components such as reflection, sub components or how the can be composed with others.
   """
 
-  @doc """
-  Get a sub component of a component by name.
-  """
-  def get_component(component, sub_component_name)
+  # @doc """
+  # Get a sub component of a component by name.
+  # """
+  # def get_component(component, sub_component_name)
 
-  @doc """
-  Get the sub component from the workflow by name.
-  """
-  def get_component(component, workflow, sub_component_name)
+  # @doc """
+  # Get the sub component from the workflow by name.
+  # """
+  # def get_component(component, workflow, sub_component_name)
 
   @doc """
   List all connectable sub-components of a component.
@@ -126,7 +126,7 @@ defimpl Runic.Component, for: Runic.Workflow.Map do
   alias Runic.Workflow
   alias Runic.Workflow.Root
   alias Runic.Workflow.Step
-  alias Runic.Workflow.Join
+  # alias Runic.Workflow.Join
 
   def connect(
         %Runic.Workflow.Map{
@@ -457,6 +457,15 @@ defimpl Runic.Component, for: Runic.Workflow.Step do
     |> Workflow.register_component(step)
   end
 
+  def connect(step, %Runic.Workflow.Rule{} = rule, workflow) do
+    reaction = Map.get(workflow.graph.vertices, rule.reaction_hash)
+
+    workflow
+    |> Workflow.add_step(reaction, step)
+    |> Workflow.draw_connection(step, step, :component_of, properties: %{kind: :step})
+    |> Workflow.register_component(step)
+  end
+
   def connect(step, to, workflow) do
     workflow
     |> Workflow.add_step(to, step)
@@ -527,12 +536,16 @@ defimpl Runic.Component, for: Runic.Workflow.Rule do
   alias Runic.Workflow.Step
   alias Runic.Workflow.Reduce
 
-  def connect(rule, nil, workflow) do
-    Workflow.merge(workflow, rule.workflow)
-  end
+  def connect(rule, to, workflow) when to in [nil, %Runic.Workflow.Root{}] do
+    wrk = Workflow.merge(workflow, rule.workflow)
 
-  def connect(rule, %Runic.Workflow.Root{}, workflow) do
-    Workflow.merge(workflow, rule.workflow)
+    condition = Map.get(rule.workflow.graph.vertices, rule.condition_hash)
+    reaction = Map.get(rule.workflow.graph.vertices, rule.reaction_hash)
+
+    wrk
+    |> Workflow.register_component(rule)
+    |> Workflow.draw_connection(rule, reaction, :component_of, properties: %{kind: :reaction})
+    |> Workflow.draw_connection(rule, condition, :component_of, properties: %{kind: :condition})
   end
 
   def connect(rule, to, workflow) do

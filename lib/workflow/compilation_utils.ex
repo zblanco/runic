@@ -27,14 +27,9 @@ defmodule Runic.Workflow.CompilationUtils do
   defmacro workflow_of_pipeline(expression, name \\ nil) do
     workflow = workflow_graph_of_pipeline_tree_expression(expression, name)
 
-    quoted_pipeline =
-      quote generated: true do
-        unquote(workflow)
-      end
-
-    dbg(Macro.to_string(quoted_pipeline), label: "Workflow Pipeline")
-
-    quoted_pipeline
+    quote generated: true do
+      unquote(workflow)
+    end
   end
 
   @doc """

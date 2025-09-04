@@ -97,7 +97,7 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Condition do
 
       any ->
         Logger.error(
-          "something other than FunctionClauseError happened in try_to_run_work/3: \n\n #{inspect(any)}"
+          "something other than FunctionClauseError happened in Condition invoke/3 -> try_to_run_work/3: \n\n #{inspect(any)}"
         )
 
         false

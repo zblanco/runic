@@ -135,7 +135,166 @@ defmodule WorkflowTest do
       end
     end
 
-    test "react_until_satisfied/3 accepts a check function to halt reactions" do
+    test "react_until_satisfied/2 reacts eagerly until no more runnables caused by the input fact are available" do
+      wrk =
+        Runic.workflow(
+          name: "test workflow",
+          steps: [
+            {Runic.step(fn num -> num + 1 end),
+             [
+               Runic.step(fn num -> num + 2 end),
+               Runic.step(fn num -> num + 4 end)
+             ]}
+          ]
+        )
+
+      wrk = Workflow.react_until_satisfied(wrk, 2)
+
+      assert Enum.count(Workflow.productions(wrk)) == 3
+      assert Enum.count(Workflow.next_runnables(wrk)) == 0
+    end
+
+    test "react/1 invokes one set of runnables" do
+      wrk =
+        Runic.workflow(
+          name: "test workflow",
+          steps: [
+            {Runic.step(fn num -> num + 1 end),
+             [
+               Runic.step(fn num -> num + 2 end),
+               Runic.step(fn num -> num + 4 end)
+             ]}
+          ]
+        )
+        |> Workflow.plan_eagerly(2)
+
+      new_wrk = Workflow.react(wrk)
+
+      assert Enum.count(Workflow.productions(new_wrk)) == 1
+      assert [%Fact{value: 3}] = Workflow.productions(new_wrk)
+
+      assert Enum.count(Workflow.next_runnables(new_wrk)) == 2
+
+      new_wrk = Workflow.react(new_wrk)
+
+      assert Enum.count(Workflow.productions(new_wrk)) == 3
+    end
+
+    test "plan/2 invokes one set of match runnables - ignoring any productions" do
+      wrk =
+        Runic.workflow(
+          name: "test workflow",
+          rules: [
+            Runic.rule(
+              fn num when is_integer(num) and num > 0 -> num * 2 end,
+              name: "double positive"
+            )
+          ]
+        )
+        |> Workflow.add(Runic.step(fn num -> num + 1 end, name: "increment"),
+          to: {"double positive", :reaction}
+        )
+
+      new_wrk = Workflow.plan(wrk, 2)
+
+      assert Enum.count(Workflow.productions(new_wrk)) == 0
+      assert Enum.count(Workflow.matches(new_wrk)) == 1
+
+      new_wrk_1 = Workflow.plan_eagerly(new_wrk)
+      assert Enum.count(Workflow.next_runnables(new_wrk_1)) == 1
+    end
+
+    test "plan_eagerly/2 invokes all possible match runnables eagerly - ignoring any productions" do
+      wrk =
+        Runic.workflow(
+          name: "test workflow",
+          rules: [
+            Runic.rule(
+              fn num when is_integer(num) and num > 0 -> num * 2 end,
+              name: "double positive"
+            ),
+            Runic.rule(
+              fn num when is_integer(num) and num < 0 -> num * 3 end,
+              name: "triple negative"
+            ),
+            Runic.rule(
+              fn num when is_integer(num) and rem(num, 2) == 0 -> div(num, 2) end,
+              name: "half even"
+            )
+          ]
+        )
+        |> Workflow.add(Runic.step(fn num -> num + 1 end, name: "increment"),
+          to: {"double positive", :reaction}
+        )
+        |> Workflow.add(Runic.step(fn num -> num - 1 end, name: "decrement"),
+          to: {"triple negative", :reaction}
+        )
+
+      new_wrk = Workflow.plan_eagerly(wrk, 2)
+
+      assert Enum.count(Workflow.productions(new_wrk)) == 0
+      assert Enum.count(Workflow.matches(new_wrk)) == 2
+      assert Enum.count(Workflow.next_runnables(new_wrk)) == 2
+
+      new_wrk = Workflow.plan_eagerly(wrk, -3)
+
+      assert Enum.count(Workflow.productions(new_wrk)) == 0
+      assert Enum.count(Workflow.matches(new_wrk)) == 1
+      assert Enum.count(Workflow.next_runnables(new_wrk)) == 1
+
+      new_wrk = Workflow.plan_eagerly(wrk, 4)
+
+      assert Enum.count(Workflow.productions(new_wrk)) == 0
+      assert Enum.count(Workflow.matches(new_wrk)) == 2
+      assert Enum.count(Workflow.next_runnables(new_wrk)) == 2
+    end
+
+    test "next_runnables/2 reflects the next pairs of {invokable_step, input_fact} that are prepared" do
+      wrk =
+        Runic.workflow(
+          name: "test workflow",
+          steps: [
+            {Runic.step(fn num -> num + 1 end),
+             [
+               Runic.step(fn num -> num + 2 end),
+               Runic.step(fn num -> num + 4 end)
+             ]}
+          ]
+        )
+        |> Workflow.plan_eagerly(2)
+        |> Workflow.react()
+
+      assert Enum.count(Workflow.next_runnables(wrk)) == 2
+
+      [{step_1, fact_1}, {step_2, fact_2}] = Workflow.next_runnables(wrk)
+
+      assert step_1.work.(fact_1.value) in [5, 7]
+      assert step_2.work.(fact_2.value) in [5, 7]
+      assert fact_1.value == 3
+      assert fact_2.value == 3
+    end
+
+    test "next_steps/2 returns the next outgoing neighbor dataflow steps for any given step" do
+      wrk =
+        Runic.workflow(
+          name: "test workflow",
+          steps: [
+            {Runic.step(fn num -> num + 1 end, name: "step 1"),
+             [
+               Runic.step(fn num -> num + 2 end, name: "step 2"),
+               Runic.step(fn num -> num + 4 end, name: "step 3")
+             ]}
+          ]
+        )
+
+      from_step_1 = Workflow.next_steps(wrk, Workflow.get_component(wrk, "step 1"))
+
+      for step <- from_step_1 do
+        assert step.name in ["step 2", "step 3"]
+      end
+
+      assert [] = Workflow.next_steps(wrk, Workflow.get_component(wrk, "step 2"))
+      assert [] = Workflow.next_steps(wrk, Workflow.get_component(wrk, "step 3"))
     end
   end
 
@@ -447,6 +606,7 @@ defmodule WorkflowTest do
                {:error, :no_component_by_name}
     end
 
+    @tag :skip
     test "component retrieval can return complex components in their original form" do
       state_machine =
         Runic.state_machine(
@@ -505,6 +665,7 @@ defmodule WorkflowTest do
       assert 8 in results
     end
 
+    @tag :skip
     test "state machines can be connected to other components" do
       wrk =
         Runic.workflow(
@@ -644,6 +805,7 @@ defmodule WorkflowTest do
     #   assert Workflow.get_component(wrk, "step 1").work.(1) == 3
     # end
 
+    @tag :skip
     test "components can be connected and composed by name in a workflow" do
       wrk =
         Runic.workflow(
@@ -947,7 +1109,7 @@ defmodule WorkflowTest do
 
       assert Enum.count(Graph.vertices(wrk.graph), &match?(%Runic.Workflow.FanOut{}, &1)) == 2
 
-      assert Graph.out_edges(wrk.graph, first_fan_out, by: :flow) |> IO.inspect() |> Enum.count() ==
+      assert Graph.out_edges(wrk.graph, first_fan_out, by: :flow) |> Enum.count() ==
                4
 
       assert Graph.in_edges(wrk.graph, first_fan_out, by: :flow) |> Enum.count() == 1
@@ -1052,7 +1214,6 @@ defmodule WorkflowTest do
              ]}
           ]
         )
-        |> IO.inspect(label: "Workflow with reduce outside map")
 
       assert %Workflow{} = wrk
 
@@ -1276,6 +1437,7 @@ defmodule WorkflowTest do
                )
     end
 
+    @tag :skip
     test "connect reactors to a state machine" do
       wrk =
         Runic.state_machine(

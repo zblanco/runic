@@ -383,8 +383,6 @@ defmodule RunicTest do
           ]
         )
 
-      IO.inspect(workflow.components, label: "Workflow Components")
-
       assert match?(%Workflow{}, workflow)
     end
 
@@ -451,8 +449,6 @@ defmodule RunicTest do
       )
 
     map = Runic.map(fn num -> num + ^some_var end, name: :map_1)
-
-    IO.inspect(Graph.edges(map.pipeline.graph), label: "Map Pipeline Edges")
 
     reduce =
       Runic.reduce(0, fn num, acc -> num + acc + ^some_var end, name: :reduce_1, map: :map_1)

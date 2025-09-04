@@ -49,15 +49,15 @@ defmodule Runic.Workflow.Components do
 
   def arity_of(_term), do: 1
 
-  def is_of_arity?(arity) do
-    fn
-      args when is_list(args) ->
-        if(arity == 1, do: true, else: length(args) == arity)
+  # def is_of_arity?(arity) do
+  #   fn
+  #     args when is_list(args) ->
+  #       if(arity == 1, do: true, else: length(args) == arity)
 
-      args ->
-        arity_of(args) == arity
-    end
-  end
+  #     args ->
+  #       arity_of(args) == arity
+  #   end
+  # end
 
   def run({m, f}, fact_value) when is_list(fact_value), do: run({m, f}, fact_value, 1)
 
