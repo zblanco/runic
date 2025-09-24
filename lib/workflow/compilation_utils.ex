@@ -4,6 +4,8 @@ defmodule Runic.Workflow.CompilationUtils do
   """
   require Runic
   alias Runic.Workflow
+  alias Runic.Workflow.Components
+  alias Runic.Workflow.Join
 
   @doc """
   Used for testing and debugging purposes, this macro will compile a workflow graph
@@ -64,16 +66,15 @@ defmodule Runic.Workflow.CompilationUtils do
 
     quote do
       unquote(wrk_acc)
-      |> Workflow.add(unquote(step))
+      |> Workflow.add_step(unquote(step))
     end
   end
 
   def workflow_graph_of_pipeline_tree_expression(
         wrk_acc,
-        {component, _, _} = expression,
+        {:., _, [_, _, _component]} = expression,
         _name
-      )
-      when component in [:step, :map, :reduce, :state_machine, :rule] do
+      ) do
     quote do
       unquote(wrk_acc)
       |> Workflow.add(unquote(expression))
@@ -82,10 +83,9 @@ defmodule Runic.Workflow.CompilationUtils do
 
   def workflow_graph_of_pipeline_tree_expression(
         wrk_acc,
-        {:., _, [_, _, component]} = expression,
+        {{:., _, [_, _component]}, _, _} = expression,
         _name
-      )
-      when component in [:step, :map, :reduce, :state_machine, :rule] do
+      ) do
     quote do
       unquote(wrk_acc)
       |> Workflow.add(unquote(expression))
@@ -94,38 +94,75 @@ defmodule Runic.Workflow.CompilationUtils do
 
   def workflow_graph_of_pipeline_tree_expression(
         wrk_acc,
-        {{:., _, [_, component]}, _, _} = expression,
+        {_component, _, _} = expression,
         _name
-      )
-      when component in [:step, :map, :reduce, :state_machine, :rule] do
+      ) do
     quote do
       unquote(wrk_acc)
       |> Workflow.add(unquote(expression))
     end
   end
 
+  # with n parents, add a join and add join to each parent
+  # then add children to the join
   def workflow_graph_of_pipeline_tree_expression(
         wrk_acc,
-        {[_ | _] = parents, children} = _expression,
+        {[_ | _] = parents, children} = pipeline_expression,
         name
       ) do
-    # Handle multiple parent components with shared children
-    Enum.reduce(parents, wrk_acc, fn parent_component, acc ->
-      parent_acc = workflow_graph_of_pipeline_tree_expression(acc, parent_component, name)
-      workflow_graph_of_pipeline_tree_expression(parent_acc, children, name)
-    end)
+    parent_steps_with_hashes =
+      Enum.map(parents, fn step_ast ->
+        {Components.fact_hash(step_ast), pipeline_step(step_ast)}
+      end)
+
+    parent_hashes = Enum.map(parent_steps_with_hashes, &elem(&1, 0))
+
+    join_hash = Components.fact_hash(Enum.map(parent_steps_with_hashes, &elem(&1, 0)))
+
+    join =
+      quote do
+        %Join{
+          hash: unquote(join_hash),
+          joins: unquote(parent_hashes)
+        }
+      end
+
+    dependent_pipeline_workflow =
+      workflow_graph_of_pipeline_tree_expression(
+        children,
+        to_string(name) <> "_#{Components.fact_hash(pipeline_expression)}"
+      )
+
+    wrk_acc =
+      Enum.reduce(parent_steps_with_hashes, wrk_acc, fn {_, parent_step}, acc ->
+        quote do
+          unquote(acc)
+          |> Workflow.add(unquote(parent_step), to: unquote(join))
+        end
+      end)
+
+    quote do
+      unquote(wrk_acc)
+      |> Workflow.add(unquote(dependent_pipeline_workflow), to: unquote(join_hash))
+    end
   end
 
   def workflow_graph_of_pipeline_tree_expression(
         wrk_acc,
-        {parent_component, children},
+        {parent_component, children} = pipeline_expression,
         name
       ) do
-    # Handle single parent component with children
-    # First add the parent component, then add children connected to it
-    parent_acc = workflow_graph_of_pipeline_tree_expression(wrk_acc, parent_component, name)
+    dependent_workflow =
+      workflow_graph_of_pipeline_tree_expression(
+        children,
+        to_string(name) <> "_#{Components.fact_hash(pipeline_expression)}"
+      )
 
-    workflow_graph_of_pipeline_tree_expression(parent_acc, children, name)
+    quote do
+      unquote(wrk_acc)
+      |> Workflow.add(unquote(parent_component))
+      |> Workflow.add(unquote(dependent_workflow), to: unquote(parent_component))
+    end
   end
 
   def workflow_graph_of_pipeline_tree_expression(
@@ -136,7 +173,77 @@ defmodule Runic.Workflow.CompilationUtils do
     # Traverse the expression tree and build the workflow graph
     # Handle nested components and composite components recursively
     Enum.reduce(expression, wrk_acc, fn item, acc ->
-      workflow_graph_of_pipeline_tree_expression(acc, item, name)
+      dependent_workflow =
+        workflow_graph_of_pipeline_tree_expression(
+          item,
+          to_string(name) <> "_#{Components.fact_hash(item)}"
+        )
+
+      quote do
+        unquote(acc)
+        |> Workflow.add(unquote(dependent_workflow))
+      end
     end)
+  end
+
+  # defp split_map_children(children) when is_list(children) do
+  #   Enum.split_with(children, fn
+  #     {:map, _, _} -> true
+  #     {:., _, [_, _, :map]} -> true
+  #     {{:., _, [_, :map]}, _, _} -> true
+  #     _otherwise -> false
+  #   end)
+  # end
+
+  def pipeline_step({:&, _, _} = expression) do
+    step_ast_hash = Components.fact_hash(expression)
+
+    quote do
+      Runic.step(work: unquote(expression), hash: unquote(step_ast_hash))
+    end
+  end
+
+  def pipeline_step({:fn, _, _} = expression) do
+    step_ast_hash = Components.fact_hash(expression)
+
+    quote do
+      Runic.step(work: unquote(expression), hash: unquote(step_ast_hash))
+    end
+  end
+
+  def pipeline_step({{:., _, [_, :step]}, _, [expression | [rest]]}) do
+    step_ast_hash = Components.fact_hash(expression)
+
+    name = rest[:name]
+
+    quote do
+      Runic.step(work: unquote(expression), hash: unquote(step_ast_hash), name: unquote(name))
+    end
+  end
+
+  def pipeline_step({{:., _, [_, :step]}, _, [expression]}) do
+    step_ast_hash = Components.fact_hash(expression)
+
+    quote do
+      Runic.step(work: unquote(expression), hash: unquote(step_ast_hash))
+    end
+  end
+
+  def pipeline_step({:step, _, [expression | [rest]]}) do
+    step_ast_hash = Components.fact_hash(expression)
+
+    name = rest[:name]
+
+    quote do
+      Runic.step(work: unquote(expression), hash: unquote(step_ast_hash), name: unquote(name))
+    end
+  end
+
+  def pipeline_step({:step, _, [expression]}) do
+    step_ast_hash = Components.fact_hash(expression)
+
+    quote do
+      Runic.step(work: unquote(expression), hash: unquote(step_ast_hash))
+    end
   end
 end

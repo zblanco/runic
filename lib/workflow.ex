@@ -146,17 +146,20 @@ defmodule Runic.Workflow do
   end
 
   defp do_add_component(%__MODULE__{} = workflow, component, parent) do
-    case {
-      component.__struct__ in Components.component_impls(),
-      component.__struct__ in Components.invokable_impls()
-    } do
-      {true, _invokable?} ->
+    case {component, parent} do
+      {%{__struct__: struct}, %Root{}} ->
+        if struct not in Components.component_impls() do
+          add_step(workflow, parent, component)
+        else
+          component
+          |> Component.connect(parent, workflow)
+          |> append_build_log(component, parent)
+        end
+
+      {%{__struct__: _struct} = component, _parent} ->
         component
         |> Component.connect(parent, workflow)
         |> append_build_log(component, parent)
-
-      {_is_component?, true} ->
-        add_step(workflow, parent, component)
 
       _otherwise ->
         raise ArgumentError,
@@ -631,8 +634,6 @@ defmodule Runic.Workflow do
           |> Graph.add_vertex(child_step, child_step.hash)
           |> Graph.add_edge(%Root{}, child_step, label: :flow, weight: 0)
     }
-
-    # |> maybe_put_component(child_step)
   end
 
   def add_step(
@@ -663,8 +664,6 @@ defmodule Runic.Workflow do
           |> Graph.add_vertex(child_step, to_string(child_step.hash))
           |> Graph.add_edge(parent_step, child_step, label: :flow, weight: 0)
     }
-
-    # |> maybe_put_component(child_step)
   end
 
   def add_step(%__MODULE__{} = workflow, parent_steps, %{} = child_step)
@@ -694,7 +693,11 @@ defmodule Runic.Workflow do
         add(wrk, step)
 
       {[_step | _] = parent_steps, dependent_steps}, wrk ->
-        wrk = Enum.reduce(parent_steps, wrk, fn step, wrk -> add_step(wrk, step) end)
+        wrk =
+          Enum.reduce(parent_steps, wrk, fn step, wrk ->
+            # add_step(wrk, step)
+            add(wrk, step)
+          end)
 
         join =
           parent_steps
@@ -718,7 +721,6 @@ defmodule Runic.Workflow do
       {[_step | _] = parent_steps, dependent_steps}, wrk ->
         wrk =
           Enum.reduce(parent_steps, wrk, fn step, wrk ->
-            # add_step(wrk, parent_step, step)
             add(wrk, step, to: parent_step)
           end)
 
@@ -754,13 +756,6 @@ defmodule Runic.Workflow do
     }
   end
 
-  # def maybe_put_component(
-  #       %__MODULE__{} = workflow,
-  #       %{name: nil}
-  #     ) do
-  #   workflow
-  # end
-
   def maybe_put_component(
         %__MODULE__{components: components} = workflow,
         %{name: name} = step
@@ -774,18 +769,6 @@ defmodule Runic.Workflow do
   def maybe_put_component(%__MODULE__{} = workflow, %FanIn{map: nil}) do
     workflow
   end
-
-  # def maybe_put_component(
-  #       %__MODULE__{graph: g} = workflow,
-  #       %FanIn{map: name_of_map_expression} = step
-  #     ) do
-  #   fan_out =
-  #     get_component!(workflow, name_of_map_expression)
-  #     |> Map.get(:components)
-  #     |> Map.get(:fan_out)
-
-  #   %{workflow | graph: Graph.add_edge(g, fan_out, step, label: :reduced_by)}
-  # end
 
   def maybe_put_component(%__MODULE__{} = workflow, %{} = _step), do: workflow
 
@@ -888,92 +871,96 @@ defmodule Runic.Workflow do
   @doc """
   Merges the second workflow into the first maintaining the name of the first.
   """
-  def merge(
-        %__MODULE__{graph: g1, components: c1, mapped: m1} = workflow,
-        %__MODULE__{graph: g2, components: c2, mapped: m2} = _workflow2
-      ) do
-    merged_graph =
-      Graph.Reducers.Bfs.reduce(g2, g1, fn
-        %Root{} = root, g ->
-          out_edges = Enum.uniq(Graph.out_edges(g, root) ++ Graph.out_edges(g2, root))
-
-          g =
-            Enum.reduce(out_edges, Graph.add_vertex(g, root), fn edge, g ->
-              Graph.add_edge(g, edge)
-            end)
-
-          {:next, g}
-
-        generation, g when is_integer(generation) ->
-          out_edges = Enum.uniq(Graph.out_edges(g, generation) ++ Graph.out_edges(g2, generation))
-
-          g =
-            g
-            |> Graph.add_vertex(generation)
-            |> Graph.add_edges(out_edges)
-
-          {:next, g}
-
-        v, g ->
-          g = Graph.add_vertex(g, v, v.hash)
-
-          out_edges = Enum.uniq(Graph.out_edges(g, v) ++ Graph.out_edges(g2, v))
-
-          g =
-            Enum.reduce(out_edges, g, fn
-              %{v1: %Fact{} = _fact_v1, v2: _v2, label: :generation} = memory2_edge, mem ->
-                Graph.add_edge(mem, memory2_edge)
-
-              %{v1: %Fact{} = fact_v1, v2: v2, label: label} = memory2_edge, mem
-              when label in [:matchable, :runnable, :ran] ->
-                out_edge_labels_of_into_mem_for_edge =
-                  mem
-                  |> Graph.out_edges(fact_v1)
-                  |> Enum.filter(&(&1.v2 == v2))
-                  |> MapSet.new(& &1.label)
-
-                cond do
-                  label in [:matchable, :runnable] and
-                      MapSet.member?(out_edge_labels_of_into_mem_for_edge, :ran) ->
-                    mem
-
-                  label == :ran and
-                      MapSet.member?(out_edge_labels_of_into_mem_for_edge, :runnable) ->
-                    Graph.update_labelled_edge(mem, fact_v1, v2, :runnable, label: :ran)
-
-                  true ->
-                    Graph.add_edge(mem, memory2_edge)
-                end
-
-              %{v1: _v1, v2: _v2} = memory2_edge, mem ->
-                Graph.add_edge(mem, memory2_edge)
-            end)
-
-          {:next, g}
-      end)
-
-    %__MODULE__{
-      workflow
-      | graph: merged_graph,
-        components: Map.merge(c1, c2),
-        mapped:
-          Enum.reduce(m1, m2, fn
-            {:mapped_paths, mapset}, acc ->
-              Map.put(acc, :mapped_paths, MapSet.union(acc.mapped_paths, mapset))
-
-            {k, v}, acc ->
-              Map.put(
-                acc,
-                k,
-                [v | acc[k] || []]
-                |> List.flatten()
-                |> Enum.reject(&is_nil/1)
-                |> Enum.reverse()
-                |> Enum.uniq()
-              )
-          end)
-    }
+  def merge(workflow, workflow2) do
+    Component.connect(workflow2, %Root{}, workflow)
   end
+
+  # def merge(
+  #       %__MODULE__{graph: g1, components: c1, mapped: m1} = workflow,
+  #       %__MODULE__{graph: g2, components: c2, mapped: m2} = _workflow2
+  #     ) do
+  #   merged_graph =
+  #     Graph.Reducers.Bfs.reduce(g2, g1, fn
+  #       %Root{} = root, g ->
+  #         out_edges = Enum.uniq(Graph.out_edges(g, root) ++ Graph.out_edges(g2, root))
+
+  #         g =
+  #           Enum.reduce(out_edges, Graph.add_vertex(g, root), fn edge, g ->
+  #             Graph.add_edge(g, edge)
+  #           end)
+
+  #         {:next, g}
+
+  #       generation, g when is_integer(generation) ->
+  #         out_edges = Enum.uniq(Graph.out_edges(g, generation) ++ Graph.out_edges(g2, generation))
+
+  #         g =
+  #           g
+  #           |> Graph.add_vertex(generation)
+  #           |> Graph.add_edges(out_edges)
+
+  #         {:next, g}
+
+  #       v, g ->
+  #         g = Graph.add_vertex(g, v, v.hash)
+
+  #         out_edges = Enum.uniq(Graph.out_edges(g, v) ++ Graph.out_edges(g2, v))
+
+  #         g =
+  #           Enum.reduce(out_edges, g, fn
+  #             %{v1: %Fact{} = _fact_v1, v2: _v2, label: :generation} = memory2_edge, mem ->
+  #               Graph.add_edge(mem, memory2_edge)
+
+  #             %{v1: %Fact{} = fact_v1, v2: v2, label: label} = memory2_edge, mem
+  #             when label in [:matchable, :runnable, :ran] ->
+  #               out_edge_labels_of_into_mem_for_edge =
+  #                 mem
+  #                 |> Graph.out_edges(fact_v1)
+  #                 |> Enum.filter(&(&1.v2 == v2))
+  #                 |> MapSet.new(& &1.label)
+
+  #               cond do
+  #                 label in [:matchable, :runnable] and
+  #                     MapSet.member?(out_edge_labels_of_into_mem_for_edge, :ran) ->
+  #                   mem
+
+  #                 label == :ran and
+  #                     MapSet.member?(out_edge_labels_of_into_mem_for_edge, :runnable) ->
+  #                   Graph.update_labelled_edge(mem, fact_v1, v2, :runnable, label: :ran)
+
+  #                 true ->
+  #                   Graph.add_edge(mem, memory2_edge)
+  #               end
+
+  #             %{v1: _v1, v2: _v2} = memory2_edge, mem ->
+  #               Graph.add_edge(mem, memory2_edge)
+  #           end)
+
+  #         {:next, g}
+  #     end)
+
+  #   %__MODULE__{
+  #     workflow
+  #     | graph: merged_graph,
+  #       components: Map.merge(c1, c2),
+  #       mapped:
+  #         Enum.reduce(m1, m2, fn
+  #           {:mapped_paths, mapset}, acc ->
+  #             Map.put(acc, :mapped_paths, MapSet.union(acc.mapped_paths, mapset))
+
+  #           {k, v}, acc ->
+  #             Map.put(
+  #               acc,
+  #               k,
+  #               [v | acc[k] || []]
+  #               |> List.flatten()
+  #               |> Enum.reject(&is_nil/1)
+  #               |> Enum.reverse()
+  #               |> Enum.uniq()
+  #             )
+  #         end)
+  #   }
+  # end
 
   def merge(%__MODULE__{} = workflow, flowable) do
     merge(workflow, Transmutable.transmute(flowable))
@@ -1070,21 +1057,6 @@ defmodule Runic.Workflow do
         edge.v2
       end
     end)
-
-    # component
-    # |> Component.components()
-    # |> Keyword.values()
-    # |> Enum.reduce([], fn sub_component, acc ->
-    #   productions =
-    #     for %Graph.Edge{} = edge <-
-    #           Graph.out_edges(wrk.graph, sub_component,
-    #             by: [:produced, :state_produced, :state_initiated, :reduced]
-    #           ) do
-    #       edge.v2
-    #     end
-
-    #   acc ++ productions
-    # end)
   end
 
   @doc """

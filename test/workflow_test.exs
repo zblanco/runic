@@ -891,6 +891,8 @@ defmodule WorkflowTest do
 
       step = Workflow.get_component(wrk, "joined_step")
 
+      assert %Step{} = step
+
       assert Enum.any?(Graph.vertices(wrk.graph), &match?(%Workflow.Join{}, &1))
     end
 
@@ -938,7 +940,11 @@ defmodule WorkflowTest do
 
       assert %Workflow{} = map.pipeline
 
-      fan_out = Workflow.get_component(map.pipeline, :fan_out)
+      workflow = Runic.workflow(name: "map test") |> Workflow.add(map)
+
+      fan_out = Workflow.get_component(workflow, {"map step", :fan_out})
+
+      assert not is_nil(fan_out)
 
       # Graph.in_edges(map.pipeline.graph, fan_out, by: :component_of)
     end
@@ -1080,8 +1086,8 @@ defmodule WorkflowTest do
                     [
                       Runic.map(
                         [
-                          Runic.step(fn num -> num + 1 end),
-                          Runic.step(fn num -> num + 4 end)
+                          Runic.step(fn num -> num + 6 end, name: :nested_plus_6),
+                          Runic.step(fn num -> num + 8 end, name: :nested_plus_8)
                         ],
                         name: :inner_map
                       )
@@ -1109,8 +1115,7 @@ defmodule WorkflowTest do
 
       assert Enum.count(Graph.vertices(wrk.graph), &match?(%Runic.Workflow.FanOut{}, &1)) == 2
 
-      assert Graph.out_edges(wrk.graph, first_fan_out, by: :flow) |> Enum.count() ==
-               4
+      assert Workflow.next_steps(wrk, first_fan_out) |> Enum.count() == 4
 
       assert Graph.in_edges(wrk.graph, first_fan_out, by: :flow) |> Enum.count() == 1
     end
@@ -1248,11 +1253,11 @@ defmodule WorkflowTest do
           to: :plus2
         )
 
-      # wrk = Workflow.react_until_satisfied(wrk, "potato")
+      wrk = Workflow.react_until_satisfied(wrk, "potato")
 
-      # for reaction <- Workflow.raw_productions(wrk) do
-      #   assert reaction in [5, 6, 7, 8, 18, 4, 5, 3, 6, 3, 4, 2, 1, 0..3]
-      # end
+      for reaction <- Workflow.raw_productions(wrk) do
+        assert reaction in [5, 6, 7, 8, 18, 4, 5, 3, 6, 3, 4, 2, 1, 0..3]
+      end
     end
   end
 

@@ -952,19 +952,14 @@ defmodule Runic do
         }
       end
 
-    step = pipeline_step(expression)
+    step = CompilationUtils.pipeline_step(expression)
 
     quote do
       unquote(wrk_expression)
       |> Workflow.add_step(unquote(fan_out))
-      |> Workflow.add(unquote(step), to: unquote(fan_out_hash))
+      |> Workflow.add_step(unquote(fan_out), unquote(step))
 
-      # |> Workflow.draw_connection(:self, unquote(fan_out), :component_of, properties: %{
-      #   kind: :fan_out,
-      # })
-      # |> Workflow.draw_connection(:self, unquote(step), :component_of, properties: %{
-      #   kind: :leaf,
-      # })
+      # |> Workflow.add(unquote(step), to: unquote(fan_out_hash))
     end
   end
 
@@ -979,7 +974,7 @@ defmodule Runic do
         }
       end
 
-    step = pipeline_step(expression)
+    step = CompilationUtils.pipeline_step(expression)
 
     quote do
       unquote(wrk_expression)
@@ -1005,7 +1000,7 @@ defmodule Runic do
 
     parent_steps_with_hashes =
       Enum.map(parent_steps, fn step_ast ->
-        {Components.fact_hash(step_ast), pipeline_step(step_ast)}
+        {Components.fact_hash(step_ast), CompilationUtils.pipeline_step(step_ast)}
       end)
 
     parent_hashes = Enum.map(parent_steps_with_hashes, &elem(&1, 0))
@@ -1065,7 +1060,7 @@ defmodule Runic do
         }
       end
 
-    step = pipeline_step(step_expression)
+    step = CompilationUtils.pipeline_step(step_expression)
 
     wrk_expression =
       quote generated: true do
@@ -1074,15 +1069,13 @@ defmodule Runic do
         |> Workflow.add(unquote(step), to: unquote(fan_out_hash))
       end
 
-    Enum.reduce(dependent_steps, wrk_expression, fn dstep, wrk_acc ->
-      dependent_pipeline_workflow =
-        CompilationUtils.workflow_graph_of_pipeline_tree_expression(dstep, name)
+    dependent_pipeline_workflow =
+      CompilationUtils.workflow_graph_of_pipeline_tree_expression(dependent_steps, name)
 
-      quote generated: true do
-        unquote(wrk_acc)
-        |> Workflow.add(unquote(dependent_pipeline_workflow), to: unquote(step))
-      end
-    end)
+    quote generated: true do
+      unquote(wrk_expression)
+      |> Workflow.add(unquote(dependent_pipeline_workflow), to: unquote(step))
+    end
   end
 
   defp pipeline_workflow_of_map_expression(
@@ -1115,58 +1108,6 @@ defmodule Runic do
         |> Workflow.add(unquote(dependent_pipeline_workflow), to: unquote(fan_out_hash))
       end
     end)
-  end
-
-  defp pipeline_step({:&, _, _} = expression) do
-    step_ast_hash = Components.fact_hash(expression)
-
-    quote do
-      Runic.step(work: unquote(expression), hash: unquote(step_ast_hash))
-    end
-  end
-
-  defp pipeline_step({:fn, _, _} = expression) do
-    step_ast_hash = Components.fact_hash(expression)
-
-    quote do
-      Runic.step(work: unquote(expression), hash: unquote(step_ast_hash))
-    end
-  end
-
-  defp pipeline_step({{:., _, [_, :step]}, _, [expression | [rest]]}) do
-    step_ast_hash = Components.fact_hash(expression)
-
-    name = rest[:name]
-
-    quote do
-      Runic.step(work: unquote(expression), hash: unquote(step_ast_hash), name: unquote(name))
-    end
-  end
-
-  defp pipeline_step({{:., _, [_, :step]}, _, [expression]}) do
-    step_ast_hash = Components.fact_hash(expression)
-
-    quote do
-      Runic.step(work: unquote(expression), hash: unquote(step_ast_hash))
-    end
-  end
-
-  defp pipeline_step({:step, _, [expression | [rest]]}) do
-    step_ast_hash = Components.fact_hash(expression)
-
-    name = rest[:name]
-
-    quote do
-      Runic.step(work: unquote(expression), hash: unquote(step_ast_hash), name: unquote(name))
-    end
-  end
-
-  defp pipeline_step({:step, _, [expression]}) do
-    step_ast_hash = Components.fact_hash(expression)
-
-    quote do
-      Runic.step(work: unquote(expression), hash: unquote(step_ast_hash))
-    end
   end
 
   defp workflow_of_state_machine(init, reducer, reactors, name) do

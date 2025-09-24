@@ -146,45 +146,60 @@ defimpl Runic.Component, for: Runic.Workflow.Map do
       |> Workflow.register_component(map)
       |> Workflow.draw_connection(map, fan_out_step, :component_of, properties: %{kind: :fan_out})
 
-    pipeline_workflow.graph
-    |> Graph.edges()
-    |> Enum.reduce(wrk, fn
-      %{v1: %Root{}, v2: _fan_out}, wrk ->
-        wrk
-
-      %{v1: v1, v2: %Step{} = step, label: :flow}, wrk ->
-        wrk =
+    wrk =
+      pipeline_workflow.graph
+      |> Graph.edges()
+      |> Enum.reduce(wrk, fn
+        %{v1: %Root{}, v2: _fan_out}, wrk ->
           wrk
-          |> Workflow.add_step(v1, step)
-          |> Workflow.register_component(step)
-          |> Workflow.draw_connection(step, step, :component_of, properties: %{kind: :step})
 
-        if is_leaf?(wrk.graph, step) do
-          Workflow.draw_connection(wrk, map, step, :component_of, properties: %{kind: :leaf})
-        else
+        %{v1: v1, v2: %Step{} = step, label: :flow}, wrk ->
+          wrk =
+            wrk
+            |> Workflow.add_step(v1, step)
+            |> Workflow.register_component(step)
+            |> Workflow.draw_connection(step, step, :component_of, properties: %{kind: :step})
+
+          if is_leaf?(wrk.graph, step) do
+            Workflow.draw_connection(wrk, map, step, :component_of, properties: %{kind: :leaf})
+          else
+            wrk
+          end
+
+        # %{v1: %Runic.Workflow.FanOut{} = fan_out, v2: %Runic.Workflow.Map{} = nested_map} = edge, wrk ->
+
+        #   Workflow.add(wrk, nested_map, to: fan_out.hash)
+
+        %{v1: _v1, v2: %Runic.Workflow.Map{} = nested_map} = edge, wrk ->
+          wrk = Map.put(wrk, :graph, Graph.add_edge(wrk.graph, edge))
+
+          # Get the nested map's fan_out step
+          nested_fan_out_step =
+            nested_map.pipeline.graph
+            |> Graph.out_neighbors(Workflow.root())
+            |> List.first()
+
           wrk
-        end
+          |> Workflow.register_component(nested_map)
+          |> Workflow.draw_connection(nested_map, nested_fan_out_step, :component_of,
+            properties: %{kind: :fan_out}
+          )
 
-      %{v1: _v1, v2: %Runic.Workflow.Map{} = nested_map} = edge, wrk ->
-        # Handle nested map components by registering them
-        wrk = Map.put(wrk, :graph, Graph.add_edge(wrk.graph, edge))
+        %{v1: _, v2: _} = edge, wrk ->
+          # for non-components such as joins, just add the edge
+          %Workflow{wrk | graph: Graph.add_edge(wrk.graph, edge)}
+      end)
 
-        # Get the nested map's fan_out step
-        nested_fan_out_step =
-          nested_map.pipeline.graph
-          |> Graph.out_neighbors(Workflow.root())
-          |> List.first()
-
-        wrk
-        |> Workflow.register_component(nested_map)
-        |> Workflow.draw_connection(nested_map, nested_fan_out_step, :component_of,
-          properties: %{kind: :fan_out}
-        )
-
-      %{v1: _, v2: _} = edge, wrk ->
-        # for non-components such as joins, just add the edge
-        %Workflow{wrk | graph: Graph.add_edge(wrk.graph, edge)}
-    end)
+    %Workflow{
+      wrk
+      | mapped: %{
+          workflow.mapped
+          | mapped_paths:
+              MapSet.union(workflow.mapped.mapped_paths, map.pipeline.mapped.mapped_paths)
+        },
+        components: Map.merge(wrk.components, map.pipeline.components),
+        build_log: wrk.build_log ++ map.pipeline.build_log
+    }
   end
 
   defp is_leaf?(g, v), do: g |> Graph.out_edges(v, by: :flow) |> Enum.count() == 0
@@ -911,39 +926,57 @@ end
 
 defimpl Runic.Component, for: Runic.Workflow do
   alias Runic.Workflow
+  alias Runic.Workflow.Fact
 
   def connect(%Workflow{} = child_workflow, parent_component, workflow) do
-    # Register the child workflow as a component if it has a name
-    wrk =
-      if child_workflow.name do
-        Workflow.register_component(workflow, child_workflow)
-      else
-        workflow
-      end
+    new_graph =
+      child_workflow.graph
+      |> Graph.edges()
+      |> Enum.reduce(workflow.graph, fn
+        %{v1: %Runic.Workflow.Root{}, v2: _} = edge, g ->
+          new_edge = %Graph.Edge{edge | v1: parent_component}
+          Graph.add_edge(g, new_edge)
 
-    # Add all components from the child workflow graph to the parent workflow
-    child_workflow.graph
-    |> Graph.vertices()
-    |> Enum.reduce(wrk, fn vertex, acc ->
-      case vertex do
-        %Runic.Workflow.Root{} ->
-          acc
+        # handle reaction memory edges to override with latest history
+        %{v1: %Fact{} = fact_v1, v2: v2, label: label} = edge, g
+        when label in [:matchable, :runnable, :ran] ->
+          out_edge_labels_of_into_mem_for_edge =
+            g
+            |> Graph.out_edges(fact_v1)
+            |> Enum.filter(&(&1.v2 == v2))
+            |> MapSet.new(& &1.label)
 
-        component ->
-          acc
-          |> Workflow.add_step(parent_component, component)
-          |> then(fn new_acc ->
-            # Register the component with its name if it has one
-            case component do
-              %{name: name} when name != nil ->
-                Map.put(new_acc, :components, Map.put(new_acc.components, name, component.hash))
+          cond do
+            label in [:matchable, :runnable] and
+                MapSet.member?(out_edge_labels_of_into_mem_for_edge, :ran) ->
+              g
 
-              _ ->
-                new_acc
-            end
-          end)
-      end
-    end)
+            label == :ran and
+                MapSet.member?(out_edge_labels_of_into_mem_for_edge, :runnable) ->
+              Graph.update_labelled_edge(g, fact_v1, v2, :runnable, label: :ran)
+
+            true ->
+              Graph.add_edge(g, edge)
+          end
+
+        edge, g ->
+          Graph.add_edge(g, edge)
+      end)
+
+    %Workflow{
+      workflow
+      | graph: new_graph,
+        mapped: %{
+          workflow.mapped
+          | mapped_paths:
+              MapSet.union(workflow.mapped.mapped_paths, child_workflow.mapped.mapped_paths)
+        },
+        before_hooks: Map.merge(workflow.before_hooks, child_workflow.before_hooks),
+        after_hooks: Map.merge(workflow.after_hooks, child_workflow.after_hooks),
+        components: Map.merge(workflow.components, child_workflow.components),
+        inputs: Map.merge(workflow.inputs, child_workflow.inputs),
+        build_log: workflow.build_log ++ child_workflow.build_log
+    }
   end
 
   def get_component(%Workflow{} = workflow, sub_component_name) do
