@@ -557,6 +557,15 @@ defmodule WorkflowTest do
       assert [%Step{name: "step 2"}] =
                Workflow.next_steps(wrk, Workflow.get_component(wrk, {"step 1", :step}))
     end
+
+    test "`log: false` option doesn't append the build log" do
+      wrk =
+        Runic.workflow(name: "add step test")
+        |> Workflow.add(Runic.step(name: "step 1", work: fn num -> num + 1 end), log: false)
+        |> Workflow.add(Runic.step(name: "step 2", work: fn num -> num + 2 end))
+
+      assert Enum.count(Workflow.build_log(wrk)) == 1
+    end
   end
 
   describe "named components" do

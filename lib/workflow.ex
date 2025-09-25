@@ -111,24 +111,24 @@ defmodule Runic.Workflow do
       nil ->
         # If no parent is specified, we assume the component is a root step
         parent_step = root()
-        do_add_component(workflow, component, parent_step)
+        do_add_component(workflow, component, parent_step, opts)
 
       {component_name, _component_kind} = name
       when is_atom(component_name) or is_binary(component_name) ->
         parent_step = get_component!(workflow, name) |> List.first()
 
-        do_add_component(workflow, component, parent_step)
+        do_add_component(workflow, component, parent_step, opts)
 
       component_name when is_atom(component_name) or is_binary(component_name) ->
         parent_step = get_component!(workflow, component_name)
-        do_add_component(workflow, component, parent_step)
+        do_add_component(workflow, component, parent_step, opts)
 
       hash when is_integer(hash) ->
         parent_step = get_by_hash(workflow, hash)
-        do_add_component(workflow, component, parent_step)
+        do_add_component(workflow, component, parent_step, opts)
 
       %{} = parent_step ->
-        do_add_component(workflow, component, parent_step)
+        do_add_component(workflow, component, parent_step, opts)
 
       parent_steps when is_list(parent_steps) ->
         parent_steps = Enum.map(parent_steps, &get_component!(workflow, &1))
@@ -140,26 +140,42 @@ defmodule Runic.Workflow do
 
         Enum.reduce(parent_steps, workflow, fn parent_step, acc ->
           acc = add_step(acc, parent_step, join)
-          do_add_component(acc, component, join)
+          do_add_component(acc, component, join, opts)
         end)
     end
   end
 
-  defp do_add_component(%__MODULE__{} = workflow, component, parent) do
+  defp do_add_component(%__MODULE__{} = workflow, component, parent, opts) do
+    should_log = Keyword.get(opts, :log, true)
+
     case {component, parent} do
       {%{__struct__: struct}, %Root{}} ->
         if struct not in Components.component_impls() do
-          add_step(workflow, parent, component)
+          workflow = add_step(workflow, parent, component)
+
+          if should_log do
+            append_build_log(workflow, component, parent)
+          else
+            workflow
+          end
         else
-          component
-          |> Component.connect(parent, workflow)
-          |> append_build_log(component, parent)
+          workflow = Component.connect(component, parent, workflow)
+
+          if should_log do
+            append_build_log(workflow, component, parent)
+          else
+            workflow
+          end
         end
 
       {%{__struct__: _struct} = component, _parent} ->
-        component
-        |> Component.connect(parent, workflow)
-        |> append_build_log(component, parent)
+        workflow = Component.connect(component, parent, workflow)
+
+        if should_log do
+          append_build_log(workflow, component, parent)
+        else
+          workflow
+        end
 
       _otherwise ->
         raise ArgumentError,
@@ -871,7 +887,7 @@ defmodule Runic.Workflow do
   @doc """
   Merges the second workflow into the first maintaining the name of the first.
   """
-  def merge(workflow, workflow2) do
+  def merge(%__MODULE__{} = workflow, %__MODULE__{} = workflow2) do
     Component.connect(workflow2, %Root{}, workflow)
   end
 
