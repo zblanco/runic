@@ -66,7 +66,7 @@ defmodule Runic.Workflow.CompilationUtils do
 
     quote do
       unquote(wrk_acc)
-      |> Workflow.add_step(unquote(step))
+      |> Workflow.add(unquote(step), log: false)
     end
   end
 
@@ -77,7 +77,7 @@ defmodule Runic.Workflow.CompilationUtils do
       ) do
     quote do
       unquote(wrk_acc)
-      |> Workflow.add(unquote(expression))
+      |> Workflow.add(unquote(expression), log: false)
     end
   end
 
@@ -88,7 +88,7 @@ defmodule Runic.Workflow.CompilationUtils do
       ) do
     quote do
       unquote(wrk_acc)
-      |> Workflow.add(unquote(expression))
+      |> Workflow.add(unquote(expression), log: false)
     end
   end
 
@@ -99,7 +99,7 @@ defmodule Runic.Workflow.CompilationUtils do
       ) do
     quote do
       unquote(wrk_acc)
-      |> Workflow.add(unquote(expression))
+      |> Workflow.add(unquote(expression), log: false)
     end
   end
 

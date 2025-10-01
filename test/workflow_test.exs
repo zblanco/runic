@@ -8,8 +8,6 @@ defmodule WorkflowTest do
   alias Runic.Workflow.Fact
   alias Runic.Workflow.ReactionOccurred
 
-  import Runic
-
   defmodule TextProcessing do
     require Runic
 

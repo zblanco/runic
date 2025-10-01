@@ -1434,7 +1434,7 @@ defmodule Runic do
       end
 
     reaction_ast_hash = Components.fact_hash(expression)
-    reaction = quote(do: step(unquote(expression)))
+    reaction = quote(do: Step.new(work: unquote(expression), hash: unquote(reaction_ast_hash)))
 
     workflow =
       quote do
