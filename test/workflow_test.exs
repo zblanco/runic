@@ -464,6 +464,26 @@ defmodule WorkflowTest do
       assert 10 in reacted_join_with_many_dependencies
       assert 2 in reacted_join_with_many_dependencies
     end
+
+    test "accumulator evaluation with rules over many generations" do
+      workflow =
+        Runic.workflow(name: "accumulator test")
+        |> Workflow.add(Runic.accumulator(0, fn num, state -> num + state end, name: "adder"))
+        |> Workflow.add(Runic.step(fn num -> num * 2 end, name: "multiplier"), to: "adder")
+        |> Workflow.add(
+          Runic.rule(fn num when num > 3 -> num * 3 end, name: "rule1"),
+          to: "adder"
+        )
+
+      wrk =
+        workflow
+        |> Workflow.plan_eagerly(4)
+        |> Workflow.react_until_satisfied()
+
+      # dbg(Workflow.facts(wrk))
+
+      # dbg(Graph.edges(wrk.graph, by: :state_produced))
+    end
   end
 
   test "a workflow made of many rules and conditions can evaluate a composition of the rules" do

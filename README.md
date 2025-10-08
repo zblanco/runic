@@ -36,8 +36,8 @@ This produces a workflow graph like the following where R is the entrypoint or "
 ```mermaid
   graph TD;
       R-->A;
-      A-->B;
-      B-->C;
+      R-->B;
+      R-->C;
 ```
 
 In Runic, inputs fed through a workflow are called "Facts". During workflow evaluation various steps are traversed to and invoked producing more Facts.

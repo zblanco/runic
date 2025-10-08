@@ -17,21 +17,6 @@ defmodule Runic do
   alias Runic.Workflow.FanIn
   alias Runic.Workflow.Join
 
-  # @boolean_expressions ~w(
-  #   ==
-  #   ===
-  #   !=
-  #   !==
-  #   <
-  #   >
-  #   <=
-  #   >=
-  #   in
-  #   not
-  #   =~
-  # )a
-
-  # Helper function to generate default component names
   defp default_component_name(component_kind, hash) do
     "#{component_kind}_#{hash}"
   end

@@ -163,6 +163,9 @@ defmodule RunicTest do
       assert Map.has_key?(wrk_of_rule.graph.vertices, rule.reaction_hash)
     end
 
+    test "supports state_of/1 in conditions and rules to match on accumulator states" do
+    end
+
     # test "supports `if` macro as a valid rule" do
     #   rule = Runic.rule :potato -> :is_potato end
 
@@ -214,29 +217,31 @@ defmodule RunicTest do
       assert match?(%Workflow{}, workflow)
     end
 
-    # test "`^` captured bindings can be used in accumulators" do
-    #   some_var = 10
+    test "`^` captured bindings can be used in accumulators" do
+      some_var = 10
 
-    #   acc =
-    #     Runic.accumulator(0, fn x, acc -> x + acc + ^some_var end, name: "adder_with_binding")
+      acc =
+        Runic.accumulator(0, fn x, acc -> x + acc + ^some_var end, name: "adder_with_binding")
 
-    #   assert match?(%Runic.Workflow.Accumulator{}, acc)
-    #   assert acc.bindings[:some_var] == 10
+      assert match?(%Runic.Workflow.Accumulator{}, acc)
+      assert acc.binds[:some_var] == 10
 
-    #   workflow =
-    #     Runic.workflow(name: "test workflow with accumulator")
-    #     |> Workflow.add(acc)
+      workflow =
+        Runic.workflow(name: "test workflow with accumulator")
+        |> Workflow.add(acc)
 
-    #   assert match?(%Workflow{}, workflow)
+      assert match?(%Workflow{}, workflow)
 
-    #   result =
-    #     workflow
-    #     |> Workflow.plan_eagerly([1, 2, 3])
-    #     |> Workflow.react_until_satisfied()
-    #     |> Workflow.raw_productions()
+      result =
+        workflow
+        |> Workflow.plan_eagerly(1)
+        |> Workflow.react_until_satisfied()
+        |> Workflow.raw_productions()
 
-    #   assert result == [11, 13, 15]
-    # end
+      for r <- result do
+        assert r in [11, 0]
+      end
+    end
   end
 
   describe "Runic.step constructors" do

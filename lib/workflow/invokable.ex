@@ -105,7 +105,7 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Condition do
   end
 
   defp run_work(work, fact_value, 1) when is_list(fact_value) do
-    apply(work, fact_value)
+    apply(work, [fact_value])
   end
 
   defp run_work(work, fact_value, arity) when arity > 1 and is_list(fact_value) do
@@ -362,7 +362,7 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Accumulator do
       |> Workflow.draw_connection(acc, fact, :state_produced, weight: causal_generation)
       |> Workflow.mark_runnable_as_ran(acc, fact)
       |> Workflow.run_after_hooks(acc, next_state_produced_fact)
-      |> Workflow.prepare_next_runnables(acc, fact)
+      |> Workflow.prepare_next_runnables(acc, next_state_produced_fact)
     else
       init_fact = init_fact(acc)
 
@@ -381,7 +381,7 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Accumulator do
       )
       |> Workflow.mark_runnable_as_ran(acc, fact)
       |> Workflow.run_after_hooks(acc, next_state_produced_fact)
-      |> Workflow.prepare_next_runnables(acc, fact)
+      |> Workflow.prepare_next_runnables(acc, next_state_produced_fact)
     end
   end
 
@@ -392,7 +392,10 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Accumulator do
 
   defp last_known_state(workflow, accumulator) do
     workflow.graph
-    |> Graph.out_edges(accumulator, by: :state_produced)
+    |> Graph.out_edges(accumulator,
+      by: :state_produced
+    )
+    # |> Enum.sort_by(& &1.weight, :desc)
     |> List.first(%{})
     |> Map.get(:v2)
   end

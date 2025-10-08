@@ -555,6 +555,20 @@ defmodule Runic.Workflow do
     }
   end
 
+  @doc """
+  Attaches a hook function to be run after a given component step.
+
+  ## Examples
+
+  ```
+  workflow
+  |> Workflow.attach_after_hook("my_component", fn step, workflow, output_fact ->
+    IO.inspect(output_fact, label: "Output fact")
+    IO.inspect(step, label: "Step")
+    workflow
+  end)
+  ```
+  """
   def attach_after_hook(%__MODULE__{} = workflow, component_name, hook)
       when is_function(hook, 3) do
     hooks_for_component = Map.get(workflow.after_hooks, component_name, [])
@@ -1480,7 +1494,7 @@ defmodule Runic.Workflow do
 
   @spec is_runnable?(Runic.Workflow.t()) :: boolean()
   def is_runnable?(%__MODULE__{graph: graph}) do
-    not Enum.empty?(Graph.edges(graph, by: :runnable))
+    not Enum.empty?(Graph.edges(graph, by: [:runnable, :matchable]))
   end
 
   @doc """
@@ -1490,7 +1504,7 @@ defmodule Runic.Workflow do
   without wait or delays to get the same results.
   """
   def next_runnables(%__MODULE__{graph: graph}) do
-    for %Graph.Edge{} = edge <- Graph.edges(graph, by: :runnable) do
+    for %Graph.Edge{} = edge <- Graph.edges(graph, by: [:runnable, :matchable]) do
       {edge.v2, edge.v1}
     end
   end
