@@ -294,6 +294,58 @@ defmodule WorkflowTest do
       assert [] = Workflow.next_steps(wrk, Workflow.get_component(wrk, "step 2"))
       assert [] = Workflow.next_steps(wrk, Workflow.get_component(wrk, "step 3"))
     end
+
+    test "components/1 lists all registered components by name" do
+      wrk =
+        Runic.workflow(
+          steps: [
+            {Runic.step(fn num -> num + 1 end, name: "step 1"),
+             [
+               Runic.step(fn num -> num + 2 end, name: "step 2"),
+               Runic.step(fn num -> num + 4 end, name: "step 3")
+             ]}
+          ],
+          rules: [
+            Runic.rule(
+              fn num when is_integer(num) and num > 0 -> num * 2 end,
+              name: "double positive"
+            )
+          ]
+        )
+
+      components = Workflow.components(wrk)
+
+      assert %{
+               "step 1" => %Step{},
+               "step 2" => %Step{},
+               "step 3" => %Step{},
+               "double positive" => %Runic.Workflow.Rule{}
+             } = components
+    end
+
+    test "sub_components/2 lists all sub-components of the given component by kind" do
+      wrk =
+        Runic.workflow(
+          steps: [
+            {Runic.step(fn num -> num + 1 end, name: "step 1"),
+             [
+               Runic.step(fn num -> num + 2 end, name: "step 2"),
+               Runic.step(fn num -> num + 4 end, name: "step 3")
+             ]}
+          ],
+          rules: [
+            Runic.rule(
+              fn num when is_integer(num) and num > 0 -> num * 2 end,
+              name: "double positive"
+            )
+          ]
+        )
+
+      sub_components = Workflow.sub_components(wrk, "double positive")
+
+      assert Keyword.has_key?(sub_components, :condition)
+      assert Keyword.has_key?(sub_components, :reaction)
+    end
   end
 
   describe "example workflows" do

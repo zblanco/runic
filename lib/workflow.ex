@@ -461,6 +461,17 @@ defmodule Runic.Workflow do
     end)
   end
 
+  @doc """
+  Returns a keyword list of sub-components of the given component by kind.
+  """
+  def sub_components(%__MODULE__{} = workflow, component_name) do
+    component = get_component(workflow, component_name)
+
+    workflow.graph
+    |> Graph.out_edges(component, by: :component_of)
+    |> Enum.map(fn edge -> {edge.properties.kind, edge.v2} end)
+  end
+
   # extend with I/O contract checks
   def connectables(%__MODULE__{graph: g} = _wrk, %{} = step) do
     impls = Components.component_impls()
