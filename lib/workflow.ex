@@ -48,7 +48,7 @@ defmodule Runic.Workflow do
           generations: integer(),
           # name -> component hash
           components: map(),
-          # name -> %{before: list(fun), after: list(fun)}
+          # node_hash -> list(hook_functions)
           before_hooks: map(),
           after_hooks: map(),
           # hash of parent fact for fan_out -> path_to_fan_in e.g. [fan_out, step1, step2, fan_in]
@@ -512,12 +512,16 @@ defmodule Runic.Workflow do
       | before_hooks:
           Enum.reduce(hooks, workflow.before_hooks, fn
             {name, hook}, acc when is_function(hook, 3) ->
-              hooks_for_component = Map.get(acc, name, [])
-              Map.put(acc, name, Enum.reverse([hook | hooks_for_component]))
+              node = resolve_component_to_node(workflow, name)
+              node_hash = node.hash
+              hooks_for_component = Map.get(acc, node_hash, [])
+              Map.put(acc, node_hash, Enum.reverse([hook | hooks_for_component]))
 
             {name, hooks}, acc when is_list(hooks) ->
-              hooks_for_component = Map.get(acc, name, [])
-              Map.put(acc, name, hooks ++ hooks_for_component)
+              node = resolve_component_to_node(workflow, name)
+              node_hash = node.hash
+              hooks_for_component = Map.get(acc, node_hash, [])
+              Map.put(acc, node_hash, hooks ++ hooks_for_component)
           end)
     }
   end
@@ -530,26 +534,45 @@ defmodule Runic.Workflow do
       | after_hooks:
           Enum.reduce(hooks, workflow.after_hooks, fn
             {name, hook}, acc when is_function(hook, 3) ->
-              hooks_for_component = Map.get(acc, name, [])
-              Map.put(acc, name, Enum.reverse([hook | hooks_for_component]))
+              node = resolve_component_to_node(workflow, name)
+              node_hash = node.hash
+              hooks_for_component = Map.get(acc, node_hash, [])
+              Map.put(acc, node_hash, Enum.reverse([hook | hooks_for_component]))
 
             {name, hooks}, acc when is_list(hooks) ->
-              hooks_for_component = Map.get(acc, name, [])
-              Map.put(acc, name, hooks ++ hooks_for_component)
+              node = resolve_component_to_node(workflow, name)
+              node_hash = node.hash
+              hooks_for_component = Map.get(acc, node_hash, [])
+              Map.put(acc, node_hash, hooks ++ hooks_for_component)
           end)
     }
   end
 
+  defp resolve_component_to_node(%__MODULE__{} = workflow, {component_name, sub_component_kind}) do
+    get_component(workflow, {component_name, sub_component_kind}) |> List.first()
+  end
+
+  defp resolve_component_to_node(%__MODULE__{} = workflow, component_name)
+       when is_atom(component_name) or is_binary(component_name) do
+    get_component!(workflow, component_name)
+  end
+
+  defp resolve_component_to_node(%__MODULE__{} = workflow, hash) when is_integer(hash) do
+    get_by_hash(workflow, hash)
+  end
+
   def attach_before_hook(%__MODULE__{} = workflow, component_name, hook)
       when is_function(hook, 3) do
-    hooks_for_component = Map.get(workflow.before_hooks, component_name, [])
+    node = resolve_component_to_node(workflow, component_name)
+    node_hash = node.hash
+    hooks_for_component = Map.get(workflow.before_hooks, node_hash, [])
 
     %__MODULE__{
       workflow
       | before_hooks:
           Map.put(
             workflow.before_hooks,
-            component_name,
+            node_hash,
             Enum.reverse([hook | hooks_for_component])
           )
     }
@@ -571,21 +594,23 @@ defmodule Runic.Workflow do
   """
   def attach_after_hook(%__MODULE__{} = workflow, component_name, hook)
       when is_function(hook, 3) do
-    hooks_for_component = Map.get(workflow.after_hooks, component_name, [])
+    node = resolve_component_to_node(workflow, component_name)
+    node_hash = node.hash
+    hooks_for_component = Map.get(workflow.after_hooks, node_hash, [])
 
     %__MODULE__{
       workflow
       | after_hooks:
           Map.put(
             workflow.after_hooks,
-            component_name,
+            node_hash,
             Enum.reverse([hook | hooks_for_component])
           )
     }
   end
 
-  defp run_before_hooks(%__MODULE__{} = workflow, %{name: name} = step, input_fact) do
-    case Map.get(workflow.before_hooks, name) do
+  defp run_before_hooks(%__MODULE__{} = workflow, %{hash: hash} = step, input_fact) do
+    case get_before_hooks(workflow, hash) do
       nil ->
         workflow
 
@@ -596,8 +621,8 @@ defmodule Runic.Workflow do
 
   defp run_before_hooks(%__MODULE__{} = workflow, _step, _input_fact), do: workflow
 
-  def run_after_hooks(%__MODULE__{} = workflow, %{name: name} = step, output_fact) do
-    case Map.get(workflow.after_hooks, name) do
+  def run_after_hooks(%__MODULE__{} = workflow, %{hash: hash} = step, output_fact) do
+    case get_after_hooks(workflow, hash) do
       nil ->
         workflow
 
@@ -607,6 +632,14 @@ defmodule Runic.Workflow do
   end
 
   def run_after_hooks(%__MODULE__{} = workflow, _step, _input_fact), do: workflow
+
+  defp get_before_hooks(%__MODULE__{} = workflow, hash) do
+    Map.get(workflow.before_hooks, hash)
+  end
+
+  defp get_after_hooks(%__MODULE__{} = workflow, hash) do
+    Map.get(workflow.after_hooks, hash)
+  end
 
   # def remove_component(%__MODULE__{} = workflow, component_name) do
   #   component = get_component(workflow, component_name)

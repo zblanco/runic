@@ -68,8 +68,11 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Condition do
       |> Workflow.prepare_next_runnables(condition, fact)
       |> Workflow.draw_connection(fact, condition, :satisfied)
       |> Workflow.mark_runnable_as_ran(condition, fact)
+      |> Workflow.run_after_hooks(condition, fact)
     else
-      Workflow.mark_runnable_as_ran(workflow, condition, fact)
+      workflow
+      |> Workflow.mark_runnable_as_ran(condition, fact)
+      |> Workflow.run_after_hooks(condition, fact)
     end
   end
 

@@ -1413,6 +1413,61 @@ defmodule WorkflowTest do
 
       assert Enum.count(Workflow.reactions(ran_wrk)) == 3
     end
+
+    test "hooks can be attached to sub-components" do
+      wrk =
+        Runic.workflow(
+          name: "test workflow",
+          rules: [
+            Runic.rule(
+              fn item when is_integer(item) and item > 41 and item < 43 ->
+                item * Enum.random(1..10)
+              end,
+              name: "rule2"
+            ),
+            Runic.rule(
+              fn item when is_integer(item) and item > 41 ->
+                item * Enum.random(1..12)
+              end,
+              name: "rule3"
+            )
+          ]
+        )
+
+      wrk =
+        wrk
+        |> Workflow.attach_before_hook({"rule2", :reaction}, fn step, wrk, fact ->
+          send(self(), {:before, step.__struct__})
+          wrk
+        end)
+        |> Workflow.attach_after_hook({"rule2", :reaction}, fn step, wrk, fact ->
+          send(self(), {:after, step.__struct__})
+          wrk
+        end)
+        |> Workflow.attach_before_hook({"rule3", :condition}, fn step, wrk, fact ->
+          send(self(), {:before, step.__struct__})
+          wrk
+        end)
+        |> Workflow.attach_after_hook({"rule3", :condition}, fn step, wrk, fact ->
+          send(self(), {:after, step.__struct__})
+          wrk
+        end)
+
+      ran_wrk = Workflow.react_until_satisfied(wrk, 42)
+
+      {:messages, messages} = Process.info(self(), :messages)
+
+      assert length(messages) == 4
+
+      for msg <- messages do
+        assert msg in [
+                 {:before, Runic.Workflow.Condition},
+                 {:after, Runic.Workflow.Condition},
+                 {:before, Runic.Workflow.Step},
+                 {:after, Runic.Workflow.Step}
+               ]
+      end
+    end
   end
 
   describe "component management" do
