@@ -1,14 +1,14 @@
 defmodule Runic.Workflow.Rule do
   alias Runic.Workflow
+  alias Runic.Closure
 
   defstruct name: nil,
             arity: nil,
             workflow: nil,
-            bindings: %{},
+            closure: nil,
             condition_hash: nil,
             reaction_hash: nil,
             hash: nil,
-            source: nil,
             inputs: nil,
             outputs: nil
 
@@ -22,8 +22,7 @@ defmodule Runic.Workflow.Rule do
           hash: integer(),
           condition_hash: integer(),
           reaction_hash: integer(),
-          bindings: map(),
-          source: tuple()
+          closure: Closure.t() | nil
         }
 
   def new(opts \\ []) do

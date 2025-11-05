@@ -63,7 +63,7 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Condition do
         %Workflow{} = workflow,
         %Fact{} = fact
       ) do
-    if try_to_run_work(condition.work, fact.value, condition.arity) do
+    if Condition.check(condition, fact) do
       workflow
       |> Workflow.prepare_next_runnables(condition, fact)
       |> Workflow.draw_connection(fact, condition, :satisfied)
@@ -87,41 +87,6 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Condition do
   #   |> Workflow.draw_connection(fact, condition, :satisfied)
   #   |> Workflow.mark_runnable_as_ran(condition, fact)
   # end
-
-  defp try_to_run_work(work, fact_value, arity) do
-    try do
-      run_work(work, fact_value, arity)
-    rescue
-      FunctionClauseError -> false
-      BadArityError -> false
-    catch
-      true ->
-        true
-
-      any ->
-        Logger.error(
-          "something other than FunctionClauseError happened in Condition invoke/3 -> try_to_run_work/3: \n\n #{inspect(any)}"
-        )
-
-        false
-    end
-  end
-
-  defp run_work(work, fact_value, 1) when is_list(fact_value) do
-    apply(work, [fact_value])
-  end
-
-  defp run_work(work, fact_value, arity) when arity > 1 and is_list(fact_value) do
-    Components.run(work, fact_value)
-  end
-
-  defp run_work(_work, _fact_value, arity) when arity > 1 do
-    false
-  end
-
-  defp run_work(work, fact_value, _arity) do
-    Components.run(work, fact_value)
-  end
 end
 
 defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Step do

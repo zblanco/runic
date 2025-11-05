@@ -246,8 +246,12 @@ defimpl Runic.Component, for: Runic.Workflow.Map do
     Runic.Component.TypeCompatibility.schemas_compatible?(producer_outputs, consumer_inputs)
   end
 
-  def source(%Runic.Workflow.Map{source: source}) do
-    source
+  def source(%Runic.Workflow.Map{closure: %Runic.Closure{} = closure}) do
+    closure.source
+  end
+
+  def source(%Runic.Workflow.Map{closure: nil}) do
+    nil
   end
 
   def hash(map) do
@@ -315,9 +319,6 @@ defimpl Runic.Component, for: Runic.Workflow.Reduce do
         properties: %{kind: :fan_in}
       )
       |> Workflow.draw_connection(map_fan_out, reduce.fan_in, :fan_in)
-      |> Workflow.draw_connection(reduce, reduce.fan_in, :component_of,
-        properties: %{kind: :fan_in}
-      )
 
     path_to_fan_out =
       wrk.graph
@@ -343,11 +344,11 @@ defimpl Runic.Component, for: Runic.Workflow.Reduce do
     wrk =
       workflow
       |> Workflow.add_step(step, reduce.fan_in)
+      |> Workflow.register_component(reduce)
       |> Workflow.draw_connection(map_fanout, reduce.fan_in, :fan_in)
       |> Workflow.draw_connection(reduce, reduce.fan_in, :component_of,
         properties: %{kind: :fan_in}
       )
-      |> Workflow.register_component(reduce)
 
     path_to_fan_out =
       wrk.graph
@@ -363,6 +364,21 @@ defimpl Runic.Component, for: Runic.Workflow.Reduce do
           MapSet.put(mapset, node.hash)
         end)
       )
+    )
+  end
+
+  def connect(reduce, to, workflow) when is_list(to) do
+    join =
+      to
+      |> Enum.map(& &1.hash)
+      |> Workflow.Join.new()
+
+    workflow
+    |> Workflow.add_step(to, join)
+    |> Workflow.add_step(reduce.fan_in, join)
+    |> Workflow.register_component(reduce)
+    |> Workflow.draw_connection(reduce, reduce.fan_in, :component_of,
+      properties: %{kind: :fan_in}
     )
   end
 
@@ -415,8 +431,12 @@ defimpl Runic.Component, for: Runic.Workflow.Reduce do
     schema_compatible or structural_compatible
   end
 
-  def source(reduce) do
-    reduce.source
+  def source(%Runic.Workflow.Reduce{closure: %Runic.Closure{} = closure}) do
+    closure.source
+  end
+
+  def source(%Runic.Workflow.Reduce{closure: nil}) do
+    nil
   end
 
   def hash(reduce) do
@@ -454,6 +474,7 @@ end
 
 defimpl Runic.Component, for: Runic.Workflow.Step do
   alias Runic.Workflow
+  alias Runic.Workflow.Reduce
 
   def components(step) do
     [step: step]
@@ -462,11 +483,19 @@ defimpl Runic.Component, for: Runic.Workflow.Step do
   def connect(step, to, workflow) when is_list(to) do
     join =
       to
-      |> Enum.map(& &1.hash)
+      |> Enum.map(fn
+        %Reduce{fan_in: fan_in} -> fan_in.hash
+        other -> other.hash
+      end)
       |> Workflow.Join.new()
 
-    workflow
-    |> Workflow.add_step(to, join)
+    wrk =
+      Enum.reduce(to, workflow, fn
+        %Reduce{fan_in: fan_in}, wrk -> Workflow.add_step(wrk, fan_in, join)
+        other, wrk -> Workflow.add_step(wrk, other, join)
+      end)
+
+    wrk
     |> Workflow.add_step(join, step)
     |> Workflow.draw_connection(step, step, :component_of, properties: %{kind: :step})
     |> Workflow.register_component(step)
@@ -509,8 +538,12 @@ defimpl Runic.Component, for: Runic.Workflow.Step do
     Runic.Component.TypeCompatibility.schemas_compatible?(producer_outputs, consumer_inputs)
   end
 
-  def source(step) do
-    step.source
+  def source(%Runic.Workflow.Step{closure: %Runic.Closure{} = closure}) do
+    closure.source
+  end
+
+  def source(%Runic.Workflow.Step{closure: nil}) do
+    nil
   end
 
   def hash(step) do
@@ -620,8 +653,12 @@ defimpl Runic.Component, for: Runic.Workflow.Rule do
     schema_compatible or structural_compatible
   end
 
-  def source(rule) do
-    rule.source
+  def source(%Runic.Workflow.Rule{closure: %Runic.Closure{} = closure}) do
+    closure.source
+  end
+
+  def source(%Runic.Workflow.Rule{closure: nil}) do
+    nil
   end
 
   def hash(rule) do
@@ -887,8 +924,12 @@ defimpl Runic.Component, for: Runic.Workflow.Accumulator do
     Runic.Component.TypeCompatibility.schemas_compatible?(producer_outputs, consumer_inputs)
   end
 
-  def source(accumulator) do
-    accumulator.source
+  def source(%Runic.Workflow.Accumulator{closure: %Runic.Closure{} = closure}) do
+    closure.source
+  end
+
+  def source(%Runic.Workflow.Accumulator{closure: nil}) do
+    nil
   end
 
   def hash(accumulator) do

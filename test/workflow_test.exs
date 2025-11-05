@@ -1488,19 +1488,19 @@ defmodule WorkflowTest do
 
       wrk =
         wrk
-        |> Workflow.attach_before_hook({"rule2", :reaction}, fn step, wrk, fact ->
+        |> Workflow.attach_before_hook({"rule2", :reaction}, fn step, wrk, _fact ->
           send(self(), {:before, step.__struct__})
           wrk
         end)
-        |> Workflow.attach_after_hook({"rule2", :reaction}, fn step, wrk, fact ->
+        |> Workflow.attach_after_hook({"rule2", :reaction}, fn step, wrk, _fact ->
           send(self(), {:after, step.__struct__})
           wrk
         end)
-        |> Workflow.attach_before_hook({"rule3", :condition}, fn step, wrk, fact ->
+        |> Workflow.attach_before_hook({"rule3", :condition}, fn step, wrk, _fact ->
           send(self(), {:before, step.__struct__})
           wrk
         end)
-        |> Workflow.attach_after_hook({"rule3", :condition}, fn step, wrk, fact ->
+        |> Workflow.attach_after_hook({"rule3", :condition}, fn step, wrk, _fact ->
           send(self(), {:after, step.__struct__})
           wrk
         end)

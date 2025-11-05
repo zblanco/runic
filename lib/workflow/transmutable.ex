@@ -95,9 +95,9 @@ defimpl Runic.Transmutable, for: Tuple do
     Runic.Transmutable.to_workflow(Rule.new(quoted_anonymous_function))
   end
 
-  def to_component({:fn, _meta, _clauses} = quoted_anonymous_function) do
-    # For AST, just create a rule with the function
-    Rule.new(source: quoted_anonymous_function, arity: 1)
+  def to_component({:fn, _meta, _clauses} = _quoted_anonymous_function) do
+    # For AST, just create a rule with no closure (old format)
+    Rule.new(closure: nil, arity: 1)
   end
 end
 
@@ -147,8 +147,7 @@ defimpl Runic.Transmutable, for: Any do
       hash: name |> to_string() |> :erlang.phash2(),
       pipeline: pipeline,
       components: %{},
-      source: nil,
-      bindings: %{},
+      closure: nil,
       inputs: nil,
       outputs: nil
     }

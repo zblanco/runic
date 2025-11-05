@@ -3,6 +3,12 @@ defmodule Runic.Workflow.Reduce do
   Component represention of a reduce operation to implement the component protocol
   for connecting a reduce to other components in a workflow.
   """
-
-  defstruct [:name, :fan_in, :hash, :source, :bindings, :inputs, :outputs]
+  defstruct [
+    :name,
+    :fan_in,
+    :hash,
+    :closure,
+    :inputs,
+    :outputs
+  ]
 end

@@ -2,15 +2,32 @@ defmodule Runic.Workflow.Step do
   alias Runic.Workflow.Step
   alias Runic.Workflow.Fact
   alias Runic.Workflow.Components
+  alias Runic.Closure
 
-  defstruct [:name, :work, :hash, :work_hash, :source, :bindings, :inputs, :outputs]
+  @type t :: %__MODULE__{
+          name: String.t() | atom(),
+          work: function(),
+          hash: String.t() | nil,
+          work_hash: String.t() | nil,
+          closure: Closure.t() | nil,
+          inputs: term(),
+          outputs: term()
+        }
+
+  defstruct [
+    :name,
+    :work,
+    :hash,
+    :work_hash,
+    :closure,
+    :inputs,
+    :outputs
+  ]
 
   def new(params) do
     params_map = if Keyword.keyword?(params), do: Map.new(params), else: params
 
-    params_with_default_bindings = Map.put_new(params_map, :bindings, %{})
-
-    struct!(__MODULE__, params_with_default_bindings)
+    struct!(__MODULE__, params_map)
     |> maybe_hash_work()
     |> maybe_set_name()
   end

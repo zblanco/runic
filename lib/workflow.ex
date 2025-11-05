@@ -25,6 +25,7 @@ defmodule Runic.Workflow do
   execute actual steps with side effects lazily as a GenStage pipeline with backpressure has availability.
   """
   require Logger
+  alias Runic.Closure
   alias Runic.Workflow.ReactionOccurred
   alias Runic.Component
   alias Runic.Workflow.FanOut
@@ -133,15 +134,17 @@ defmodule Runic.Workflow do
       parent_steps when is_list(parent_steps) ->
         parent_steps = Enum.map(parent_steps, &get_component!(workflow, &1))
 
-        join =
-          parent_steps
-          |> Enum.map(& &1.hash)
-          |> Join.new()
+        do_add_component(workflow, component, parent_steps, opts)
 
-        Enum.reduce(parent_steps, workflow, fn parent_step, acc ->
-          acc = add_step(acc, parent_step, join)
-          do_add_component(acc, component, join, opts)
-        end)
+        # join =
+        #   parent_steps
+        #   |> Enum.map(& &1.hash)
+        #   |> Join.new()
+
+        # Enum.reduce(parent_steps, workflow, fn parent_step, acc ->
+        #   acc = add_step(acc, parent_step, join)
+        #   do_add_component(acc, component, join, opts)
+        # end)
     end
   end
 
@@ -220,15 +223,12 @@ defmodule Runic.Workflow do
   defp build_events(component, parent) do
     [
       %ComponentAdded{
-        source: Component.source(component),
+        closure: Map.get(component, :closure),
         name: component.name,
         to: parent,
-        bindings:
-          Map.get(
-            component,
-            :bindings,
-            %{}
-          )
+        # Backward compatibility: also set source/bindings for old deserialization
+        source: Component.source(component),
+        bindings: if(component[:closure], do: component.closure.bindings, else: %{})
       }
     ]
   end
@@ -259,22 +259,29 @@ defmodule Runic.Workflow do
   end
 
   defp do_append_build_log(%__MODULE__{build_log: bl} = workflow, component, parent) do
-    %__MODULE__{
-      workflow
-      | build_log: [
+    # Use new closure field if available, otherwise fall back to old format
+    event =
+      case Map.get(component, :closure) do
+        %Closure{} = closure ->
+          %ComponentAdded{
+            closure: closure,
+            name: component.name,
+            to: parent
+          }
+
+        nil ->
+          # Backward compatibility: use old source + bindings format
           %ComponentAdded{
             source: Component.source(component),
             name: component.name,
             to: parent,
-            bindings:
-              Map.get(
-                component,
-                :bindings,
-                %{}
-              )
+            bindings: Map.get(component, :bindings, %{})
           }
-          | bl
-        ]
+      end
+
+    %__MODULE__{
+      workflow
+      | build_log: [event | bl]
     }
   end
 
@@ -308,7 +315,31 @@ defmodule Runic.Workflow do
     end)
   end
 
-  defp component_from_added(%ComponentAdded{source: source, bindings: bindings} = event) do
+  defp component_from_added(
+         %ComponentAdded{source: source, bindings: bindings, closure: closure} = event
+       ) do
+    component =
+      cond do
+        # New format: use closure if available
+        not is_nil(closure) ->
+          {comp, _} = Closure.eval(closure)
+          comp
+
+        # Old format: source + bindings with __caller_context__
+        not is_nil(source) ->
+          component_from_source_and_bindings(source, bindings)
+
+        # Fallback: shouldn't happen
+        true ->
+          raise "ComponentAdded event has neither closure nor source"
+      end
+
+    component
+    |> Map.put(:name, event.name)
+  end
+
+  # Backward compatibility: evaluate source with old __caller_context__ approach
+  defp component_from_source_and_bindings(source, bindings) do
     caller_context = bindings[:__caller_context__]
 
     # Build evaluation environment
@@ -341,7 +372,6 @@ defmodule Runic.Workflow do
     {component, _binding} = Code.eval_quoted(source, binding_list, env)
 
     component
-    |> Map.put(:name, event.name)
   end
 
   @doc """
@@ -473,10 +503,17 @@ defmodule Runic.Workflow do
   end
 
   # extend with I/O contract checks
-  def connectables(%__MODULE__{graph: g} = _wrk, %{} = step) do
+  def connectables(%__MODULE__{} = wrk, name)
+      when is_binary(name) or is_atom(name) or is_tuple(name) do
+    component = get_component(wrk, name)
+
+    connectables(wrk, component)
+  end
+
+  def connectables(%__MODULE__{graph: g} = _wrk, %{} = component) do
     impls = Components.component_impls()
 
-    arity = Components.arity_of(step)
+    arity = Components.arity_of(component)
 
     g
     |> Graph.vertices()

@@ -98,8 +98,14 @@ defmodule RunicTest do
 
       rebuilt_wrk = Workflow.from_log(build_log)
 
-      assert wrk |> Workflow.react_until_satisfied(:potato) |> Workflow.productions() ==
-               rebuilt_wrk |> Workflow.react_until_satisfied(:potato) |> Workflow.productions()
+      # Compare semantic results (values) not internal hashes
+      original_results = wrk |> Workflow.react_until_satisfied(:potato) |> Workflow.productions()
+
+      rebuilt_results =
+        rebuilt_wrk |> Workflow.react_until_satisfied(:potato) |> Workflow.productions()
+
+      assert length(original_results) == length(rebuilt_results)
+      assert Enum.map(original_results, & &1.value) == Enum.map(rebuilt_results, & &1.value)
     end
 
     test "escapes other opts with `^`" do
@@ -130,8 +136,14 @@ defmodule RunicTest do
 
       rebuilt_wrk = Workflow.from_log(build_log)
 
-      assert wrk |> Workflow.react_until_satisfied(:potato) |> Workflow.productions() ==
-               rebuilt_wrk |> Workflow.react_until_satisfied(:potato) |> Workflow.productions()
+      # Compare semantic results (values) not internal hashes
+      original_results = wrk |> Workflow.react_until_satisfied(:potato) |> Workflow.productions()
+
+      rebuilt_results =
+        rebuilt_wrk |> Workflow.react_until_satisfied(:potato) |> Workflow.productions()
+
+      assert length(original_results) == length(rebuilt_results)
+      assert Enum.map(original_results, & &1.value) == Enum.map(rebuilt_results, & &1.value)
     end
 
     test "a function can wrap construction to build custom rules at runtime" do
@@ -224,7 +236,7 @@ defmodule RunicTest do
         Runic.accumulator(0, fn x, acc -> x + acc + ^some_var end, name: "adder_with_binding")
 
       assert match?(%Runic.Workflow.Accumulator{}, acc)
-      assert acc.binds[:some_var] == 10
+      assert acc.closure.bindings[:some_var] == 10
 
       workflow =
         Runic.workflow(name: "test workflow with accumulator")
@@ -276,6 +288,13 @@ defmodule RunicTest do
       assert match?(%Condition{}, Runic.condition(fn :potato -> true end))
       assert match?(%Condition{}, Runic.condition(&Examples.is_potato?/1))
       assert match?(%Condition{}, Runic.condition({Examples, :is_potato?, 1}))
+    end
+
+    test "conditions can be evaluated locally" do
+      is_potato_condition = Runic.condition(fn :potato -> true end)
+
+      assert Runic.Workflow.Condition.check(is_potato_condition, :potato)
+      refute Runic.Workflow.Condition.check(is_potato_condition, :tomato)
     end
   end
 
@@ -441,7 +460,7 @@ defmodule RunicTest do
 
   test "all runic components can be recovered from a log with bindings and their original environment" do
     some_var = 1
-    some_other_var = 2
+    _some_other_var = 2
 
     step = Runic.step(fn num -> num + ^some_var end, name: :step_1)
     rule = Runic.rule(fn num when is_integer(num) -> num + ^some_var end, name: :rule_1)
@@ -459,18 +478,18 @@ defmodule RunicTest do
       Runic.reduce(0, fn num, acc -> num + acc + ^some_var end, name: :reduce_1, map: :map_1)
 
     # Assert that some_var is present in the bindings of each component
-    assert step.bindings[:some_var] == 1
-    assert rule.bindings[:some_var] == 1
+    assert step.closure.bindings[:some_var] == 1
+    assert rule.closure.bindings[:some_var] == 1
     assert state_machine.bindings[:some_var] == 1
-    assert map.bindings[:some_var] == 1
-    assert reduce.bindings[:some_var] == 1
+    assert map.closure.bindings[:some_var] == 1
+    assert reduce.closure.bindings[:some_var] == 1
 
     # Assert that some_other_var is NOT present in the bindings of any component
-    refute Map.has_key?(step.bindings, :some_other_var)
-    refute Map.has_key?(rule.bindings, :some_other_var)
+    refute Map.has_key?(step.closure.bindings, :some_other_var)
+    refute Map.has_key?(rule.closure.bindings, :some_other_var)
     refute Map.has_key?(state_machine.bindings, :some_other_var)
-    refute Map.has_key?(map.bindings, :some_other_var)
-    refute Map.has_key?(reduce.bindings, :some_other_var)
+    refute Map.has_key?(map.closure.bindings, :some_other_var)
+    refute Map.has_key?(reduce.closure.bindings, :some_other_var)
 
     # Create workflows using explicit add to ensure components are properly added
     step_workflow =

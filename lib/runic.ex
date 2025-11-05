@@ -2,6 +2,8 @@ defmodule Runic do
   @external_resource "README.md"
   @moduledoc "README.md" |> File.read!() |> String.split("<!-- MDOC !-->") |> Enum.fetch!(1)
 
+  alias Runic.Closure
+  alias Runic.ClosureMetadata
   alias Runic.Workflow.CompilationUtils
   alias Runic.Workflow.StateCondition
   alias Runic.Workflow.Accumulator
@@ -35,9 +37,14 @@ defmodule Runic do
   require Runic
   import Runic
 
+  # Simple steps without captured variables
   iex> simple_0_arity_step = step(fn -> 42 end)
   iex> 1_arity_step = step(fn input -> input * 2 end)
   iex> 2_arity_step = step(fn input1, input2 -> input1 + input2 end)
+
+  # Steps with captured variables (use ^)
+  iex> outer_value = 100
+  iex> step_with_binding = step(fn x -> x + ^outer_value end)
   ```
 
   Steps that accept more than 1 input are not evaluated unless the workflow is evaluating a list of inputs the same length as its arity.
@@ -79,24 +86,54 @@ defmodule Runic do
       work_bindings
       |> Enum.uniq()
 
-    bindings = build_bindings(variable_bindings, __CALLER__)
+    # Build closure source with FULL component creation using rewritten work
+    # This way when evaluated, it returns a Step struct, not just a function
+    closure_source =
+      quote do
+        Runic.step(unquote(rewritten_work))
+      end
 
-    step_hash = Components.fact_hash(source)
-    work_hash = Components.fact_hash(work)
+    closure = build_closure(closure_source, variable_bindings, __CALLER__)
 
-    quote do
-      unquote_splicing(Enum.reverse(variable_bindings))
+    # If we have bindings, compute hash at runtime to include binding values
+    # Otherwise compute at compile time
+    if Enum.empty?(variable_bindings) do
+      step_hash = Components.fact_hash(source)
+      work_hash = Components.fact_hash(work)
 
-      Step.new(
-        work: unquote(rewritten_work),
-        source: unquote(Macro.escape(source)),
-        name: unquote(default_component_name("step", step_hash)),
-        hash: unquote(step_hash),
-        work_hash: unquote(work_hash),
-        bindings: unquote(bindings),
-        inputs: nil,
-        outputs: nil
-      )
+      quote do
+        Step.new(
+          work: unquote(rewritten_work),
+          closure: unquote(closure),
+          name: unquote(default_component_name("step", step_hash)),
+          hash: unquote(step_hash),
+          work_hash: unquote(work_hash),
+          inputs: nil,
+          outputs: nil
+        )
+      end
+    else
+      # For content addressability, normalize the work AST before hashing
+      normalized_work = normalize_ast(rewritten_work)
+
+      quote do
+        closure = unquote(closure)
+        # Step hash is based on the closure (full component creation)
+        step_hash = closure.hash
+        # Work hash is based on NORMALIZED AST + bindings for deterministic content addressing
+        work_hash =
+          Components.fact_hash({unquote(Macro.escape(normalized_work)), closure.bindings})
+
+        Step.new(
+          work: unquote(rewritten_work),
+          closure: closure,
+          name: unquote(default_component_name("step", "_")) <> "_#{step_hash}",
+          hash: step_hash,
+          work_hash: work_hash,
+          inputs: nil,
+          outputs: nil
+        )
+      end
     end
   end
 
@@ -109,10 +146,14 @@ defmodule Runic do
     step_hash = Components.fact_hash(source)
     work_hash = Components.fact_hash(work)
 
+    # For captured functions, the closure source is the full step creation
+    closure_source = source
+    closure = build_closure(closure_source, [], __CALLER__)
+
     quote do
       Step.new(
         work: unquote(work),
-        source: unquote(Macro.escape(source)),
+        closure: unquote(closure),
         name: unquote(default_component_name("step", step_hash)),
         hash: unquote(step_hash),
         work_hash: unquote(work_hash),
@@ -139,25 +180,60 @@ defmodule Runic do
       (work_bindings ++ opts_bindings)
       |> Enum.uniq()
 
-    bindings = build_bindings(variable_bindings, __CALLER__)
+    # Build closure source with FULL component creation
+    closure_source =
+      quote do
+        Runic.step(unquote(rewritten_opts))
+      end
 
-    step_hash = Components.fact_hash(source)
-    work_hash = Components.fact_hash(work)
-    step_name = rewritten_opts[:name] || default_component_name("step", step_hash)
+    closure = build_closure(closure_source, variable_bindings, __CALLER__)
 
-    quote do
-      unquote_splicing(Enum.reverse(variable_bindings))
+    # If we have bindings, compute hash at runtime
+    # Otherwise compute at compile time
+    if Enum.empty?(variable_bindings) do
+      step_hash = Components.fact_hash(source)
+      work_hash = Components.fact_hash(work)
+      step_name = rewritten_opts[:name] || default_component_name("step", step_hash)
 
-      Step.new(
-        work: unquote(rewritten_work),
-        source: unquote(Macro.escape(source)),
-        name: unquote(step_name),
-        hash: unquote(step_hash),
-        work_hash: unquote(work_hash),
-        bindings: unquote(bindings),
-        inputs: unquote(rewritten_opts[:inputs]),
-        outputs: unquote(rewritten_opts[:outputs])
-      )
+      quote do
+        Step.new(
+          work: unquote(rewritten_work),
+          closure: unquote(closure),
+          name: unquote(step_name),
+          hash: unquote(step_hash),
+          work_hash: unquote(work_hash),
+          inputs: unquote(rewritten_opts[:inputs]),
+          outputs: unquote(rewritten_opts[:outputs])
+        )
+      end
+    else
+      base_name = rewritten_opts[:name]
+      normalized_work = normalize_ast(rewritten_work)
+
+      quote do
+        closure = unquote(closure)
+        step_hash = closure.hash
+
+        work_hash =
+          Components.fact_hash({unquote(Macro.escape(normalized_work)), closure.bindings})
+
+        step_name =
+          if unquote(base_name) do
+            unquote(base_name)
+          else
+            unquote(default_component_name("step", "_")) <> "_#{step_hash}"
+          end
+
+        Step.new(
+          work: unquote(rewritten_work),
+          closure: closure,
+          name: step_name,
+          hash: step_hash,
+          work_hash: work_hash,
+          inputs: unquote(rewritten_opts[:inputs]),
+          outputs: unquote(rewritten_opts[:outputs])
+        )
+      end
     end
   end
 
@@ -176,25 +252,60 @@ defmodule Runic do
       (work_bindings ++ opts_bindings)
       |> Enum.uniq()
 
-    bindings = build_bindings(variable_bindings, __CALLER__)
+    # Build closure source with FULL component creation
+    closure_source =
+      quote do
+        Runic.step(unquote(rewritten_work), unquote(opts))
+      end
 
-    step_hash = Components.fact_hash(source)
-    work_hash = Components.fact_hash(work)
-    step_name = rewritten_opts[:name] || default_component_name("step", step_hash)
+    closure = build_closure(closure_source, variable_bindings, __CALLER__)
 
-    quote do
-      unquote_splicing(Enum.reverse(variable_bindings))
+    # If we have bindings, compute hash at runtime
+    # Otherwise compute at compile time
+    if Enum.empty?(variable_bindings) do
+      step_hash = Components.fact_hash(source)
+      work_hash = Components.fact_hash(work)
+      step_name = rewritten_opts[:name] || default_component_name("step", step_hash)
 
-      Step.new(
-        work: unquote(rewritten_work),
-        source: unquote(Macro.escape(source)),
-        name: unquote(step_name),
-        hash: unquote(step_hash),
-        work_hash: unquote(work_hash),
-        bindings: unquote(bindings),
-        inputs: unquote(rewritten_opts[:inputs]),
-        outputs: unquote(rewritten_opts[:outputs])
-      )
+      quote do
+        Step.new(
+          work: unquote(rewritten_work),
+          closure: unquote(closure),
+          name: unquote(step_name),
+          hash: unquote(step_hash),
+          work_hash: unquote(work_hash),
+          inputs: unquote(rewritten_opts[:inputs]),
+          outputs: unquote(rewritten_opts[:outputs])
+        )
+      end
+    else
+      base_name = rewritten_opts[:name]
+      normalized_work = normalize_ast(rewritten_work)
+
+      quote do
+        closure = unquote(closure)
+        step_hash = closure.hash
+
+        work_hash =
+          Components.fact_hash({unquote(Macro.escape(normalized_work)), closure.bindings})
+
+        step_name =
+          if unquote(base_name) do
+            unquote(base_name)
+          else
+            unquote(default_component_name("step", "_")) <> "_#{step_hash}"
+          end
+
+        Step.new(
+          work: unquote(rewritten_work),
+          closure: closure,
+          name: step_name,
+          hash: step_hash,
+          work_hash: work_hash,
+          inputs: unquote(rewritten_opts[:inputs]),
+          outputs: unquote(rewritten_opts[:outputs])
+        )
+      end
     end
   end
 
@@ -380,14 +491,11 @@ defmodule Runic do
 
     arity = Components.arity_of(reaction)
 
-    # {rewritten_condition, condition_bindings} = traverse_expression(condition, __CALLER__)
     {rewritten_reaction, reaction_bindings} = traverse_expression(reaction, __CALLER__)
 
     variable_bindings =
       (reaction_bindings ++ opts_bindings)
       |> Enum.uniq()
-
-    bindings = build_bindings(variable_bindings, __CALLER__)
 
     {workflow, condition_hash, reaction_hash} =
       workflow_of_rule({condition, rewritten_reaction}, arity)
@@ -397,58 +505,111 @@ defmodule Runic do
         Runic.rule(unquote(opts))
       end
 
-    rule_hash = Components.fact_hash(source)
-    rule_name = name || default_component_name("rule", rule_hash)
+    # Build closure with full rule creation
+    closure_source =
+      quote do
+        Runic.rule(unquote(rewritten_opts))
+      end
 
-    quote do
-      unquote_splicing(Enum.reverse(variable_bindings))
+    closure = build_closure(closure_source, variable_bindings, __CALLER__)
 
-      %Rule{
-        name: unquote(rule_name),
-        arity: unquote(arity),
-        workflow: unquote(workflow),
-        condition_hash: unquote(condition_hash),
-        reaction_hash: unquote(reaction_hash),
-        hash: unquote(rule_hash),
-        bindings: unquote(bindings),
-        source: unquote(Macro.escape(source)),
-        inputs: unquote(rewritten_opts[:inputs]),
-        outputs: unquote(rewritten_opts[:outputs])
-      }
+    if Enum.empty?(variable_bindings) do
+      rule_hash = Components.fact_hash(source)
+      rule_name = name || default_component_name("rule", rule_hash)
+
+      quote do
+        %Rule{
+          name: unquote(rule_name),
+          arity: unquote(arity),
+          workflow: unquote(workflow),
+          condition_hash: unquote(condition_hash),
+          reaction_hash: unquote(reaction_hash),
+          hash: unquote(rule_hash),
+          closure: unquote(closure),
+          inputs: unquote(rewritten_opts[:inputs]),
+          outputs: unquote(rewritten_opts[:outputs])
+        }
+      end
+    else
+      base_name = name
+
+      quote do
+        closure = unquote(closure)
+        rule_hash = closure.hash
+
+        rule_name =
+          if unquote(base_name),
+            do: unquote(base_name),
+            else: unquote(default_component_name("rule", "_")) <> "_#{rule_hash}"
+
+        %Rule{
+          name: rule_name,
+          arity: unquote(arity),
+          workflow: unquote(workflow),
+          condition_hash: unquote(condition_hash),
+          reaction_hash: unquote(reaction_hash),
+          hash: rule_hash,
+          closure: closure,
+          inputs: unquote(rewritten_opts[:inputs]),
+          outputs: unquote(rewritten_opts[:outputs])
+        }
+      end
     end
   end
 
   defmacro rule(expression) do
     arity = Components.arity_of(expression)
+    {rewritten_expression, expression_bindings} = traverse_expression(expression, __CALLER__)
 
-    {workflow, condition_hash, reaction_hash} = workflow_of_rule(expression, arity)
+    variable_bindings =
+      expression_bindings
+      |> Enum.uniq()
+
+    {workflow, condition_hash, reaction_hash} = workflow_of_rule(rewritten_expression, arity)
 
     source =
       quote do
         Runic.rule(unquote(expression))
       end
 
-    rule_hash = Components.fact_hash(source)
-    rule_name = default_component_name("rule", rule_hash)
+    closure_source =
+      quote do
+        Runic.rule(unquote(rewritten_expression))
+      end
 
-    quote bind_quoted: [
-            arity: arity,
-            workflow: workflow,
-            condition_hash: condition_hash,
-            reaction_hash: reaction_hash,
-            rule_hash: rule_hash,
-            source: Macro.escape(source),
-            rule_name: rule_name
-          ] do
-      %Rule{
-        name: rule_name,
-        arity: arity,
-        workflow: workflow,
-        hash: rule_hash,
-        condition_hash: condition_hash,
-        reaction_hash: reaction_hash,
-        source: source
-      }
+    closure = build_closure(closure_source, variable_bindings, __CALLER__)
+
+    if Enum.empty?(variable_bindings) do
+      rule_hash = Components.fact_hash(source)
+      rule_name = default_component_name("rule", rule_hash)
+
+      quote do
+        %Rule{
+          name: unquote(rule_name),
+          arity: unquote(arity),
+          workflow: unquote(workflow),
+          hash: unquote(rule_hash),
+          condition_hash: unquote(condition_hash),
+          reaction_hash: unquote(reaction_hash),
+          closure: unquote(closure)
+        }
+      end
+    else
+      quote do
+        closure = unquote(closure)
+        rule_hash = closure.hash
+        rule_name = unquote(default_component_name("rule", "_")) <> "_#{rule_hash}"
+
+        %Rule{
+          name: rule_name,
+          arity: unquote(arity),
+          workflow: unquote(workflow),
+          hash: rule_hash,
+          condition_hash: unquote(condition_hash),
+          reaction_hash: unquote(reaction_hash),
+          closure: closure
+        }
+      end
     end
   end
 
@@ -465,8 +626,6 @@ defmodule Runic do
       (expression_bindings ++ opts_bindings)
       |> Enum.uniq()
 
-    bindings = build_bindings(variable_bindings, __CALLER__)
-
     {workflow, condition_hash, reaction_hash} = workflow_of_rule(rewritten_expression, arity)
 
     source =
@@ -474,35 +633,82 @@ defmodule Runic do
         Runic.rule(unquote(expression), unquote(opts))
       end
 
-    rule_hash = Components.fact_hash(source)
-    rule_name = name || default_component_name("rule", rule_hash)
+    # Build closure source with full rule creation
+    closure_source =
+      quote do
+        Runic.rule(unquote(rewritten_expression), unquote(rewritten_opts))
+      end
 
-    quote do
-      unquote_splicing(Enum.reverse(variable_bindings))
+    closure = build_closure(closure_source, variable_bindings, __CALLER__)
 
-      %Rule{
-        name: unquote(rule_name),
-        arity: unquote(arity),
-        workflow: unquote(workflow),
-        hash: unquote(rule_hash),
-        condition_hash: unquote(condition_hash),
-        reaction_hash: unquote(reaction_hash),
-        bindings: unquote(bindings),
-        source: unquote(Macro.escape(source)),
-        inputs: unquote(rewritten_opts[:inputs]),
-        outputs: unquote(rewritten_opts[:outputs])
-      }
+    # If we have bindings, compute hash at runtime
+    # Otherwise compute at compile time
+    if Enum.empty?(variable_bindings) do
+      rule_hash = Components.fact_hash(source)
+      rule_name = name || default_component_name("rule", rule_hash)
+
+      quote do
+        %Rule{
+          name: unquote(rule_name),
+          arity: unquote(arity),
+          workflow: unquote(workflow),
+          hash: unquote(rule_hash),
+          condition_hash: unquote(condition_hash),
+          reaction_hash: unquote(reaction_hash),
+          closure: unquote(closure),
+          inputs: unquote(rewritten_opts[:inputs]),
+          outputs: unquote(rewritten_opts[:outputs])
+        }
+      end
+    else
+      base_name = name
+
+      quote do
+        closure = unquote(closure)
+        rule_hash = closure.hash
+
+        rule_name =
+          if unquote(base_name),
+            do: unquote(base_name),
+            else: unquote(default_component_name("rule", "_")) <> "_#{rule_hash}"
+
+        %Rule{
+          name: rule_name,
+          arity: unquote(arity),
+          workflow: unquote(workflow),
+          hash: rule_hash,
+          condition_hash: unquote(condition_hash),
+          reaction_hash: unquote(reaction_hash),
+          closure: closure,
+          inputs: unquote(rewritten_opts[:inputs]),
+          outputs: unquote(rewritten_opts[:outputs])
+        }
+      end
     end
   end
 
   defp traverse_expression({:fn, meta, clauses}, env) do
+    # Collect argument names from all clauses
+    # all_arg_vars =
+    #   Enum.flat_map(clauses, fn {:->, _meta, [args, _block]} ->
+    #     args
+    #     |> List.flatten()
+    #     |> Enum.flat_map(fn arg -> collect_pattern_vars(arg) end)
+    #   end)
+    #   |> MapSet.new()
+
     {rewritten_clauses, bindings_acc} =
       Enum.reduce(clauses, {[], []}, fn
         {:->, clause_meta, [args, block]}, {clauses_acc, bindings_acc} ->
-          # Process each clause separately
+          # Collect variables assigned in the body (these are local, not free)
+          # body_assigned_vars = collect_assigned_vars(block)
+          # local_vars = MapSet.union(all_arg_vars, body_assigned_vars)
+
+          # Process each clause, capturing pinned vars and warning about unpinned
           {new_block, new_bindings} =
             Macro.prewalk(block, bindings_acc, fn
               {:^, pin_meta, [{var, _, ctx} = expr]} = _pinned_ast, acc ->
+                # Pinned variable - capture it
                 new_var = Macro.var(var, ctx)
                 {new_var, [{:=, pin_meta, [new_var, expr]} | acc]}
 
@@ -683,34 +889,67 @@ defmodule Runic do
       (expression_bindings ++ opts_bindings)
       |> Enum.uniq()
 
-    bindings = build_bindings(variable_bindings, __CALLER__)
-
     source =
       quote do
-        Runic.map(unquote(rewritten_expression), unquote(opts))
+        Runic.map(unquote(expression), unquote(opts))
       end
 
-    map_hash = Components.fact_hash(source)
-    map_name = name || default_component_name("map", map_hash)
+    closure_source =
+      quote do
+        Runic.map(unquote(rewritten_expression), unquote(rewritten_opts))
+      end
 
-    map_pipeline =
-      pipeline_workflow_of_map_expression(
-        rewritten_expression,
-        map_name
-      )
+    closure = build_closure(closure_source, variable_bindings, __CALLER__)
 
-    quote do
-      unquote_splicing(Enum.reverse(variable_bindings))
+    if Enum.empty?(variable_bindings) do
+      map_hash = Components.fact_hash(source)
+      map_name = name || default_component_name("map", map_hash)
 
-      %Runic.Workflow.Map{
-        name: unquote(map_name),
-        pipeline: unquote(map_pipeline),
-        hash: unquote(map_hash),
-        source: unquote(Macro.escape(source)),
-        bindings: unquote(bindings),
-        inputs: unquote(rewritten_opts[:inputs]),
-        outputs: unquote(rewritten_opts[:outputs])
-      }
+      map_pipeline =
+        pipeline_workflow_of_map_expression(
+          rewritten_expression,
+          map_name
+        )
+
+      quote do
+        %Runic.Workflow.Map{
+          name: unquote(map_name),
+          pipeline: unquote(map_pipeline),
+          hash: unquote(map_hash),
+          closure: unquote(closure),
+          inputs: unquote(rewritten_opts[:inputs]),
+          outputs: unquote(rewritten_opts[:outputs])
+        }
+      end
+    else
+      base_name = name
+
+      quote do
+        closure = unquote(closure)
+        map_hash = closure.hash
+
+        map_name =
+          if unquote(base_name),
+            do: unquote(base_name),
+            else: unquote(default_component_name("map", "_")) <> "_#{map_hash}"
+
+        map_pipeline =
+          unquote(
+            pipeline_workflow_of_map_expression(
+              rewritten_expression,
+              quote(do: map_name)
+            )
+          )
+
+        %Runic.Workflow.Map{
+          name: map_name,
+          pipeline: map_pipeline,
+          hash: map_hash,
+          closure: closure,
+          inputs: unquote(rewritten_opts[:inputs]),
+          outputs: unquote(rewritten_opts[:outputs])
+        }
+      end
     end
   end
 
@@ -787,33 +1026,71 @@ defmodule Runic do
       (reducer_bindings ++ opts_bindings)
       |> Enum.uniq()
 
-    bindings = build_bindings(variable_bindings, __CALLER__)
-
-    reduce_hash = Components.fact_hash({acc, rewritten_reducer_fun})
-    reduce_name = name || default_component_name("reduce", reduce_hash)
-
     source =
       quote do
         Runic.reduce(unquote(acc), unquote(reducer_fun), unquote(opts))
       end
 
-    quote do
-      unquote_splicing(Enum.reverse(variable_bindings))
+    closure_source =
+      quote do
+        Runic.reduce(unquote(acc), unquote(rewritten_reducer_fun), unquote(rewritten_opts))
+      end
 
-      %Runic.Workflow.Reduce{
-        name: unquote(reduce_name),
-        hash: unquote(reduce_hash),
-        fan_in: %FanIn{
-          map: unquote(map_to_reduce),
-          init: fn -> unquote(acc) end,
-          reducer: unquote(rewritten_reducer_fun),
-          hash: unquote(reduce_hash)
-        },
-        source: unquote(Macro.escape(source)),
-        bindings: unquote(bindings),
-        inputs: unquote(rewritten_opts[:inputs]),
-        outputs: unquote(rewritten_opts[:outputs])
-      }
+    closure = build_closure(closure_source, variable_bindings, __CALLER__)
+
+    if Enum.empty?(variable_bindings) do
+      fan_in_hash = Components.fact_hash({acc, rewritten_reducer_fun})
+      reduce_hash = Components.fact_hash(source)
+      reduce_name = name || default_component_name("reduce", reduce_hash)
+
+      quote do
+        %Runic.Workflow.Reduce{
+          name: unquote(reduce_name),
+          hash: unquote(reduce_hash),
+          fan_in: %FanIn{
+            map: unquote(map_to_reduce),
+            init: fn -> unquote(acc) end,
+            reducer: unquote(rewritten_reducer_fun),
+            hash: unquote(fan_in_hash)
+          },
+          closure: unquote(closure),
+          inputs: unquote(rewritten_opts[:inputs]),
+          outputs: unquote(rewritten_opts[:outputs])
+        }
+      end
+    else
+      base_name = name
+      normalized_reducer = normalize_ast(rewritten_reducer_fun)
+
+      quote do
+        closure = unquote(closure)
+
+        fan_in_hash =
+          Components.fact_hash(
+            {unquote(acc), unquote(Macro.escape(normalized_reducer)), closure.bindings}
+          )
+
+        reduce_hash = closure.hash
+
+        reduce_name =
+          if unquote(base_name),
+            do: unquote(base_name),
+            else: unquote(default_component_name("reduce", "_")) <> "_#{reduce_hash}"
+
+        %Runic.Workflow.Reduce{
+          name: reduce_name,
+          hash: reduce_hash,
+          fan_in: %FanIn{
+            map: unquote(map_to_reduce),
+            init: fn -> unquote(acc) end,
+            reducer: unquote(rewritten_reducer_fun),
+            hash: fan_in_hash
+          },
+          closure: closure,
+          inputs: unquote(rewritten_opts[:inputs]),
+          outputs: unquote(rewritten_opts[:outputs])
+        }
+      end
     end
   end
 
@@ -849,31 +1126,64 @@ defmodule Runic do
       (reducer_bindings ++ opts_bindings)
       |> Enum.uniq()
 
-    bindings = build_bindings(variable_bindings, __CALLER__)
-
     source =
       quote do
         Runic.accumulator(unquote(init), unquote(reducer_fun), unquote(opts))
       end
 
-    accumulator_hash = Components.fact_hash(source)
-    reduce_hash = Components.fact_hash({init, rewritten_reducer_fun})
-    accumulator_name = name || default_component_name("accumulator", accumulator_hash)
+    closure_source =
+      quote do
+        Runic.accumulator(unquote(init), unquote(rewritten_reducer_fun), unquote(rewritten_opts))
+      end
 
-    quote do
-      unquote_splicing(Enum.reverse(variable_bindings))
+    closure = build_closure(closure_source, variable_bindings, __CALLER__)
 
-      %Accumulator{
-        name: unquote(accumulator_name),
-        init: fn -> unquote(init) end,
-        reducer: unquote(rewritten_reducer_fun),
-        hash: unquote(accumulator_hash),
-        reduce_hash: unquote(reduce_hash),
-        source: unquote(Macro.escape(source)),
-        binds: unquote(bindings),
-        inputs: unquote(rewritten_opts[:inputs]),
-        outputs: unquote(rewritten_opts[:outputs])
-      }
+    if Enum.empty?(variable_bindings) do
+      accumulator_hash = Components.fact_hash(source)
+      reduce_hash = Components.fact_hash({init, rewritten_reducer_fun})
+      accumulator_name = name || default_component_name("accumulator", accumulator_hash)
+
+      quote do
+        %Accumulator{
+          name: unquote(accumulator_name),
+          init: fn -> unquote(init) end,
+          reducer: unquote(rewritten_reducer_fun),
+          hash: unquote(accumulator_hash),
+          reduce_hash: unquote(reduce_hash),
+          closure: unquote(closure),
+          inputs: unquote(rewritten_opts[:inputs]),
+          outputs: unquote(rewritten_opts[:outputs])
+        }
+      end
+    else
+      base_name = name
+      normalized_reducer = normalize_ast(rewritten_reducer_fun)
+
+      quote do
+        closure = unquote(closure)
+        accumulator_hash = closure.hash
+
+        reduce_hash =
+          Components.fact_hash(
+            {unquote(init), unquote(Macro.escape(normalized_reducer)), closure.bindings}
+          )
+
+        accumulator_name =
+          if unquote(base_name),
+            do: unquote(base_name),
+            else: unquote(default_component_name("accumulator", "_")) <> "_#{accumulator_hash}"
+
+        %Accumulator{
+          name: accumulator_name,
+          init: fn -> unquote(init) end,
+          reducer: unquote(rewritten_reducer_fun),
+          hash: accumulator_hash,
+          reduce_hash: reduce_hash,
+          closure: closure,
+          inputs: unquote(rewritten_opts[:inputs]),
+          outputs: unquote(rewritten_opts[:outputs])
+        }
+      end
     end
   end
 
@@ -893,6 +1203,52 @@ defmodule Runic do
     schema
   end
 
+  # Normalize AST by removing metadata (line numbers, context, etc) for content addressing
+  defp normalize_ast(ast) do
+    Macro.prewalk(ast, fn
+      {form, _meta, args} when is_list(args) ->
+        # Remove all metadata, keep just the form and args
+        {form, [], args}
+
+      {form, _meta, ctx} when is_atom(ctx) or is_nil(ctx) ->
+        # Variable node - remove metadata but keep context
+        {form, [], ctx}
+
+      other ->
+        other
+    end)
+  end
+
+  # Build a Closure struct from rewritten source AST and variable bindings
+  # NOTE: `rewritten_source` should be the result of traverse_expression, not the original source
+  defp build_closure(rewritten_source, variable_bindings, caller_context) do
+    # Normalize the source AST for content addressability (remove line numbers, etc)
+    normalized_source = normalize_ast(rewritten_source)
+
+    if not Enum.empty?(variable_bindings) do
+      quote do
+        unquote_splicing(Enum.reverse(variable_bindings))
+
+        bindings_map = %{
+          unquote_splicing(
+            Enum.map(variable_bindings, fn {:=, _, [{left_var, _, _}, right]} ->
+              {left_var, right}
+            end)
+          )
+        }
+
+        metadata = ClosureMetadata.from_caller(unquote(Macro.escape(caller_context)))
+        # Use the normalized source for content addressability
+        Closure.new(unquote(Macro.escape(normalized_source)), bindings_map, metadata)
+      end
+    else
+      quote do
+        Closure.new(unquote(Macro.escape(normalized_source)), %{}, nil)
+      end
+    end
+  end
+
+  # Deprecated: kept for backward compatibility with old serialized workflows
   defp build_bindings(variable_bindings, caller_context) do
     if not Enum.empty?(variable_bindings) do
       quote do
@@ -1443,4 +1799,67 @@ defmodule Runic do
   defp binds_of_guarded_anonymous({:when, _meta, guarded_expression}, arity) do
     Enum.take(guarded_expression, arity)
   end
+
+  # Collect variables assigned in the body (left side of = expressions)
+  # defp collect_assigned_vars(ast) do
+  #   {_, vars} =
+  #     Macro.prewalk(ast, MapSet.new(), fn
+  #       # Don't traverse into nested functions
+  #       {:fn, _, _} = nested_fn, acc ->
+  #         {nested_fn, acc}
+
+  #       # Collect variables from left side of assignments
+  #       {:=, _, [left, _right]} = assign_node, acc ->
+  #         new_vars = collect_pattern_vars(left)
+  #         {assign_node, MapSet.union(acc, MapSet.new(new_vars))}
+
+  #       node, acc ->
+  #         {node, acc}
+  #     end)
+
+  #   vars
+  # end
+
+  # Collect variable names from a pattern (handles nested patterns and guards)
+  # defp collect_pattern_vars({var, _, ctx}) when is_atom(var) and (is_atom(ctx) or is_nil(ctx)),
+  #   do: [var]
+
+  # # Handle guards: {:when, _, [arg1, arg2, ..., guard_expr]}
+  # defp collect_pattern_vars({:when, _, elements})
+  #      when is_list(elements) and length(elements) > 1 do
+  #   {patterns, [_guard | _]} = Enum.split(elements, -1)
+  #   Enum.flat_map(patterns, &collect_pattern_vars/1)
+  # end
+
+  # # Handle pattern matches
+  # defp collect_pattern_vars({:=, _, [left, right]}),
+  #   do: collect_pattern_vars(left) ++ collect_pattern_vars(right)
+
+  # defp collect_pattern_vars({:{}, _, elements}),
+  #   do: Enum.flat_map(elements, &collect_pattern_vars/1)
+
+  # defp collect_pattern_vars({left, right}),
+  #   do: collect_pattern_vars(left) ++ collect_pattern_vars(right)
+
+  # defp collect_pattern_vars({:%, _, [_alias, {:%{}, _, fields}]}),
+  #   do: Enum.flat_map(fields, fn {_, v} -> collect_pattern_vars(v) end)
+
+  # defp collect_pattern_vars({:%{}, _, fields}),
+  #   do: Enum.flat_map(fields, fn {_, v} -> collect_pattern_vars(v) end)
+
+  # defp collect_pattern_vars([_ | _] = list), do: Enum.flat_map(list, &collect_pattern_vars/1)
+  # defp collect_pattern_vars(_), do: []
+
+  # Check if a name is a special form or built-in
+  # defp is_special_form(name) do
+  #   name in [
+  #     :__MODULE__,
+  #     :__DIR__,
+  #     :__ENV__,
+  #     :__CALLER__,
+  #     :__STACKTRACE__,
+  #     :_,
+  #     :...
+  #   ] or String.starts_with?(to_string(name), "_")
+  # end
 end
