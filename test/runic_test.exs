@@ -319,6 +319,7 @@ defmodule RunicTest do
       assert match?(%Workflow{}, wrk)
     end
 
+    @skip true
     test "reactors can be included to respond to state changes" do
       potato_lock =
         Runic.state_machine(

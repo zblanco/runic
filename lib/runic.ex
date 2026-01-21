@@ -481,7 +481,40 @@ defmodule Runic do
     do: fn input -> MyModule.do_thing(input) end
   )
   ```
+
+  ## Explicit DSL Syntax
+
+  For more complex rules with meta-conditions, use the explicit given/where/then syntax:
+
+  ```elixir
+  rule do
+    given order: %{status: status, total: total}
+    where status == :pending and total > 100
+    then fn %{order: order} -> {:apply_discount, order} end
+  end
+  ```
+
+  Or with options:
+
+  ```elixir
+  rule name: :discount_rule do
+    given order: %{status: status, total: total}
+    where status == :pending and total > 100
+    then fn %{order: order} -> {:apply_discount, order} end
+  end
+  ```
+
+  Note: We use `where` instead of `when` because `when` is a special form in Elixir
+  that binds to the previous expression (used for guards), which would interfere
+  with the DSL parsing.
   """
+  # Handle rule with do block containing given/when/then DSL
+  defmacro rule(opts_or_block)
+
+  defmacro rule([{:do, block}]) do
+    compile_given_when_then_rule(block, [], __CALLER__)
+  end
+
   defmacro rule(opts) when is_list(opts) do
     {rewritten_opts, opts_bindings} = traverse_options(opts, __CALLER__)
 
@@ -611,6 +644,11 @@ defmodule Runic do
         }
       end
     end
+  end
+
+  # Handle rule name: :foo do given/when/then end
+  defmacro rule(opts, [{:do, block}]) when is_list(opts) do
+    compile_given_when_then_rule(block, opts, __CALLER__)
   end
 
   defmacro rule(expression, opts) when is_list(opts) do
@@ -1187,6 +1225,36 @@ defmodule Runic do
     end
   end
 
+  # meta-api
+
+  @doc """
+  Used inside Runic macros such as rules to reference the state of another component such as an accumulator
+  or reduce.
+
+  Expands into a `%StateCondition{}` in conjunction with any other conditions of the rule's expression to evaluate against the last known state of the component.
+  """
+  def state_of(component_name_or_hash), do: doc!([component_name_or_hash])
+
+  @doc """
+  Evaluates to true in a condition if the specified step has ever been ran.
+
+  Note that this evaluates to true globally for any prior execution of the workflow, not just within the current invocation.
+  """
+  def step_ran?(component_name_or_hash), do: doc!([component_name_or_hash])
+
+  @doc """
+  Evaluates to true if the specified step has been executed for the given input fact.
+
+  Considers only input facts for a generation of invokations fed into the root of the workflow.
+  """
+  def step_ran?(component_name_or_hash, fact_or_hash),
+    do: doc!([component_name_or_hash, fact_or_hash])
+
+  defp doc!(_) do
+    raise "these Runic meta APIs should not be invoked directly, " <>
+            "they serve for documentation purposes only"
+  end
+
   # Schema validation helpers
   defp validate_component_schema(schema, component_type, known_subcomponents) do
     if schema do
@@ -1626,6 +1694,349 @@ defmodule Runic do
         arity: 1,
         ast: unquote(Macro.escape(reactor_ast))
       )
+    end
+  end
+
+  # =============================================================================
+  # Given/When/Then DSL Compilation
+  # =============================================================================
+
+  defp compile_given_when_then_rule(block, opts, env) do
+    # Parse the block to extract given, when, then clauses
+    {given_clause, where_clause, then_clause} = parse_given_when_then_block(block)
+
+    # Extract bindings and pattern from given clause
+    {pattern_ast, top_binding, binding_vars} = compile_given_clause(given_clause)
+
+    # Compile where clause into a condition function
+    # The condition receives the input and returns true/false
+    condition_fn = compile_when_clause(where_clause, pattern_ast, top_binding, binding_vars, env)
+
+    # Compile then clause - it receives the input and builds bindings internally
+    reaction_fn = compile_then_clause(then_clause, pattern_ast, top_binding, binding_vars, env)
+
+    # Get options
+    {rewritten_opts, opts_bindings} = traverse_options(opts, env)
+    name = rewritten_opts[:name]
+
+    # Determine arity (always 1 for DSL rules - single input matched against pattern)
+    arity = 1
+
+    # Build the rule workflow
+    {workflow, condition_hash, reaction_hash} =
+      workflow_of_rule({condition_fn, reaction_fn}, arity)
+
+    source =
+      quote do
+        Runic.rule(unquote(opts), do: unquote(block))
+      end
+
+    closure_source =
+      quote do
+        Runic.rule(unquote(rewritten_opts), do: unquote(block))
+      end
+
+    # Collect bindings from then clause
+    {_rewritten_then, then_bindings} = traverse_expression(then_clause, env)
+    variable_bindings = Enum.uniq(then_bindings ++ opts_bindings)
+
+    closure = build_closure(closure_source, variable_bindings, env)
+
+    if Enum.empty?(variable_bindings) do
+      rule_hash = Components.fact_hash(source)
+      rule_name = name || default_component_name("rule", rule_hash)
+
+      quote do
+        %Rule{
+          name: unquote(rule_name),
+          arity: unquote(arity),
+          workflow: unquote(workflow),
+          condition_hash: unquote(condition_hash),
+          reaction_hash: unquote(reaction_hash),
+          hash: unquote(rule_hash),
+          closure: unquote(closure),
+          inputs: unquote(rewritten_opts[:inputs]),
+          outputs: unquote(rewritten_opts[:outputs])
+        }
+      end
+    else
+      base_name = name
+
+      quote do
+        closure = unquote(closure)
+        rule_hash = closure.hash
+
+        rule_name =
+          if unquote(base_name),
+            do: unquote(base_name),
+            else: unquote(default_component_name("rule", "_")) <> "_#{rule_hash}"
+
+        %Rule{
+          name: rule_name,
+          arity: unquote(arity),
+          workflow: unquote(workflow),
+          condition_hash: unquote(condition_hash),
+          reaction_hash: unquote(reaction_hash),
+          hash: rule_hash,
+          closure: closure,
+          inputs: unquote(rewritten_opts[:inputs]),
+          outputs: unquote(rewritten_opts[:outputs])
+        }
+      end
+    end
+  end
+
+  defp parse_given_when_then_block({:__block__, _, statements}) do
+    parse_statements(statements)
+  end
+
+  defp parse_given_when_then_block(single_statement) do
+    parse_statements([single_statement])
+  end
+
+  defp parse_statements(statements) do
+    given_clause =
+      Enum.find_value(statements, fn
+        {:given, _, [bindings]} -> bindings
+        _ -> nil
+      end)
+
+    # Support both `where` (preferred) and `when` (if it parses correctly)
+    where_clause =
+      Enum.find_value(statements, fn
+        {:where, _, [expr]} -> expr
+        {:when, _, [expr]} -> expr
+        _ -> nil
+      end)
+
+    then_clause =
+      Enum.find_value(statements, fn
+        {:then, _, [expr]} -> expr
+        _ -> nil
+      end)
+
+    # Validate required clauses
+    unless then_clause do
+      raise ArgumentError,
+            "rule DSL requires a `then` clause with an action function"
+    end
+
+    # Default given to match anything if not specified - use special marker
+    given_clause = given_clause || :match_any
+
+    # Default where to true if not specified
+    where_clause = where_clause || true
+
+    {given_clause, where_clause, then_clause}
+  end
+
+  defp compile_given_clause(:match_any) do
+    # Match anything - bind to `input` for the then clause
+    {Macro.var(:input, nil), :input, [{:input, Macro.var(:input, nil)}]}
+  end
+
+  defp compile_given_clause(bindings) when is_list(bindings) do
+    # bindings is a keyword list like [order: %{status: status, total: total}]
+    # We need to:
+    # 1. Build a pattern that matches the input
+    # 2. Extract all variable names for the bindings map
+
+    case bindings do
+      [{binding_name, pattern}] ->
+        # Single binding - match input against pattern
+        # Check if pattern is just a plain variable (like `given value: value`)
+        # In that case, the value IS the binding, don't also add binding_name
+        case pattern do
+          {var_name, _, ctx} when is_atom(var_name) and is_atom(ctx) ->
+            # Pattern is just a variable - check if it's same as binding_name
+            if var_name == binding_name do
+              # Just use _ as pattern and bind to binding_name
+              {Macro.var(binding_name, nil), binding_name,
+               [{binding_name, Macro.var(binding_name, nil)}]}
+            else
+              # Different names - use the pattern variable
+              binding_vars = extract_pattern_variables(pattern)
+              all_vars = [{binding_name, Macro.var(binding_name, nil)} | binding_vars]
+              {pattern, binding_name, all_vars}
+            end
+
+          {:_, _, _} ->
+            # Pattern is underscore - just bind to binding_name
+            {{:_, [], nil}, binding_name, [{binding_name, Macro.var(binding_name, nil)}]}
+
+          _ ->
+            # Complex pattern - extract all variables from it
+            binding_vars = extract_pattern_variables(pattern)
+            # Add the top-level binding
+            all_vars = [{binding_name, Macro.var(binding_name, nil)} | binding_vars]
+            {pattern, binding_name, all_vars}
+        end
+
+      multiple_bindings ->
+        # Multiple bindings - treat as map pattern where input must be a map
+        # containing all the specified keys
+        # We need to bind each key's matched value to a variable
+        # e.g., given order: %{status: :pending}, user: %{tier: tier}
+        # becomes: %{order: %{status: :pending} = order, user: %{tier: tier} = user}
+
+        all_vars =
+          Enum.flat_map(multiple_bindings, fn {name, pattern} ->
+            pattern_vars = extract_pattern_variables(pattern)
+            [{name, Macro.var(name, nil)} | pattern_vars]
+          end)
+
+        # Build a map pattern that binds each key's value to a variable
+        # Each entry becomes: key: pattern = var
+        map_entries =
+          Enum.map(multiple_bindings, fn {name, pattern} ->
+            # Bind the pattern to a variable with the same name as the key
+            {name, {:=, [], [pattern, Macro.var(name, nil)]}}
+          end)
+
+        map_pattern = {:%{}, [], map_entries}
+        {map_pattern, nil, all_vars}
+    end
+  end
+
+  defp extract_pattern_variables(pattern) do
+    # Walk the pattern AST and collect all variable bindings
+    {_ast, vars} =
+      Macro.prewalk(pattern, [], fn
+        # Skip underscores and underscore-prefixed vars
+        {:_, _, _} = node, acc ->
+          {node, acc}
+
+        # Collect variables
+        {name, meta, context} = node, acc when is_atom(name) and is_atom(context) ->
+          name_str = Atom.to_string(name)
+
+          # Skip special forms, underscore-prefixed, and module names
+          if String.starts_with?(name_str, "_") or
+               name in [:__MODULE__, :__ENV__, :__DIR__, :__CALLER__] or
+               String.match?(name_str, ~r/^[A-Z]/) do
+            {node, acc}
+          else
+            {node, [{name, {name, meta, context}} | acc]}
+          end
+
+        node, acc ->
+          {node, acc}
+      end)
+
+    Enum.uniq_by(vars, fn {name, _} -> name end)
+  end
+
+  defp compile_when_clause(when_expr, pattern, top_binding, _binding_vars, _env) do
+    # Build a condition function that:
+    # 1. Matches the input against the pattern
+    # 2. If matched, evaluates the when expression with bindings
+    # 3. Returns boolean
+
+    # The when expression, with variables bound
+    when_body =
+      if when_expr == true do
+        true
+      else
+        when_expr
+      end
+
+    # Build the case pattern - if we have a top_binding, use = to bind the whole value
+    # But avoid self-match like `value = value` when pattern IS the top_binding var
+    case_pattern =
+      cond do
+        is_nil(top_binding) ->
+          pattern
+
+        # Check if pattern is the same variable as top_binding
+        match?({^top_binding, _, ctx} when is_atom(ctx), pattern) ->
+          # Pattern is already the binding variable, no need to wrap with =
+          pattern
+
+        true ->
+          # Bind the whole matched value to the binding name
+          {:=, [], [Macro.var(top_binding, nil), pattern]}
+      end
+
+    # Build the condition function
+    quote do
+      fn input ->
+        case input do
+          unquote(case_pattern) ->
+            # Evaluate where clause (variables are bound by the pattern match)
+            unquote(when_body)
+
+          _ ->
+            false
+        end
+      end
+    end
+  end
+
+  defp compile_then_clause(then_expr, pattern, top_binding, binding_vars, env) do
+    # The then clause should be a function that receives the input,
+    # pattern matches it to extract bindings, then calls the user's function
+    # with the bindings map
+
+    # Build the case pattern - same as condition
+    # Avoid self-match like `value = value`
+    case_pattern =
+      cond do
+        is_nil(top_binding) ->
+          pattern
+
+        match?({^top_binding, _, ctx} when is_atom(ctx), pattern) ->
+          pattern
+
+        true ->
+          {:=, [], [Macro.var(top_binding, nil), pattern]}
+      end
+
+    # Build bindings map from the extracted variables
+    bindings_map_entries =
+      Enum.map(binding_vars, fn {name, _ast} ->
+        {name, Macro.var(name, nil)}
+      end)
+
+    bindings_map = {:%{}, [], bindings_map_entries}
+
+    case then_expr do
+      {:fn, _, _} ->
+        # User provided a function - traverse for ^ bindings then wrap
+        {rewritten_fn, _bindings} = traverse_expression(then_expr, env)
+
+        quote do
+          fn input ->
+            case input do
+              unquote(case_pattern) ->
+                bindings = unquote(bindings_map)
+                unquote(rewritten_fn).(bindings)
+            end
+          end
+        end
+
+      {:&, _, _} ->
+        # Capture syntax - wrap to pass bindings
+        quote do
+          fn input ->
+            case input do
+              unquote(case_pattern) ->
+                bindings = unquote(bindings_map)
+                unquote(then_expr).(bindings)
+            end
+          end
+        end
+
+      _ ->
+        # Raw expression - wrap in a function
+        quote do
+          fn input ->
+            case input do
+              unquote(case_pattern) ->
+                _bindings = unquote(bindings_map)
+                unquote(then_expr)
+            end
+          end
+        end
     end
   end
 

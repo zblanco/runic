@@ -52,6 +52,24 @@ defprotocol Runic.Component do
   # def remove(component, workflow)
 end
 
+# Helper for computing dataflow paths (flow edges only)
+defmodule Runic.Component.FlowPath do
+  @moduledoc false
+
+  @doc """
+  Returns the shortest path between two nodes following only :flow edges.
+  This is used to track all steps in the map-reduce dataflow path.
+  """
+  def flow_path(graph, from, to) do
+    graph
+    |> Graph.edges(by: :flow)
+    |> Enum.reduce(Graph.new(type: :directed), fn edge, g ->
+      Graph.add_edge(g, edge.v1, edge.v2)
+    end)
+    |> Graph.get_shortest_path(from, to) || []
+  end
+end
+
 # Type compatibility helper functions for Component protocol
 defmodule Runic.Component.TypeCompatibility do
   @moduledoc false
@@ -300,6 +318,7 @@ end
 
 defimpl Runic.Component, for: Runic.Workflow.Reduce do
   alias Runic.Workflow
+  alias Runic.Component.FlowPath
 
   def connect(reduce, %Runic.Workflow.Map{} = map, workflow) do
     map_leaf = Workflow.get_component!(workflow, {map.name, :leaf}) |> List.first()
@@ -320,9 +339,8 @@ defimpl Runic.Component, for: Runic.Workflow.Reduce do
       )
       |> Workflow.draw_connection(map_fan_out, reduce.fan_in, :fan_in)
 
-    path_to_fan_out =
-      wrk.graph
-      |> Graph.get_shortest_path(map_fan_out, reduce.fan_in)
+    # Use flow-only path to ensure all steps in the dataflow are tracked
+    path_to_fan_out = FlowPath.flow_path(wrk.graph, map_fan_out, reduce.fan_in)
 
     wrk
     |> Map.put(
@@ -350,9 +368,8 @@ defimpl Runic.Component, for: Runic.Workflow.Reduce do
         properties: %{kind: :fan_in}
       )
 
-    path_to_fan_out =
-      wrk.graph
-      |> Graph.get_shortest_path(map_fanout, reduce.fan_in)
+    # Use flow-only path to ensure all steps in the dataflow are tracked
+    path_to_fan_out = FlowPath.flow_path(wrk.graph, map_fanout, reduce.fan_in)
 
     wrk
     |> Map.put(
@@ -368,10 +385,10 @@ defimpl Runic.Component, for: Runic.Workflow.Reduce do
   end
 
   def connect(reduce, to, workflow) when is_list(to) do
-    join =
-      to
-      |> Enum.map(& &1.hash)
-      |> Workflow.Join.new()
+    # Include the fan_in hash in the join's joins list so the Join knows to wait for it
+    join_hashes = Enum.map(to, & &1.hash) ++ [reduce.fan_in.hash]
+
+    join = Workflow.Join.new(join_hashes)
 
     workflow
     |> Workflow.add_step(to, join)
@@ -1004,14 +1021,20 @@ defimpl Runic.Component, for: Runic.Workflow do
           Graph.add_edge(g, edge)
       end)
 
+    # Merge mapped data: mapped_paths as MapSet union, other keys (tracking data) merged
+    merged_mapped =
+      Map.merge(workflow.mapped, child_workflow.mapped, fn
+        :mapped_paths, v1, v2 -> MapSet.union(v1, v2)
+        # For tracking keys like {generation, hash} -> list or map, merge appropriately
+        _key, v1, v2 when is_list(v1) and is_list(v2) -> Enum.uniq(v1 ++ v2)
+        _key, v1, v2 when is_map(v1) and is_map(v2) -> Map.merge(v1, v2)
+        _key, _v1, v2 -> v2
+      end)
+
     %Workflow{
       workflow
       | graph: new_graph,
-        mapped: %{
-          workflow.mapped
-          | mapped_paths:
-              MapSet.union(workflow.mapped.mapped_paths, child_workflow.mapped.mapped_paths)
-        },
+        mapped: merged_mapped,
         before_hooks: Map.merge(workflow.before_hooks, child_workflow.before_hooks),
         after_hooks: Map.merge(workflow.after_hooks, child_workflow.after_hooks),
         components: Map.merge(workflow.components, child_workflow.components),

@@ -221,14 +221,16 @@ defmodule Runic.Workflow do
   end
 
   defp build_events(component, parent) do
+    closure = Map.get(component, :closure)
+
     [
       %ComponentAdded{
-        closure: Map.get(component, :closure),
+        closure: closure,
         name: component.name,
         to: parent,
         # Backward compatibility: also set source/bindings for old deserialization
         source: Component.source(component),
-        bindings: if(component[:closure], do: component.closure.bindings, else: %{})
+        bindings: if(closure, do: closure.bindings, else: %{})
       }
     ]
   end
@@ -1467,7 +1469,7 @@ defmodule Runic.Workflow do
         %Fact{ancestry: {_parent_step_hash, _parent_fact_hash}} = production_fact
       ) do
     graph
-    |> Graph.edges(production_fact, by: [:produced, :state_produced, :state_initiated, :fan_out])
+    |> Graph.edges(production_fact, by: [:produced, :state_produced, :state_initiated, :fan_out, :reduced])
     |> hd()
     |> Map.get(:weight)
 

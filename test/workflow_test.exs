@@ -517,6 +517,169 @@ defmodule WorkflowTest do
       assert 2 in reacted_join_with_many_dependencies
     end
 
+    test "join marks runnable as ran even when not fully satisfied to prevent infinite loop" do
+      # This test simulates parallel execution where a Join may be invoked
+      # before all its parent steps have produced facts. The Join should
+      # mark the runnable edge as :ran to prevent infinite re-invocation.
+      
+      step_a = Runic.step(fn num -> num * 2 end, name: :step_a)
+      step_b = Runic.step(fn num -> num * 3 end, name: :step_b)
+      join_step = Runic.step(fn a, b -> a + b end, name: :join_result)
+
+      workflow =
+        Runic.workflow(
+          name: "join loop test",
+          steps: [
+            {[step_a, step_b], [join_step]}
+          ]
+        )
+
+      # Plan with input
+      planned = Workflow.plan_eagerly(workflow, 5)
+
+      # Get initial runnables - should be step_a and step_b
+      initial_runnables = Workflow.next_runnables(planned)
+      assert length(initial_runnables) == 2
+
+      # Invoke just one parent step (step_a) to simulate parallel execution
+      {step_a_runnable, fact_a} = Enum.find(initial_runnables, fn {step, _fact} -> 
+        step.name == :step_a 
+      end)
+
+      workflow_after_a = Workflow.invoke(planned, step_a_runnable, fact_a)
+
+      # Now get runnables again - should include the Join as runnable
+      runnables_after_a = Workflow.next_runnables(workflow_after_a)
+
+      # Find the join in runnables
+      join_runnable = Enum.find(runnables_after_a, fn {step, _fact} ->
+        match?(%Runic.Workflow.Join{}, step)
+      end)
+
+      # The join should be runnable (waiting for other parent)
+      assert join_runnable != nil
+
+      {join, join_fact} = join_runnable
+
+      # Invoke the Join - it's not yet satisfied (step_b hasn't run)
+      workflow_after_join_invoked = Workflow.invoke(workflow_after_a, join, join_fact)
+
+      # KEY ASSERTION: After invoking an unsatisfied Join, the runnable edge
+      # should be marked as :ran so it doesn't appear in next_runnables again
+      runnables_after_join = Workflow.next_runnables(workflow_after_join_invoked)
+
+      # The same (join, join_fact) pair should NOT appear again
+      same_join_runnable = Enum.find(runnables_after_join, fn {step, fact} ->
+        match?(%Runic.Workflow.Join{}, step) and fact.hash == join_fact.hash
+      end)
+
+      assert same_join_runnable == nil,
+             "Join should not reappear in runnables after being invoked (causes infinite loop)"
+
+      # But step_b should still be runnable
+      step_b_runnable = Enum.find(runnables_after_join, fn {step, _fact} ->
+        step.name == :step_b
+      end)
+
+      assert step_b_runnable != nil, "step_b should still be runnable"
+    end
+
+    test "join completes successfully after all parents produce facts in parallel execution" do
+      # This test verifies that a Join correctly completes when invoked
+      # multiple times as each parent produces facts (simulating parallel execution).
+      
+      step_a = Runic.step(fn num -> num * 2 end, name: :step_a)
+      step_b = Runic.step(fn num -> num * 3 end, name: :step_b)
+      join_step = Runic.step(fn a, b -> a + b end, name: :join_result)
+
+      workflow =
+        Runic.workflow(
+          name: "join completion test",
+          steps: [
+            {[step_a, step_b], [join_step]}
+          ]
+        )
+
+      # Plan with input
+      planned = Workflow.plan_eagerly(workflow, 5)
+
+      # Get initial runnables
+      initial_runnables = Workflow.next_runnables(planned)
+      assert length(initial_runnables) == 2
+
+      # Run step_a first
+      {step_a_runnable, fact_a} = Enum.find(initial_runnables, fn {step, _fact} -> 
+        step.name == :step_a 
+      end)
+      workflow_after_a = Workflow.invoke(planned, step_a_runnable, fact_a)
+
+      # Now run step_b
+      {step_b_runnable, fact_b} = Enum.find(initial_runnables, fn {step, _fact} -> 
+        step.name == :step_b 
+      end)
+      workflow_after_b = Workflow.invoke(workflow_after_a, step_b_runnable, fact_b)
+
+      # After both parents have run, the join should be runnable with both facts connected
+      runnables_after_both = Workflow.next_runnables(workflow_after_b)
+
+      # There should be join runnables now (one for each fact that connected)
+      join_runnables = Enum.filter(runnables_after_both, fn {step, _fact} ->
+        match?(%Runic.Workflow.Join{}, step)
+      end)
+
+      assert length(join_runnables) > 0, "Join should be runnable after both parents produced"
+
+      # Run the join with one of the facts
+      {join, join_fact} = hd(join_runnables)
+      workflow_after_join = Workflow.invoke(workflow_after_b, join, join_fact)
+
+      # After both parents ran and we invoked join once, there may still be
+      # a second join invocation needed. Let's run until join_result is runnable.
+      workflow_current = workflow_after_join
+      
+      # Keep invoking joins until join_result becomes runnable
+      max_iterations = 10
+      
+      for _ <- 1..max_iterations, reduce: {workflow_current, nil} do
+        {wrk, nil} ->
+          runnables = Workflow.next_runnables(wrk)
+          
+          # Check for join_result
+          result_step = Enum.find(runnables, fn {step, _fact} ->
+            match?(%Step{name: :join_result}, step)
+          end)
+          
+          if result_step != nil do
+            {wrk, result_step}
+          else
+            # Check for remaining join
+            join_step = Enum.find(runnables, fn {step, _fact} ->
+              match?(%Runic.Workflow.Join{}, step)
+            end)
+            
+            if join_step != nil do
+              {join_node, join_fact} = join_step
+              new_wrk = Workflow.invoke(wrk, join_node, join_fact)
+              {new_wrk, nil}
+            else
+              {wrk, nil}
+            end
+          end
+        
+        {wrk, found} ->
+          {wrk, found}
+      end
+      |> case do
+        {final_wrk, {final_step, final_fact}} ->
+          final_workflow = Workflow.invoke(final_wrk, final_step, final_fact)
+          productions = Workflow.raw_productions(final_workflow)
+          assert 25 in productions
+        
+        {_wrk, nil} ->
+          flunk("join_result step never became runnable")
+      end
+    end
+
     test "accumulator evaluation with rules over many generations" do
       workflow =
         Runic.workflow(name: "accumulator test")
@@ -1338,6 +1501,139 @@ defmodule WorkflowTest do
         assert reaction in [5, 6, 7, 8, 18, 4, 5, 3, 6, 3, 4, 2, 1, 0..3]
       end
     end
+
+    test "reduce supports reduce_while semantics with {:cont, acc} tuples" do
+      wrk =
+        Runic.workflow(
+          name: "reduce_while cont test",
+          steps: [
+            {Runic.step(fn _input -> [1, 2, 3, 4] end),
+             [
+               {Runic.map(fn num -> num end),
+                [
+                  Runic.reduce(0, fn num, acc -> {:cont, num + acc} end)
+                ]}
+             ]}
+          ]
+        )
+
+      wrk = Workflow.react_until_satisfied(wrk, :start)
+
+      assert 10 in Workflow.raw_productions(wrk)
+    end
+
+    test "reduce supports reduce_while semantics with {:halt, acc} to stop early" do
+      wrk =
+        Runic.workflow(
+          name: "reduce_while halt test",
+          steps: [
+            {Runic.step(fn _input -> [1, 2, 3, 4, 5] end),
+             [
+               {Runic.map(fn num -> num end),
+                [
+                  Runic.reduce(0, fn num, acc ->
+                    if num >= 3 do
+                      {:halt, acc}
+                    else
+                      {:cont, num + acc}
+                    end
+                  end)
+                ]}
+             ]}
+          ]
+        )
+
+      wrk = Workflow.react_until_satisfied(wrk, :start)
+
+      # Should sum 1 + 2 = 3, then halt when it sees 3
+      assert 3 in Workflow.raw_productions(wrk)
+      refute 15 in Workflow.raw_productions(wrk)
+    end
+
+    test "reduce with map supports reduce_while semantics with halt" do
+      wrk =
+        Runic.workflow(
+          name: "map reduce_while test",
+          steps: [
+            {Runic.step(fn _input -> 0..5 end),
+             [
+               {Runic.map(fn num -> num * 2 end),
+                [
+                  Runic.reduce([], fn num, acc ->
+                    if num > 6 do
+                      {:halt, acc}
+                    else
+                      {:cont, [num | acc]}
+                    end
+                  end)
+                ]}
+             ]}
+          ]
+        )
+
+      wrk = Workflow.react_until_satisfied(wrk, :start)
+
+      productions = Workflow.raw_productions(wrk)
+
+      reduced_result =
+        Enum.find(productions, fn val ->
+          is_list(val) and Enum.all?(val, &is_integer/1)
+        end)
+
+      # Values 0*2=0, 1*2=2, 2*2=4, 3*2=6 should be included
+      # 4*2=8 should trigger halt
+      assert reduced_result != nil
+      assert Enum.all?([0, 2, 4, 6], &(&1 in reduced_result))
+      refute 8 in reduced_result
+    end
+
+    test "reduce backward compatible with plain acc return values in map" do
+      wrk =
+        Runic.workflow(
+          name: "backward compat test",
+          steps: [
+            {Runic.step(fn _input -> [1, 2, 3] end),
+             [
+               {Runic.map(fn num -> num end),
+                [
+                  Runic.reduce(0, fn num, acc -> num + acc end)
+                ]}
+             ]}
+          ]
+        )
+
+      wrk = Workflow.react_until_satisfied(wrk, :start)
+
+      assert 6 in Workflow.raw_productions(wrk)
+    end
+
+    test "reduce maintains deterministic order from fan_out emission" do
+      wrk =
+        Runic.workflow(
+          name: "deterministic order test",
+          steps: [
+            {Runic.step(fn _input -> [:a, :b, :c, :d] end),
+             [
+               {Runic.map(fn elem -> elem end),
+                [
+                  Runic.reduce([], fn elem, acc -> acc ++ [elem] end)
+                ]}
+             ]}
+          ]
+        )
+
+      wrk = Workflow.react_until_satisfied(wrk, :start)
+
+      productions = Workflow.raw_productions(wrk)
+
+      ordered_result =
+        Enum.find(productions, fn val ->
+          is_list(val) and length(val) == 4
+        end)
+
+      # Should preserve order: [:a, :b, :c, :d]
+      assert ordered_result == [:a, :b, :c, :d]
+    end
   end
 
   describe "hooks / continuations" do
@@ -1679,5 +1975,358 @@ defmodule WorkflowTest do
 
     #   assert rebuilt_wrk = ran_wrk
     # end
+  end
+
+  describe "add_with_events/3" do
+    test "can add a Rule component with closure without Access behaviour error" do
+      rule =
+        Runic.rule do
+          given(order: %{total: total})
+          where(total > 100)
+          then(fn %{order: order} -> {:discounted, order} end)
+        end
+
+      workflow = Runic.workflow(name: "test workflow")
+
+      assert {%Workflow{}, events} = Workflow.add_with_events(workflow, rule)
+      assert [%Runic.Workflow.ComponentAdded{} = event] = events
+      assert event.name == rule.name
+    end
+
+    test "Step component produces ComponentAdded event" do
+      step = Runic.step(fn x -> x * 2 end, name: :doubler)
+      workflow = Workflow.new()
+
+      assert {%Workflow{}, events} = Workflow.add_with_events(workflow, step)
+      assert [%Runic.Workflow.ComponentAdded{} = event] = events
+      assert event.name == :doubler
+      assert event.closure != nil
+    end
+
+    test "adding multiple components to same parent produces multiple events" do
+      step1 = Runic.step(fn x -> x end, name: :parent)
+      step2 = Runic.step(fn x -> x + 1 end, name: :child_a)
+      step3 = Runic.step(fn x -> x + 2 end, name: :child_b)
+
+      {workflow, _} = Workflow.add_with_events(Workflow.new(), step1)
+      {workflow, events_a} = Workflow.add_with_events(workflow, step2, to: :parent)
+      {_workflow, events_b} = Workflow.add_with_events(workflow, step3, to: :parent)
+
+      assert [%Runic.Workflow.ComponentAdded{name: :child_a, to: :parent}] = events_a
+      assert [%Runic.Workflow.ComponentAdded{name: :child_b, to: :parent}] = events_b
+    end
+
+    test "StateMachine component produces ComponentAdded event" do
+      state_machine =
+        Runic.state_machine(
+          name: :counter,
+          init: 0,
+          reducer: fn num, state -> state + num end
+        )
+
+      workflow = Workflow.new()
+
+      assert {%Workflow{}, events} = Workflow.add_with_events(workflow, state_machine)
+      assert [%Runic.Workflow.ComponentAdded{} = event] = events
+      assert event.name == :counter
+    end
+
+    test "Map component produces ComponentAdded event" do
+      map = Runic.map(fn x -> x + 1 end, name: :increment_map)
+      workflow = Workflow.new()
+
+      assert {%Workflow{}, events} = Workflow.add_with_events(workflow, map)
+      assert [%Runic.Workflow.ComponentAdded{} = event] = events
+      assert event.name == :increment_map
+    end
+
+    test "Reduce component produces ComponentAdded event" do
+      reduce = Runic.reduce(0, fn x, acc -> x + acc end, name: :sum_reduce, map: :my_map)
+      workflow = Workflow.new()
+
+      assert {%Workflow{}, events} = Workflow.add_with_events(workflow, reduce)
+      assert [%Runic.Workflow.ComponentAdded{} = event] = events
+      assert event.name == :sum_reduce
+    end
+
+    test "adding component with :to option sets parent in event" do
+      step1 = Runic.step(fn x -> x end, name: :first)
+      step2 = Runic.step(fn x -> x * 2 end, name: :second)
+
+      {workflow, _} = Workflow.add_with_events(Workflow.new(), step1)
+      {_workflow, events} = Workflow.add_with_events(workflow, step2, to: :first)
+
+      assert [%Runic.Workflow.ComponentAdded{to: :first}] = events
+    end
+
+    test "events from add_with_events can deterministically recreate the same workflow" do
+      step1 = Runic.step(fn x -> x + 1 end, name: :add_one)
+      step2 = Runic.step(fn x -> x * 2 end, name: :double)
+      rule = Runic.rule(fn x when x > 10 -> {:big, x} end, name: :big_check)
+
+      workflow = Workflow.new(name: "original")
+      {workflow, events1} = Workflow.add_with_events(workflow, step1)
+      {workflow, events2} = Workflow.add_with_events(workflow, step2, to: :add_one)
+      {original_workflow, events3} = Workflow.add_with_events(workflow, rule, to: :double)
+
+      all_events = events1 ++ events2 ++ events3
+
+      # Rebuild from events
+      rebuilt_workflow = Workflow.apply_events(Workflow.new(), all_events)
+
+      # Run both workflows with same input
+      original_results =
+        original_workflow
+        |> Workflow.plan_eagerly(5)
+        |> Workflow.react_until_satisfied()
+        |> Workflow.raw_productions()
+
+      rebuilt_results =
+        rebuilt_workflow
+        |> Workflow.plan_eagerly(5)
+        |> Workflow.react_until_satisfied()
+        |> Workflow.raw_productions()
+
+      assert Enum.sort(original_results) == Enum.sort(rebuilt_results)
+    end
+
+    test "combined add_with_events events match build_log output" do
+      step1 = Runic.step(fn x -> x + 1 end, name: :step_a)
+      step2 = Runic.step(fn x -> x * 2 end, name: :step_b)
+      step3 = Runic.step(fn x -> x > 5 end, name: :check)
+
+      workflow = Workflow.new()
+      {workflow, events1} = Workflow.add_with_events(workflow, step1)
+      {workflow, events2} = Workflow.add_with_events(workflow, step2, to: :step_a)
+      {final_workflow, events3} = Workflow.add_with_events(workflow, step3, to: :step_b)
+
+      combined_events = events1 ++ events2 ++ events3
+      build_log = Workflow.build_log(final_workflow)
+
+      # build_log reverses the internal log which is appended by add_with_events
+      # so build_log output should be in reverse order of combined_events
+      assert length(combined_events) == length(build_log)
+
+      # Compare by reversing the build_log to match combined_events order
+      for {combined, logged} <- Enum.zip(combined_events, Enum.reverse(build_log)) do
+        assert combined.name == logged.name
+        assert combined.to == logged.to
+        assert combined.closure == logged.closure
+      end
+    end
+
+    test "events with bindings can recreate workflow in separate environment" do
+      multiplier = 10
+
+      step = Runic.step(fn x -> x * ^multiplier + 5 end, name: :transform)
+
+      rule =
+        Runic.rule(fn x when is_integer(x) -> {:above_offset, x} end, name: :above_offset_check)
+
+      map = Runic.map(fn x -> x * ^multiplier end, name: :scale_map)
+
+      reduce =
+        Runic.reduce(0, fn x, acc -> x + acc + 5 end, name: :sum_with_offset, map: :scale_map)
+
+      # Build workflow incrementally with add_with_events
+      workflow = Workflow.new()
+      {workflow, step_events} = Workflow.add_with_events(workflow, step)
+      {workflow, rule_events} = Workflow.add_with_events(workflow, rule, to: :transform)
+      {workflow, map_events} = Workflow.add_with_events(workflow, map)
+      {final_workflow, reduce_events} = Workflow.add_with_events(workflow, reduce, to: :scale_map)
+
+      all_events = step_events ++ rule_events ++ map_events ++ reduce_events
+
+      # Get original results
+      original_step_results =
+        final_workflow
+        |> Workflow.plan_eagerly(3)
+        |> Workflow.react_until_satisfied()
+        |> Workflow.raw_productions()
+
+      # Recover in a separate environment using Code.eval_string
+      recovery_code = """
+      defmodule TestAddWithEventsRecovery do
+        def recover_and_test(events) do
+          alias Runic.Workflow
+
+          recovered_workflow = Workflow.apply_events(Workflow.new(), events)
+
+          recovered_workflow
+          |> Workflow.plan_eagerly(3)
+          |> Workflow.react_until_satisfied()
+          |> Workflow.raw_productions()
+        end
+      end
+
+      TestAddWithEventsRecovery.recover_and_test(events)
+      """
+
+      {recovered_results, _binding} = Code.eval_string(recovery_code, events: all_events)
+
+      # Verify results match - the bindings were properly captured and restored
+      for result <- original_step_results do
+        assert result in recovered_results
+      end
+    end
+
+    test "events preserve closure bindings correctly" do
+      some_constant = 42
+
+      step = Runic.step(fn x -> x + ^some_constant end, name: :add_constant)
+      workflow = Workflow.new()
+
+      {_workflow, events} = Workflow.add_with_events(workflow, step)
+      [event] = events
+
+      assert event.closure != nil
+      assert event.closure.bindings[:some_constant] == 42
+    end
+
+    test "multiple components chained together produce correct event sequence" do
+      step1 = Runic.step(fn x -> x + 1 end, name: :s1)
+      step2 = Runic.step(fn x -> x * 2 end, name: :s2)
+      step3 = Runic.step(fn x -> x - 1 end, name: :s3)
+
+      workflow = Workflow.new()
+      {workflow, e1} = Workflow.add_with_events(workflow, step1)
+      {workflow, e2} = Workflow.add_with_events(workflow, step2, to: :s1)
+      {_workflow, e3} = Workflow.add_with_events(workflow, step3, to: :s2)
+
+      # Verify each event has correct parent relationship
+      assert [%{name: :s1, to: nil}] = e1
+      assert [%{name: :s2, to: :s1}] = e2
+      assert [%{name: :s3, to: :s2}] = e3
+    end
+
+    test "workflow rebuilt from events produces identical execution results" do
+      factor = 3
+
+      step = Runic.step(fn x -> x * ^factor end, name: :multiply)
+      rule = Runic.rule(fn x when x > 10 -> {:large, x} end, name: :size_check)
+      step2 = Runic.step(fn x -> rem(x, 2) == 0 end, name: :is_even)
+
+      workflow = Workflow.new()
+      {workflow, e1} = Workflow.add_with_events(workflow, step)
+      {workflow, e2} = Workflow.add_with_events(workflow, rule, to: :multiply)
+      {original, e3} = Workflow.add_with_events(workflow, step2, to: :multiply)
+
+      all_events = e1 ++ e2 ++ e3
+
+      # Multiple rebuild cycles should be identical
+      rebuilt1 = Workflow.apply_events(Workflow.new(), all_events)
+      rebuilt2 = Workflow.apply_events(Workflow.new(), all_events)
+
+      test_inputs = [1, 5, 10, 15]
+
+      for input <- test_inputs do
+        original_result =
+          original
+          |> Workflow.plan_eagerly(input)
+          |> Workflow.react_until_satisfied()
+          |> Workflow.raw_productions()
+          |> Enum.sort()
+
+        rebuilt1_result =
+          rebuilt1
+          |> Workflow.plan_eagerly(input)
+          |> Workflow.react_until_satisfied()
+          |> Workflow.raw_productions()
+          |> Enum.sort()
+
+        rebuilt2_result =
+          rebuilt2
+          |> Workflow.plan_eagerly(input)
+          |> Workflow.react_until_satisfied()
+          |> Workflow.raw_productions()
+          |> Enum.sort()
+
+        assert original_result == rebuilt1_result
+        assert original_result == rebuilt2_result
+      end
+    end
+
+    test "Rule with pattern matching produces correct event" do
+      rule =
+        Runic.rule do
+          given(order: %{total: total, customer: _customer})
+          where(total > 100)
+          then(fn %{order: _order} -> {:vip_discount, total} end)
+        end
+
+      workflow = Workflow.new()
+      {_workflow, events} = Workflow.add_with_events(workflow, rule)
+
+      assert [%Runic.Workflow.ComponentAdded{} = event] = events
+      assert event.closure != nil
+      assert event.name == rule.name
+    end
+  end
+
+  describe "FanIn + Join + multi-arity step" do
+    test "a reduce FanIn joined with another step feeds correct values to multi-arity step" do
+      # This reproduces the Gatsby workflow pattern:
+      # - One step produces an overall analysis (single value)
+      # - Another branch produces enumerable, maps over it, reduces into a map
+      # - Both join into a 2-arity step that combines them
+
+      wrk =
+        Runic.workflow(
+          name: "fanin-join-multiarity test",
+          steps: [
+            # First branch: single value producer
+            Runic.step(fn input -> "overall: #{input}" end, name: :overall_step),
+            # Second branch: produce enumerable
+            Runic.step(fn _input -> [1, 2, 3] end, name: :enumerate_step)
+          ]
+        )
+
+      # Map over the enumerable
+      map_step = Runic.map(fn num -> {num, "chapter_#{num}"} end, name: :per_item_analysis)
+
+      # Reduce into a map
+      combine_items =
+        Runic.reduce(
+          %{},
+          fn {num, text}, acc -> Map.put(acc, num, text) end,
+          name: :combined_items,
+          map: :per_item_analysis
+        )
+
+      # Multi-arity step that joins both branches
+      final_step =
+        Runic.step(
+          fn overall, per_item_map ->
+            # overall should be a string, per_item_map should be a map
+            {overall, per_item_map}
+          end,
+          name: :final_combined
+        )
+
+      wrk =
+        wrk
+        |> Workflow.add(map_step, to: :enumerate_step)
+        |> Workflow.add(combine_items, to: :per_item_analysis)
+        |> Workflow.add(final_step, to: [:overall_step, :combined_items])
+
+      # Run the workflow
+      ran_wrk = Workflow.react_until_satisfied(wrk, "test_input")
+
+      # Get the final production
+      productions = Workflow.productions_by_component(ran_wrk)
+      final_result = Map.get(productions, :final_combined)
+
+      assert final_result != nil, "final_combined should have produced a result"
+
+      # Get the value from the fact
+      fact = List.first(final_result)
+      {overall, per_item_map} = fact.value
+
+      # The result should be a tuple of (overall_string, map_of_chapters)
+      assert is_binary(overall), "First argument should be a string, got: #{inspect(overall)}"
+      assert is_map(per_item_map), "Second argument should be a map, got: #{inspect(per_item_map)}"
+      assert overall == "overall: test_input"
+      assert per_item_map == %{1 => "chapter_1", 2 => "chapter_2", 3 => "chapter_3"}
+    end
   end
 end
