@@ -7,6 +7,7 @@ defmodule WorkflowTest do
   alias Runic.Workflow.Step
   alias Runic.Workflow.Fact
   alias Runic.Workflow.ReactionOccurred
+  alias Runic.Workflow.HookEvent
 
   defmodule TextProcessing do
     require Runic
@@ -521,7 +522,7 @@ defmodule WorkflowTest do
       # This test simulates parallel execution where a Join may be invoked
       # before all its parent steps have produced facts. The Join should
       # mark the runnable edge as :ran to prevent infinite re-invocation.
-      
+
       step_a = Runic.step(fn num -> num * 2 end, name: :step_a)
       step_b = Runic.step(fn num -> num * 3 end, name: :step_b)
       join_step = Runic.step(fn a, b -> a + b end, name: :join_result)
@@ -542,9 +543,10 @@ defmodule WorkflowTest do
       assert length(initial_runnables) == 2
 
       # Invoke just one parent step (step_a) to simulate parallel execution
-      {step_a_runnable, fact_a} = Enum.find(initial_runnables, fn {step, _fact} -> 
-        step.name == :step_a 
-      end)
+      {step_a_runnable, fact_a} =
+        Enum.find(initial_runnables, fn {step, _fact} ->
+          step.name == :step_a
+        end)
 
       workflow_after_a = Workflow.invoke(planned, step_a_runnable, fact_a)
 
@@ -552,9 +554,10 @@ defmodule WorkflowTest do
       runnables_after_a = Workflow.next_runnables(workflow_after_a)
 
       # Find the join in runnables
-      join_runnable = Enum.find(runnables_after_a, fn {step, _fact} ->
-        match?(%Runic.Workflow.Join{}, step)
-      end)
+      join_runnable =
+        Enum.find(runnables_after_a, fn {step, _fact} ->
+          match?(%Runic.Workflow.Join{}, step)
+        end)
 
       # The join should be runnable (waiting for other parent)
       assert join_runnable != nil
@@ -569,17 +572,19 @@ defmodule WorkflowTest do
       runnables_after_join = Workflow.next_runnables(workflow_after_join_invoked)
 
       # The same (join, join_fact) pair should NOT appear again
-      same_join_runnable = Enum.find(runnables_after_join, fn {step, fact} ->
-        match?(%Runic.Workflow.Join{}, step) and fact.hash == join_fact.hash
-      end)
+      same_join_runnable =
+        Enum.find(runnables_after_join, fn {step, fact} ->
+          match?(%Runic.Workflow.Join{}, step) and fact.hash == join_fact.hash
+        end)
 
       assert same_join_runnable == nil,
              "Join should not reappear in runnables after being invoked (causes infinite loop)"
 
       # But step_b should still be runnable
-      step_b_runnable = Enum.find(runnables_after_join, fn {step, _fact} ->
-        step.name == :step_b
-      end)
+      step_b_runnable =
+        Enum.find(runnables_after_join, fn {step, _fact} ->
+          step.name == :step_b
+        end)
 
       assert step_b_runnable != nil, "step_b should still be runnable"
     end
@@ -587,7 +592,7 @@ defmodule WorkflowTest do
     test "join completes successfully after all parents produce facts in parallel execution" do
       # This test verifies that a Join correctly completes when invoked
       # multiple times as each parent produces facts (simulating parallel execution).
-      
+
       step_a = Runic.step(fn num -> num * 2 end, name: :step_a)
       step_b = Runic.step(fn num -> num * 3 end, name: :step_b)
       join_step = Runic.step(fn a, b -> a + b end, name: :join_result)
@@ -608,24 +613,29 @@ defmodule WorkflowTest do
       assert length(initial_runnables) == 2
 
       # Run step_a first
-      {step_a_runnable, fact_a} = Enum.find(initial_runnables, fn {step, _fact} -> 
-        step.name == :step_a 
-      end)
+      {step_a_runnable, fact_a} =
+        Enum.find(initial_runnables, fn {step, _fact} ->
+          step.name == :step_a
+        end)
+
       workflow_after_a = Workflow.invoke(planned, step_a_runnable, fact_a)
 
       # Now run step_b
-      {step_b_runnable, fact_b} = Enum.find(initial_runnables, fn {step, _fact} -> 
-        step.name == :step_b 
-      end)
+      {step_b_runnable, fact_b} =
+        Enum.find(initial_runnables, fn {step, _fact} ->
+          step.name == :step_b
+        end)
+
       workflow_after_b = Workflow.invoke(workflow_after_a, step_b_runnable, fact_b)
 
       # After both parents have run, the join should be runnable with both facts connected
       runnables_after_both = Workflow.next_runnables(workflow_after_b)
 
       # There should be join runnables now (one for each fact that connected)
-      join_runnables = Enum.filter(runnables_after_both, fn {step, _fact} ->
-        match?(%Runic.Workflow.Join{}, step)
-      end)
+      join_runnables =
+        Enum.filter(runnables_after_both, fn {step, _fact} ->
+          match?(%Runic.Workflow.Join{}, step)
+        end)
 
       assert length(join_runnables) > 0, "Join should be runnable after both parents produced"
 
@@ -636,27 +646,29 @@ defmodule WorkflowTest do
       # After both parents ran and we invoked join once, there may still be
       # a second join invocation needed. Let's run until join_result is runnable.
       workflow_current = workflow_after_join
-      
+
       # Keep invoking joins until join_result becomes runnable
       max_iterations = 10
-      
+
       for _ <- 1..max_iterations, reduce: {workflow_current, nil} do
         {wrk, nil} ->
           runnables = Workflow.next_runnables(wrk)
-          
+
           # Check for join_result
-          result_step = Enum.find(runnables, fn {step, _fact} ->
-            match?(%Step{name: :join_result}, step)
-          end)
-          
+          result_step =
+            Enum.find(runnables, fn {step, _fact} ->
+              match?(%Step{name: :join_result}, step)
+            end)
+
           if result_step != nil do
             {wrk, result_step}
           else
             # Check for remaining join
-            join_step = Enum.find(runnables, fn {step, _fact} ->
-              match?(%Runic.Workflow.Join{}, step)
-            end)
-            
+            join_step =
+              Enum.find(runnables, fn {step, _fact} ->
+                match?(%Runic.Workflow.Join{}, step)
+              end)
+
             if join_step != nil do
               {join_node, join_fact} = join_step
               new_wrk = Workflow.invoke(wrk, join_node, join_fact)
@@ -665,7 +677,7 @@ defmodule WorkflowTest do
               {wrk, nil}
             end
           end
-        
+
         {wrk, found} ->
           {wrk, found}
       end
@@ -674,7 +686,7 @@ defmodule WorkflowTest do
           final_workflow = Workflow.invoke(final_wrk, final_step, final_fact)
           productions = Workflow.raw_productions(final_workflow)
           assert 25 in productions
-        
+
         {_wrk, nil} ->
           flunk("join_result step never became runnable")
       end
@@ -690,14 +702,10 @@ defmodule WorkflowTest do
           to: "adder"
         )
 
-      wrk =
+      _wrk =
         workflow
         |> Workflow.plan_eagerly(4)
         |> Workflow.react_until_satisfied()
-
-      # dbg(Workflow.facts(wrk))
-
-      # dbg(Graph.edges(wrk.graph, by: :state_produced))
     end
   end
 
@@ -1801,7 +1809,7 @@ defmodule WorkflowTest do
           wrk
         end)
 
-      ran_wrk = Workflow.react_until_satisfied(wrk, 42)
+      _ran_wrk = Workflow.react_until_satisfied(wrk, 42)
 
       {:messages, messages} = Process.info(self(), :messages)
 
@@ -1815,6 +1823,66 @@ defmodule WorkflowTest do
                  {:after, Runic.Workflow.Step}
                ]
       end
+    end
+
+    test "new-style hooks (arity-2) execute with HookEvent and CausalContext" do
+      test_pid = self()
+
+      new_style_before_hook = fn %HookEvent{timing: :before} = event, ctx ->
+        send(test_pid, {:new_before, event.node.__struct__, ctx.ancestry_depth})
+        :ok
+      end
+
+      new_style_after_hook = fn %HookEvent{timing: :after, result: result} = _event, _ctx ->
+        send(test_pid, {:new_after, result.value})
+        :ok
+      end
+
+      wrk =
+        Runic.workflow(
+          name: "new-style hooks test",
+          steps: [
+            Runic.step(fn num -> num * 2 end, name: :doubler)
+          ],
+          before_hooks: [
+            doubler: [new_style_before_hook]
+          ],
+          after_hooks: [
+            doubler: [new_style_after_hook]
+          ]
+        )
+
+      _ran_wrk = Workflow.react_until_satisfied(wrk, 5)
+
+      assert_received {:new_before, Runic.Workflow.Step, 0}
+      assert_received {:new_after, 10}
+    end
+
+    test "new-style hooks can return {:apply, fn} for deferred workflow updates" do
+      test_pid = self()
+
+      hook_with_apply = fn %HookEvent{timing: :after}, _ctx ->
+        {:apply,
+         fn workflow ->
+           send(test_pid, :apply_fn_executed)
+           workflow
+         end}
+      end
+
+      wrk =
+        Runic.workflow(
+          name: "hook with apply_fn test",
+          steps: [
+            Runic.step(fn num -> num + 1 end, name: :adder)
+          ],
+          after_hooks: [
+            adder: [hook_with_apply]
+          ]
+        )
+
+      _ran_wrk = Workflow.react_until_satisfied(wrk, 5)
+
+      assert_received :apply_fn_executed
     end
   end
 
@@ -2324,7 +2392,10 @@ defmodule WorkflowTest do
 
       # The result should be a tuple of (overall_string, map_of_chapters)
       assert is_binary(overall), "First argument should be a string, got: #{inspect(overall)}"
-      assert is_map(per_item_map), "Second argument should be a map, got: #{inspect(per_item_map)}"
+
+      assert is_map(per_item_map),
+             "Second argument should be a map, got: #{inspect(per_item_map)}"
+
       assert overall == "overall: test_input"
       assert per_item_map == %{1 => "chapter_1", 2 => "chapter_2", 3 => "chapter_3"}
     end

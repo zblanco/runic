@@ -164,6 +164,70 @@ The Runic.Workflow.Invokable protocol is what allows for extension of Runic and 
 
 See the Runic.Workflow module for more information about evaluation APIs.
 
+## Three-Phase Execution Model
+
+Runic supports a three-phase execution model designed for parallel execution and external scheduling:
+
+1. **Prepare** - Extract minimal context from the workflow into `%Runnable{}` structs
+2. **Execute** - Run node work functions in isolation (can be parallelized)
+3. **Apply** - Reduce results back into the workflow
+
+### Parallel Execution
+
+For workflows where nodes can execute concurrently:
+
+```elixir
+alias Runic.Workflow
+
+# Execute runnables in parallel with configurable concurrency
+workflow
+|> Workflow.react_until_satisfied_parallel(input, max_concurrency: 8)
+|> Workflow.raw_productions()
+```
+
+### External Scheduler Integration
+
+For custom schedulers, worker pools, or distributed execution:
+
+```elixir
+defmodule MyApp.WorkflowScheduler do
+  use GenServer
+  alias Runic.Workflow
+  alias Runic.Workflow.Invokable
+
+  def handle_cast({:run, input}, %{workflow: workflow} = state) do
+    # Phase 1: Prepare runnables for dispatch
+    workflow = Workflow.plan_eagerly(workflow, input)
+    {workflow, runnables} = Workflow.prepare_for_dispatch(workflow)
+
+    # Phase 2: Execute (dispatch to worker pool, external service, etc.)
+    executed =
+      Task.async_stream(runnables, fn runnable ->
+        Invokable.execute(runnable.node, runnable)
+      end, timeout: :infinity)
+
+    # Phase 3: Apply results back to workflow
+    workflow =
+      Enum.reduce(executed, workflow, fn {:ok, runnable}, wrk ->
+        Workflow.apply_runnable(wrk, runnable)
+      end)
+
+    # Continue if more work is available
+    if Workflow.is_runnable?(workflow) do
+      GenServer.cast(self(), :continue)
+    end
+
+    {:noreply, %{state | workflow: workflow}}
+  end
+end
+```
+
+Key APIs for external scheduling:
+
+- `Workflow.prepare_for_dispatch/1` - Returns `{workflow, [%Runnable{}]}` for dispatch
+- `Workflow.apply_runnable/2` - Applies a completed runnable back to the workflow
+- `Invokable.execute/2` - Executes a runnable in isolation (no workflow access)
+
 This top level module provides high level functions and macros for building Runic Components
   such as Steps, Rules, Workflows, and Accumulators.
 

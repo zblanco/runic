@@ -1701,6 +1701,22 @@ defmodule Runic do
   # Given/When/Then DSL Compilation
   # =============================================================================
 
+  # Creates a variable AST marked as generated to suppress unused variable warnings
+  defp generated_var(name) do
+    {name, [generated: true], nil}
+  end
+
+  # Marks all variables in an AST as generated to suppress unused variable warnings
+  defp mark_vars_generated(ast) do
+    Macro.prewalk(ast, fn
+      {name, meta, context} when is_atom(name) and is_atom(context) ->
+        {name, Keyword.put(meta, :generated, true), context}
+
+      other ->
+        other
+    end)
+  end
+
   defp compile_given_when_then_rule(block, opts, env) do
     # Parse the block to extract given, when, then clauses
     {given_clause, where_clause, then_clause} = parse_given_when_then_block(block)
@@ -1832,7 +1848,7 @@ defmodule Runic do
 
   defp compile_given_clause(:match_any) do
     # Match anything - bind to `input` for the then clause
-    {Macro.var(:input, nil), :input, [{:input, Macro.var(:input, nil)}]}
+    {generated_var(:input), :input, [{:input, generated_var(:input)}]}
   end
 
   defp compile_given_clause(bindings) when is_list(bindings) do
@@ -1846,29 +1862,33 @@ defmodule Runic do
         # Single binding - match input against pattern
         # Check if pattern is just a plain variable (like `given value: value`)
         # In that case, the value IS the binding, don't also add binding_name
+        # Mark pattern variables as generated to suppress unused variable warnings
+        pattern = mark_vars_generated(pattern)
+
         case pattern do
           {var_name, _, ctx} when is_atom(var_name) and is_atom(ctx) ->
             # Pattern is just a variable - check if it's same as binding_name
             if var_name == binding_name do
               # Just use _ as pattern and bind to binding_name
-              {Macro.var(binding_name, nil), binding_name,
-               [{binding_name, Macro.var(binding_name, nil)}]}
+              {generated_var(binding_name), binding_name,
+               [{binding_name, generated_var(binding_name)}]}
             else
               # Different names - use the pattern variable
               binding_vars = extract_pattern_variables(pattern)
-              all_vars = [{binding_name, Macro.var(binding_name, nil)} | binding_vars]
+              all_vars = [{binding_name, generated_var(binding_name)} | binding_vars]
               {pattern, binding_name, all_vars}
             end
 
           {:_, _, _} ->
             # Pattern is underscore - just bind to binding_name
-            {{:_, [], nil}, binding_name, [{binding_name, Macro.var(binding_name, nil)}]}
+            {{:_, [generated: true], nil}, binding_name,
+             [{binding_name, generated_var(binding_name)}]}
 
           _ ->
             # Complex pattern - extract all variables from it
             binding_vars = extract_pattern_variables(pattern)
             # Add the top-level binding
-            all_vars = [{binding_name, Macro.var(binding_name, nil)} | binding_vars]
+            all_vars = [{binding_name, generated_var(binding_name)} | binding_vars]
             {pattern, binding_name, all_vars}
         end
 
@@ -1881,16 +1901,18 @@ defmodule Runic do
 
         all_vars =
           Enum.flat_map(multiple_bindings, fn {name, pattern} ->
+            pattern = mark_vars_generated(pattern)
             pattern_vars = extract_pattern_variables(pattern)
-            [{name, Macro.var(name, nil)} | pattern_vars]
+            [{name, generated_var(name)} | pattern_vars]
           end)
 
         # Build a map pattern that binds each key's value to a variable
         # Each entry becomes: key: pattern = var
         map_entries =
           Enum.map(multiple_bindings, fn {name, pattern} ->
+            pattern = mark_vars_generated(pattern)
             # Bind the pattern to a variable with the same name as the key
-            {name, {:=, [], [pattern, Macro.var(name, nil)]}}
+            {name, {:=, [], [pattern, generated_var(name)]}}
           end)
 
         map_pattern = {:%{}, [], map_entries}
@@ -1900,6 +1922,7 @@ defmodule Runic do
 
   defp extract_pattern_variables(pattern) do
     # Walk the pattern AST and collect all variable bindings
+    # Variables are marked as generated to suppress unused variable warnings
     {_ast, vars} =
       Macro.prewalk(pattern, [], fn
         # Skip underscores and underscore-prefixed vars
@@ -1907,7 +1930,7 @@ defmodule Runic do
           {node, acc}
 
         # Collect variables
-        {name, meta, context} = node, acc when is_atom(name) and is_atom(context) ->
+        {name, _meta, context} = node, acc when is_atom(name) and is_atom(context) ->
           name_str = Atom.to_string(name)
 
           # Skip special forms, underscore-prefixed, and module names
@@ -1916,7 +1939,8 @@ defmodule Runic do
                String.match?(name_str, ~r/^[A-Z]/) do
             {node, acc}
           else
-            {node, [{name, {name, meta, context}} | acc]}
+            # Mark extracted variables as generated
+            {node, [{name, generated_var(name)} | acc]}
           end
 
         node, acc ->
@@ -1942,6 +1966,9 @@ defmodule Runic do
 
     # Build the case pattern - if we have a top_binding, use = to bind the whole value
     # But avoid self-match like `value = value` when pattern IS the top_binding var
+    # Mark the when_body variables as generated for proper warning suppression
+    when_body = mark_vars_generated(when_body)
+
     case_pattern =
       cond do
         is_nil(top_binding) ->
@@ -1953,16 +1980,16 @@ defmodule Runic do
           pattern
 
         true ->
-          # Bind the whole matched value to the binding name
-          {:=, [], [Macro.var(top_binding, nil), pattern]}
+          # Bind the whole matched value to the binding name (use generated var)
+          {:=, [], [generated_var(top_binding), pattern]}
       end
 
     # Build the condition function
-    quote do
+    # Use generated: true to suppress unused variable warnings for pattern bindings
+    quote generated: true do
       fn input ->
         case input do
           unquote(case_pattern) ->
-            # Evaluate where clause (variables are bound by the pattern match)
             unquote(when_body)
 
           _ ->
@@ -1988,23 +2015,24 @@ defmodule Runic do
           pattern
 
         true ->
-          {:=, [], [Macro.var(top_binding, nil), pattern]}
+          {:=, [], [generated_var(top_binding), pattern]}
       end
 
-    # Build bindings map from the extracted variables
+    # Build bindings map from the extracted variables (use generated vars)
     bindings_map_entries =
       Enum.map(binding_vars, fn {name, _ast} ->
-        {name, Macro.var(name, nil)}
+        {name, generated_var(name)}
       end)
 
     bindings_map = {:%{}, [], bindings_map_entries}
 
+    # Use generated: true to suppress unused variable warnings for pattern bindings
     case then_expr do
       {:fn, _, _} ->
         # User provided a function - traverse for ^ bindings then wrap
         {rewritten_fn, _bindings} = traverse_expression(then_expr, env)
 
-        quote do
+        quote generated: true do
           fn input ->
             case input do
               unquote(case_pattern) ->
@@ -2016,7 +2044,7 @@ defmodule Runic do
 
       {:&, _, _} ->
         # Capture syntax - wrap to pass bindings
-        quote do
+        quote generated: true do
           fn input ->
             case input do
               unquote(case_pattern) ->
@@ -2028,7 +2056,7 @@ defmodule Runic do
 
       _ ->
         # Raw expression - wrap in a function
-        quote do
+        quote generated: true do
           fn input ->
             case input do
               unquote(case_pattern) ->

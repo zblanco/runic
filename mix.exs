@@ -26,7 +26,8 @@ defmodule Runic.MixProject do
       {:libgraph,
        git: "https://github.com/zblanco/libgraph.git", branch: "zw/multigraph-indexes"},
       {:tidewave, "~> 0.4", only: :dev},
-      {:bandit, "~> 1.0", only: :dev}
+      {:bandit, "~> 1.0", only: :dev},
+      {:benchee, "~> 1.3", only: :dev}
       # {:libgraph, "~> 0.16.0", path: "~/wrk/oss/libgraph"}
     ]
   end

@@ -29,7 +29,10 @@ defmodule ParallelWorkflowTest do
              [
                {Runic.map(fn num -> num * 2 end, name: :double_map),
                 [
-                  Runic.reduce(0, fn num, acc -> num + acc end, name: :sum_reduce, map: :double_map)
+                  Runic.reduce(0, fn num, acc -> num + acc end,
+                    name: :sum_reduce,
+                    map: :double_map
+                  )
                 ]}
              ]}
           ]
@@ -113,11 +116,15 @@ defmodule ParallelWorkflowTest do
       productions = Workflow.raw_productions(final_wrk)
       # Should have collected [11, 12, 13] in some order
       # Find the list that contains the mapped values (11, 12, 13), not the source list [1, 2, 3]
-      collected = Enum.find(productions, fn
-        list when is_list(list) -> Enum.any?(list, &(&1 in [11, 12, 13]))
-        _ -> false
-      end)
-      assert collected != nil, "Expected to find a list with values 11, 12, or 13 in productions: #{inspect(productions)}"
+      collected =
+        Enum.find(productions, fn
+          list when is_list(list) -> Enum.any?(list, &(&1 in [11, 12, 13]))
+          _ -> false
+        end)
+
+      assert collected != nil,
+             "Expected to find a list with values 11, 12, or 13 in productions: #{inspect(productions)}"
+
       assert Enum.sort(collected) == [11, 12, 13]
     end
 
@@ -184,7 +191,7 @@ defmodule ParallelWorkflowTest do
   end
 
   # Helper to simulate parallel workflow execution like WorkflowRunner
-  defp run_workflow_parallel(workflow, input, opts \\ []) do
+  defp run_workflow_parallel(workflow, input, opts) do
     max_iterations = Keyword.get(opts, :max_iterations, 100)
     already_planned = Keyword.get(opts, :already_planned, false)
 

@@ -46,7 +46,6 @@ defmodule Runic.Workflow do
           name: String.t(),
           graph: Graph.t(),
           hash: binary(),
-          generations: integer(),
           # name -> component hash
           components: map(),
           # node_hash -> list(hook_functions)
@@ -54,15 +53,13 @@ defmodule Runic.Workflow do
           after_hooks: map(),
           # hash of parent fact for fan_out -> path_to_fan_in e.g. [fan_out, step1, step2, fan_in]
           mapped: map(),
-          # generation -> list(input_fact_hash)
-          # or input_fact_hash -> MapSet.new([produced_facts])
+          # input_fact_hash -> MapSet.new([produced_facts])
           inputs: map()
         }
 
   @type runnable() :: {fun(), term()}
 
   defstruct name: nil,
-            generations: 0,
             hash: nil,
             graph: nil,
             components: %{},
@@ -387,6 +384,10 @@ defmodule Runic.Workflow do
         # Add the component to the workflow
         add(wrk, component, to: event.to)
 
+      %ReactionOccurred{reaction: :generation}, wrk ->
+        # Skip legacy generation edges - generation counters removed
+        wrk
+
       %ReactionOccurred{} = ro, wrk ->
         reaction_edge =
           Graph.Edge.new(
@@ -397,17 +398,9 @@ defmodule Runic.Workflow do
             properties: ro.properties
           )
 
-        generation =
-          if(ro.reaction == :generation and ro.from > wrk.generations) do
-            ro.from
-          else
-            wrk.generations
-          end
-
         %__MODULE__{
           wrk
-          | graph: Graph.add_edge(wrk.graph, reaction_edge),
-            generations: generation
+          | graph: Graph.add_edge(wrk.graph, reaction_edge)
         }
     end)
   end
@@ -659,7 +652,8 @@ defmodule Runic.Workflow do
     }
   end
 
-  defp run_before_hooks(%__MODULE__{} = workflow, %{hash: hash} = step, input_fact) do
+  @doc false
+  def run_before_hooks(%__MODULE__{} = workflow, %{hash: hash} = step, input_fact) do
     case get_before_hooks(workflow, hash) do
       nil ->
         workflow
@@ -669,7 +663,7 @@ defmodule Runic.Workflow do
     end
   end
 
-  defp run_before_hooks(%__MODULE__{} = workflow, _step, _input_fact), do: workflow
+  def run_before_hooks(%__MODULE__{} = workflow, _step, _input_fact), do: workflow
 
   def run_after_hooks(%__MODULE__{} = workflow, %{hash: hash} = step, output_fact) do
     case get_after_hooks(workflow, hash) do
@@ -682,6 +676,26 @@ defmodule Runic.Workflow do
   end
 
   def run_after_hooks(%__MODULE__{} = workflow, _step, _input_fact), do: workflow
+
+  @doc """
+  Applies a list of hook apply functions to the workflow.
+
+  This is used during the apply phase to execute deferred workflow
+  modifications returned by hooks during the execute phase.
+
+  ## Example
+
+      workflow
+      |> Workflow.apply_hook_fns(before_apply_fns)
+      |> do_main_apply_logic()
+      |> Workflow.apply_hook_fns(after_apply_fns)
+  """
+  @spec apply_hook_fns(t(), [function()]) :: t()
+  def apply_hook_fns(%__MODULE__{} = workflow, apply_fns) when is_list(apply_fns) do
+    Enum.reduce(apply_fns, workflow, fn apply_fn, wrk -> apply_fn.(wrk) end)
+  end
+
+  def apply_hook_fns(%__MODULE__{} = workflow, nil), do: workflow
 
   defp get_before_hooks(%__MODULE__{} = workflow, hash) do
     Map.get(workflow.before_hooks, hash)
@@ -1255,16 +1269,55 @@ defmodule Runic.Workflow do
   end
 
   @doc """
-  Cycles eagerly through a prepared agenda in the match phase and executes a single cycle of right hand side runnables.
+  Executes a single reaction cycle using the three-phase model.
+
+  Uses `prepare_for_dispatch/1` to prepare runnables, executes them, and applies results back.
+
+  ## Options
+
+  - `:async` - When `true`, executes runnables in parallel using `Task.async_stream`. 
+    Useful for I/O-bound workflows. Default: `false` (serial execution)
+  - `:max_concurrency` - Maximum parallel tasks when `async: true`. Default: `System.schedulers_online()`
+  - `:timeout` - Timeout for each task when `async: true`. Default: `:infinity`
+
+  ## Example
+
+      workflow = Workflow.react(workflow)
+      workflow = Workflow.react(workflow, async: true, max_concurrency: 4)
   """
-  def react(%__MODULE__{generations: generations} = wrk) when generations > 0 do
-    Enum.reduce(next_runnables(wrk), wrk, fn {node, fact}, wrk ->
-      invoke(wrk, node, fact)
-    end)
+  @spec react(t(), keyword()) :: t()
+  def react(workflow, opts \\ [])
+
+  def react(%__MODULE__{} = workflow, opts) when is_list(opts) do
+    if is_runnable?(workflow) do
+      {workflow, runnables} = prepare_for_dispatch(workflow)
+
+      if Keyword.get(opts, :async, false) do
+        execute_runnables_async(workflow, runnables, opts)
+      else
+        execute_runnables_serial(workflow, runnables)
+      end
+    else
+      workflow
+    end
+  end
+
+  def react(%__MODULE__{} = wrk, %Fact{ancestry: nil} = fact) do
+    react(wrk, fact, [])
+  end
+
+  def react(%__MODULE__{} = wrk, raw_fact) when not is_list(raw_fact) do
+    react(wrk, Fact.new(value: raw_fact), [])
   end
 
   @doc """
   Plans eagerly through the match phase then executes a single cycle of right hand side runnables.
+
+  ## Options
+
+  - `:async` - When `true`, executes runnables in parallel. Default: `false`
+  - `:max_concurrency` - Maximum parallel tasks when `async: true`
+  - `:timeout` - Timeout for each task when `async: true`
 
   ## Example
 
@@ -1272,22 +1325,45 @@ defmodule Runic.Workflow do
       ...> workflow |> Workflow.add_step(fn fact -> fact end) |> Workflow.react("hello") |> Workflow.reactions()
       [%Fact{value: "hello"}]
   """
-  def react(%__MODULE__{} = wrk, %Fact{ancestry: nil} = fact) do
-    react(invoke(wrk, root(), fact))
+  @spec react(t(), Fact.t() | term(), keyword()) :: t()
+  def react(%__MODULE__{} = wrk, %Fact{ancestry: nil} = fact, opts) do
+    wrk
+    |> invoke(root(), fact)
+    |> react(opts)
   end
 
-  def react(%__MODULE__{} = wrk, raw_fact) do
-    react(wrk, Fact.new(value: raw_fact))
+  def react(%__MODULE__{} = wrk, raw_fact, opts) do
+    react(wrk, Fact.new(value: raw_fact), opts)
   end
 
-  # def react_while(%__MODULE__{} = wrk, %Fact{ancestry: nil} = fact) do
-  #   wrk
-  #   |> react(fact)
-  #   |> react_while()
-  # end
+  defp execute_runnables_serial(workflow, runnables) do
+    runnables
+    |> Enum.map(fn runnable -> Invokable.execute(runnable.node, runnable) end)
+    |> Enum.reduce(workflow, fn executed, wrk -> apply_runnable(wrk, executed) end)
+  end
+
+  defp execute_runnables_async(workflow, runnables, opts) do
+    max_concurrency = Keyword.get(opts, :max_concurrency, System.schedulers_online())
+    timeout = Keyword.get(opts, :timeout, :infinity)
+
+    runnables
+    |> Task.async_stream(
+      fn runnable -> Invokable.execute(runnable.node, runnable) end,
+      max_concurrency: max_concurrency,
+      timeout: timeout
+    )
+    |> Enum.reduce(workflow, fn
+      {:ok, executed}, wrk ->
+        apply_runnable(wrk, executed)
+
+      {:exit, reason}, wrk ->
+        Logger.warning("Async execution failed: #{inspect(reason)}")
+        wrk
+    end)
+  end
 
   @doc """
-  Cycles eagerly through runnables resulting from the input fact.
+  Cycles eagerly through runnables resulting from the input fact until satisfied.
 
   Eagerly runs through the planning / match phase as does `react/2` but also eagerly executes
   subsequent phases of runnables until satisfied (nothing new to react to i.e. all
@@ -1300,31 +1376,43 @@ defmodule Runic.Workflow do
 
   If your goal is to evaluate some non-terminating program to some finite number of generations - wrapping
   `react/2` in a process that can track workflow evaluation livecycles until desired is recommended.
+
+  ## Options
+
+  - `:async` - When `true`, executes runnables in parallel. Default: `false`
+  - `:max_concurrency` - Maximum parallel tasks when `async: true`
+  - `:timeout` - Timeout for each task when `async: true`
+
+  ## Example
+
+      workflow = Workflow.react_until_satisfied(workflow, input)
+      workflow = Workflow.react_until_satisfied(workflow, input, async: true)
   """
-  def react_until_satisfied(%__MODULE__{} = wrk, %Fact{ancestry: nil} = fact) do
+  @spec react_until_satisfied(t(), Fact.t() | term(), keyword()) :: t()
+  def react_until_satisfied(workflow, fact_or_value \\ nil, opts \\ [])
+
+  def react_until_satisfied(%__MODULE__{} = workflow, nil, opts) do
+    do_react_until_satisfied(workflow, is_runnable?(workflow), opts)
+  end
+
+  def react_until_satisfied(%__MODULE__{} = wrk, %Fact{ancestry: nil} = fact, opts) do
     wrk
-    |> react(fact)
-    |> react_until_satisfied()
+    |> react(fact, opts)
+    |> react_until_satisfied(nil, opts)
   end
 
-  def react_until_satisfied(%__MODULE__{} = wrk, raw_fact) do
-    react_until_satisfied(wrk, Fact.new(value: raw_fact))
+  def react_until_satisfied(%__MODULE__{} = wrk, raw_fact, opts) do
+    react_until_satisfied(wrk, Fact.new(value: raw_fact), opts)
   end
 
-  def react_until_satisfied(%__MODULE__{} = workflow) do
-    do_react_until_satisfied(workflow, is_runnable?(workflow))
+  defp do_react_until_satisfied(%__MODULE__{} = workflow, true = _is_runnable?, opts) do
+    workflow
+    |> react(opts)
+    |> then(fn wrk -> do_react_until_satisfied(wrk, is_runnable?(wrk), opts) end)
   end
 
-  defp do_react_until_satisfied(%__MODULE__{} = workflow, true = _is_runnable?) do
-    workflow =
-      Enum.reduce(next_runnables(workflow), workflow, fn {node, fact} = _runnable, wrk ->
-        invoke(wrk, node, fact)
-      end)
-
-    do_react_until_satisfied(workflow, is_runnable?(workflow))
-  end
-
-  defp do_react_until_satisfied(%__MODULE__{} = workflow, false = _is_runnable?), do: workflow
+  defp do_react_until_satisfied(%__MODULE__{} = workflow, false = _is_runnable?, _opts),
+    do: workflow
 
   def purge_memory(%__MODULE__{} = wrk) do
     %__MODULE__{
@@ -1377,22 +1465,24 @@ defmodule Runic.Workflow do
   end
 
   @doc """
-  Eagerly plans through all output facts in the workflow produced in the previous generation to prepare the next set of runnables.
+  Eagerly plans through all produced facts in the workflow that haven't yet activated
+  subsequent runnables.
 
-  This is useful for after a workflow has already been ran and satisfied without runnables and you want to continue
-  preparing reactions in the workflow from the output facts of the previous run.
+  This is useful for after a workflow has already been ran and satisfied without runnables
+  and you want to continue preparing reactions in the workflow from output facts.
+
+  Finds facts via `:produced` edges that don't have pending `:runnable` or `:matchable` edges.
   """
-  def plan_eagerly(%__MODULE__{} = workflow) do
+  def plan_eagerly(%__MODULE__{graph: graph} = workflow) do
+    # Find all produced facts that don't have pending activations
     new_productions =
-      for edge <-
-            Graph.out_edges(workflow.graph, workflow.generations,
-              by: :generation,
-              where: fn edge ->
-                Enum.empty?(Graph.out_edges(workflow.graph, edge.v2, by: [:runnable, :matchable]))
-              end
-            ) do
-        edge.v2
+      for edge <- Graph.edges(graph, by: [:produced, :state_produced, :reduced]),
+          fact = edge.v2,
+          is_struct(fact, Fact),
+          Enum.empty?(Graph.out_edges(graph, fact, by: [:runnable, :matchable])) do
+        fact
       end
+      |> Enum.uniq()
 
     Enum.reduce(new_productions, workflow, fn output_fact, wrk ->
       plan(wrk, output_fact)
@@ -1450,40 +1540,38 @@ defmodule Runic.Workflow do
   end
 
   @doc """
-  Executes the Invokable protocol for a runnable step and fact.
+  Executes the Invokable protocol for a runnable step and fact using the three-phase model.
 
   This is a lower level API than as with the react or plan functions intended for process based
   scheduling and execution of workflows.
+
+  The three-phase execution model:
+  1. **Prepare** - Extract minimal context from workflow, build a `%Runnable{}`
+  2. **Execute** - Run the node's work function in isolation
+  3. **Apply** - Reduce results back into the workflow
 
   See `invoke_with_events/2` for a version that returns events produced by the invokation that can be
   persisted incrementally as the workflow is executed for durable execution of long running workflows.
   """
   def invoke(%__MODULE__{} = wrk, step, fact) do
-    wrk = run_before_hooks(wrk, step, fact)
-    Invokable.invoke(step, wrk, fact)
+    case Invokable.prepare(step, wrk, fact) do
+      {:ok, runnable} ->
+        executed = Invokable.execute(step, runnable)
+        apply_runnable(wrk, executed)
+
+      {:skip, reducer_fn} ->
+        reducer_fn.(wrk)
+
+      {:defer, reducer_fn} ->
+        reducer_fn.(wrk)
+    end
   end
 
   @doc false
-  def causal_generation(
-        %__MODULE__{graph: graph},
-        %Fact{ancestry: {_parent_step_hash, _parent_fact_hash}} = production_fact
-      ) do
-    graph
-    |> Graph.edges(production_fact, by: [:produced, :state_produced, :state_initiated, :fan_out, :reduced])
-    |> hd()
-    |> Map.get(:weight)
-
-    +1
-  end
-
-  def causal_generation(
-        %__MODULE__{graph: graph},
-        %Fact{ancestry: nil} = input_fact
-      ) do
-    graph
-    |> Graph.in_neighbors(input_fact)
-    |> Enum.filter(&is_integer/1)
-    |> hd()
+  @deprecated "Use causal_depth/2 or ancestry_depth/2 instead"
+  def causal_generation(%__MODULE__{} = workflow, %Fact{} = fact) do
+    # Backward compatibility: returns depth + 1 to match old behavior
+    ancestry_depth(workflow, fact) + 1
   end
 
   @doc """
@@ -1501,32 +1589,41 @@ defmodule Runic.Workflow do
 
   @doc """
   Returns all %ReactionOccurred{} events caused since the given fact.
+
+  Uses ancestry-based causal ordering. Returns events with depth greater than
+  the reference fact's depth, scoped to the same causal root.
   """
   def events_produced_since(
-        %__MODULE__{} = wrk,
-        %Fact{ancestry: {_parent_step_hash, _parent_fact_hash}} = fact
+        %__MODULE__{graph: graph} = wrk,
+        %Fact{} = fact
       ) do
-    # return reaction edges transformed to %ReactionOccurred{} events that do not involve productions known since the given fact
+    ref_depth = ancestry_depth(wrk, fact)
+    ref_root = root_ancestor_hash(wrk, fact)
 
-    fact_generation =
-      wrk.graph
-      |> Graph.in_edges(fact, by: :produced)
-      |> hd()
-      |> Map.get(:weight)
+    reaction_labels = [
+      :produced,
+      :state_produced,
+      :reduced,
+      :satisfied,
+      :state_initiated,
+      :fan_out,
+      :joined
+    ]
 
-    Graph.edges(wrk.graph,
-      by: [
-        :produced,
-        :state_produced,
-        :reduced,
-        :satisfied,
-        :state_initiated,
-        :fan_out,
-        :reduced,
-        :joined
-      ],
-      where: fn edge -> edge.weight > fact_generation end
+    Graph.edges(graph,
+      by: reaction_labels,
+      where: fn edge -> edge.weight > ref_depth end
     )
+    |> Enum.filter(fn edge ->
+      # Only include facts from the same causal chain
+      case edge.v2 do
+        %Fact{} = produced_fact ->
+          root_ancestor_hash(wrk, produced_fact) == ref_root
+
+        _ ->
+          true
+      end
+    end)
     |> Enum.map(fn edge ->
       %ReactionOccurred{
         from: edge.v1,
@@ -1536,33 +1633,6 @@ defmodule Runic.Workflow do
         properties: edge.properties
       }
     end)
-  end
-
-  def events_produced_since(
-        %__MODULE__{graph: graph},
-        %Fact{ancestry: nil} = fact
-      ) do
-    # return reaction edges transformed to %ReactionOccurred{} events that do not involve productions known since the given fact
-
-    fact_generation =
-      graph
-      |> Graph.in_edges(fact, by: :generation)
-      |> hd()
-      |> Map.get(:v1)
-
-    Graph.edges(graph,
-      by: [
-        :produced,
-        :state_produced,
-        :reduced,
-        :satisfied,
-        :state_initiated,
-        :fan_out,
-        :reduced,
-        :joined
-      ],
-      where: fn edge -> edge.weight > fact_generation end
-    )
   end
 
   defp any_match_phase_runnables?(%__MODULE__{graph: graph}) do
@@ -1625,41 +1695,37 @@ defmodule Runic.Workflow do
   def log_fact(%__MODULE__{graph: graph} = wrk, %Fact{} = fact) do
     %__MODULE__{
       wrk
-      | graph:
-          graph
-          |> Graph.add_vertex(fact)
-          |> Graph.add_edge(wrk.generations, fact, label: :generation)
+      | graph: Graph.add_vertex(graph, fact)
     }
   end
 
   defp maybe_prepare_next_generation_from_state_accumulations(
-         %__MODULE__{graph: graph, generations: generation} = workflow
+         %__MODULE__{graph: graph} = workflow
        ) do
-    # we need the last state produced fact for all accumulators from the current generation
+    # Find all state_produced facts by walking :state_produced edges from accumulators
     state_produced_facts_by_ancestor =
-      for generation_edge <- Graph.out_edges(graph, generation, by: :generation) do
-        for connection <- Graph.in_edges(graph, generation_edge.v2, by: :state_produced) do
-          connection.v2
-        end
+      for edge <- Graph.edges(graph, by: :state_produced) do
+        edge.v2
       end
-      |> List.flatten()
       |> Enum.reduce(%{}, fn %{ancestry: {accumulator_hash, _}} = state_produced_fact, acc ->
-        Map.put(acc, accumulator_hash, state_produced_fact)
+        # Keep the latest state fact for each accumulator
+        existing = Map.get(acc, accumulator_hash)
+
+        if is_nil(existing) or
+             ancestry_depth(workflow, state_produced_fact) > ancestry_depth(workflow, existing) do
+          Map.put(acc, accumulator_hash, state_produced_fact)
+        else
+          acc
+        end
       end)
 
     stateful_matching_impls = stateful_matching_impls()
-
     state_produced_fact_ancestors = Map.keys(state_produced_facts_by_ancestor)
 
     unless Enum.empty?(state_produced_facts_by_ancestor) do
-      workflow = prepare_next_generation(workflow, Map.values(state_produced_facts_by_ancestor))
-
       Graph.Reducers.Bfs.reduce(graph, workflow, fn
-        node, wrk when is_integer(node) ->
-          {:next, wrk}
-
         node, wrk ->
-          if node.__struct__ in stateful_matching_impls do
+          if is_struct(node) and node.__struct__ in stateful_matching_impls do
             state_hash = Runic.Workflow.StatefulMatching.matches_on(node)
 
             if state_hash in state_produced_fact_ancestors do
@@ -1682,10 +1748,6 @@ defmodule Runic.Workflow do
     else
       workflow
     end
-
-    # how to access relevant match nodes for the state produced facts?
-    # ideally we want an edge between accumulators and match conditions that we can ignore in normal dataflow scenarios
-    # we need to access the subset of an accumulator's match nodes quickly and without iteration over irrelevant flowables
   end
 
   defp stateful_matching_impls do
@@ -1696,22 +1758,11 @@ defmodule Runic.Workflow do
   end
 
   @doc false
-  def prepare_next_generation(%__MODULE__{} = workflow, %Fact{} = fact) do
-    next_generation = workflow.generations + 1
+  @deprecated "Generation counters removed; use ancestry_depth/2 for causal ordering"
+  def prepare_next_generation(%__MODULE__{} = workflow, %Fact{}), do: workflow
 
-    workflow
-    |> Map.put(:generations, next_generation)
-    |> draw_connection(fact, next_generation, :generation)
-  end
-
-  def prepare_next_generation(%__MODULE__{} = workflow, [%Fact{} | _] = facts)
-      when is_list(facts) do
-    next_generation = workflow.generations + 1
-
-    Enum.reduce(facts, Map.put(workflow, :generations, next_generation), fn fact, wrk ->
-      draw_connection(wrk, fact, next_generation, :generation)
-    end)
-  end
+  def prepare_next_generation(%__MODULE__{} = workflow, [%Fact{} | _] = _facts),
+    do: workflow
 
   def draw_connection(%__MODULE__{graph: g} = wrk, node_1, node_2, connection, opts \\ []) do
     opts = Keyword.put(opts, :label, connection)
@@ -1778,5 +1829,231 @@ defmodule Runic.Workflow do
       :match -> :matchable
       :execute -> :runnable
     end
+  end
+
+  @doc """
+  Computes the causal depth of a fact by walking its ancestry chain.
+
+  Replaces generation counter for causal ordering. A fact with no ancestry
+  (root input) has depth 0. Each causal step adds 1 to the depth.
+
+  ## Examples
+
+      iex> ancestry_depth(workflow, root_fact)
+      0
+
+      iex> ancestry_depth(workflow, fact_after_two_steps)
+      2
+  """
+  @spec ancestry_depth(t(), Fact.t()) :: non_neg_integer()
+  def ancestry_depth(%__MODULE__{}, %Fact{ancestry: nil}), do: 0
+
+  def ancestry_depth(%__MODULE__{graph: graph} = workflow, %Fact{
+        ancestry: {_producer_hash, parent_fact_hash}
+      }) do
+    case Map.get(graph.vertices, parent_fact_hash) do
+      %Fact{} = parent_fact ->
+        1 + ancestry_depth(workflow, parent_fact)
+
+      nil ->
+        1
+    end
+  end
+
+  @doc """
+  Returns the causal depth of a fact, preferring ancestry-based computation.
+
+  This is the new API that replaces `causal_generation/2`. It computes depth
+  by walking the ancestry chain rather than relying on generation edge weights.
+
+  For facts without ancestry (root inputs), returns 0.
+
+  ## Examples
+
+      iex> causal_depth(workflow, root_fact)
+      0
+
+      iex> causal_depth(workflow, produced_fact)
+      3  # produced after 3 causal steps
+  """
+  @spec causal_depth(t(), Fact.t()) :: non_neg_integer()
+  def causal_depth(%__MODULE__{} = workflow, %Fact{} = fact) do
+    ancestry_depth(workflow, fact)
+  end
+
+  @doc """
+  Finds the root ancestor fact hash for a given fact.
+
+  Walks the ancestry chain until it finds a fact with `ancestry: nil` (root input).
+  Returns the hash of that root fact, or the fact's own hash if it is a root.
+
+  ## Examples
+
+      iex> root_ancestor_hash(workflow, root_fact)
+      123456  # root_fact.hash
+
+      iex> root_ancestor_hash(workflow, deeply_nested_fact)
+      123456  # hash of the original root input
+  """
+  @spec root_ancestor_hash(t(), Fact.t()) :: integer() | nil
+  def root_ancestor_hash(%__MODULE__{}, %Fact{ancestry: nil, hash: hash}), do: hash
+
+  def root_ancestor_hash(%__MODULE__{graph: graph} = workflow, %Fact{
+        ancestry: {_producer_hash, parent_fact_hash}
+      }) do
+    case Map.get(graph.vertices, parent_fact_hash) do
+      %Fact{} = parent_fact ->
+        root_ancestor_hash(workflow, parent_fact)
+
+      nil ->
+        nil
+    end
+  end
+
+  @doc """
+  Gets the hooks for a given node hash.
+
+  Returns a tuple of {before_hooks, after_hooks} for use in CausalContext.
+  """
+  @spec get_hooks(t(), integer()) :: {list(), list()}
+  def get_hooks(%__MODULE__{before_hooks: before, after_hooks: after_hooks}, node_hash) do
+    {Map.get(before, node_hash, []), Map.get(after_hooks, node_hash, [])}
+  end
+
+  # =============================================================================
+  # Three-Phase Execution API (Phase 4 & 5)
+  # =============================================================================
+
+  alias Runic.Workflow.Runnable
+
+  @doc """
+  Returns a list of prepared `%Runnable{}` structs ready for execution.
+
+  This is the three-phase version of `next_runnables/1`. Each runnable contains
+  everything needed to execute independently of the workflow.
+
+  ## Three-Phase Execution Model
+
+  1. **Prepare** - This function calls `Invokable.prepare/3` for each pending node
+  2. **Execute** - Call `Invokable.execute/2` on each runnable (can be parallelized)
+  3. **Apply** - Call `runnable.apply_fn.(workflow)` to reduce results back
+
+  ## Returns
+
+  A list of `%Runnable{}` structs with status `:pending`, ready for `execute/2`.
+  Nodes that return `{:skip, _}` or `{:defer, _}` from prepare are handled immediately
+  and not included in the returned list.
+
+  ## Example
+
+      runnables = Workflow.prepared_runnables(workflow)
+      executed = Enum.map(runnables, &Invokable.execute(&1.node, &1))
+      workflow = Enum.reduce(executed, workflow, &Workflow.apply_runnable(&2, &1))
+  """
+  @spec prepared_runnables(t()) :: [Runnable.t()]
+  def prepared_runnables(%__MODULE__{graph: graph} = workflow) do
+    for %Graph.Edge{} = edge <- Graph.edges(graph, by: [:runnable, :matchable]),
+        node = edge.v2,
+        fact = edge.v1,
+        runnable <- prepare_node(workflow, node, fact) do
+      runnable
+    end
+  end
+
+  defp prepare_node(workflow, node, fact) do
+    case Invokable.prepare(node, workflow, fact) do
+      {:ok, runnable} -> [runnable]
+      {:skip, _reducer_fn} -> []
+      {:defer, _reducer_fn} -> []
+    end
+  end
+
+  @doc """
+  Prepares all available runnables for external dispatch.
+
+  Returns `{workflow, [%Runnable{}]}` where the workflow may have been updated
+  by skip/defer reducers, and the runnables list contains nodes ready for execution.
+
+  This is designed for external schedulers that want to dispatch execution
+  to worker pools or distributed systems.
+
+  ## Example
+
+      {workflow, runnables} = Workflow.prepare_for_dispatch(workflow)
+
+      # Dispatch to worker pool (can be parallel)
+      executed = Task.async_stream(runnables, fn r ->
+        Invokable.execute(r.node, r)
+      end, timeout: :infinity)
+
+      # Apply results back
+      workflow = Enum.reduce(executed, workflow, fn {:ok, r}, w ->
+        Workflow.apply_runnable(w, r)
+      end)
+  """
+  @spec prepare_for_dispatch(t()) :: {t(), [Runnable.t()]}
+  def prepare_for_dispatch(%__MODULE__{graph: graph} = workflow) do
+    Graph.edges(graph, by: [:runnable, :matchable])
+    |> Enum.reduce({workflow, []}, fn %Graph.Edge{v2: node, v1: fact}, {wrk, runnables} ->
+      case Invokable.prepare(node, wrk, fact) do
+        {:ok, runnable} ->
+          {wrk, [runnable | runnables]}
+
+        {:skip, reducer_fn} ->
+          {reducer_fn.(wrk), runnables}
+
+        {:defer, reducer_fn} ->
+          {reducer_fn.(wrk), runnables}
+      end
+    end)
+    |> then(fn {wrk, runnables} -> {wrk, Enum.reverse(runnables)} end)
+  end
+
+  @doc """
+  Applies a completed runnable back to the workflow.
+
+  Called by schedulers after receiving execution results. The runnable's
+  `apply_fn` is invoked to reduce results into the workflow state.
+
+  ## Parameters
+
+  - `workflow` - The current workflow state
+  - `runnable` - A runnable with status `:completed` or `:failed`
+
+  ## Returns
+
+  Updated workflow with the runnable's effects applied.
+
+  ## Example
+
+      executed = Invokable.execute(runnable.node, runnable)
+      workflow = Workflow.apply_runnable(workflow, executed)
+  """
+  @spec apply_runnable(t(), Runnable.t()) :: t()
+  def apply_runnable(%__MODULE__{} = workflow, %Runnable{status: :completed, apply_fn: apply_fn})
+      when is_function(apply_fn, 1) do
+    apply_fn.(workflow)
+  end
+
+  def apply_runnable(%__MODULE__{} = workflow, %Runnable{status: :skipped, apply_fn: apply_fn})
+      when is_function(apply_fn, 1) do
+    apply_fn.(workflow)
+  end
+
+  def apply_runnable(%__MODULE__{} = workflow, %Runnable{status: :failed} = runnable) do
+    handle_failed_runnable(workflow, runnable)
+  end
+
+  def apply_runnable(%__MODULE__{} = workflow, %Runnable{status: :pending}) do
+    workflow
+  end
+
+  defp handle_failed_runnable(%__MODULE__{} = workflow, %Runnable{
+         node: node,
+         input_fact: fact,
+         error: error
+       }) do
+    Logger.warning("Runnable failed for node #{inspect(node)} with error: #{inspect(error)}")
+    mark_runnable_as_ran(workflow, node, fact)
   end
 end

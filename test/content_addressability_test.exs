@@ -3,7 +3,6 @@ defmodule RunicContentAddressabilityTest do
 
   require Runic
   alias Runic.Workflow
-  alias Runic.Workflow.{Step, Rule, Accumulator, StateMachine}
 
   describe "content addressability with free variables" do
     test "steps with different variable values have unique hashes" do
