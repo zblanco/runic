@@ -41,6 +41,7 @@ defmodule Runic.Workflow do
   alias Runic.Workflow.Invokable
   alias Runic.Workflow.ComponentAdded
   alias Runic.Workflow.ReactionOccurred
+  alias Runic.Workflow.Runnable
 
   @type t() :: %__MODULE__{
           name: String.t(),
@@ -1275,7 +1276,7 @@ defmodule Runic.Workflow do
 
   ## Options
 
-  - `:async` - When `true`, executes runnables in parallel using `Task.async_stream`. 
+  - `:async` - When `true`, executes runnables in parallel using `Task.async_stream`.
     Useful for I/O-bound workflows. Default: `false` (serial execution)
   - `:max_concurrency` - Maximum parallel tasks when `async: true`. Default: `System.schedulers_online()`
   - `:timeout` - Timeout for each task when `async: true`. Default: `:infinity`
@@ -1475,11 +1476,12 @@ defmodule Runic.Workflow do
   """
   def plan_eagerly(%__MODULE__{graph: graph} = workflow) do
     # Find all produced facts that don't have pending activations
+    # Also exclude facts that have :ran edges - those have already been processed
     new_productions =
       for edge <- Graph.edges(graph, by: [:produced, :state_produced, :reduced]),
           fact = edge.v2,
           is_struct(fact, Fact),
-          Enum.empty?(Graph.out_edges(graph, fact, by: [:runnable, :matchable])) do
+          Enum.empty?(Graph.out_edges(graph, fact, by: [:runnable, :matchable, :ran])) do
         fact
       end
       |> Enum.uniq()
@@ -1565,6 +1567,13 @@ defmodule Runic.Workflow do
       {:defer, reducer_fn} ->
         reducer_fn.(wrk)
     end
+  end
+
+  @doc """
+  Executes the Invokable protocol for runnable.
+  """
+  def execute_runnable(%Runnable{} = runnable) do
+    Invokable.execute(runnable.node, runnable)
   end
 
   @doc false
@@ -1924,8 +1933,6 @@ defmodule Runic.Workflow do
   # Three-Phase Execution API (Phase 4 & 5)
   # =============================================================================
 
-  alias Runic.Workflow.Runnable
-
   @doc """
   Returns a list of prepared `%Runnable{}` structs ready for execution.
 
@@ -2055,5 +2062,99 @@ defmodule Runic.Workflow do
        }) do
     Logger.warning("Runnable failed for node #{inspect(node)} with error: #{inspect(error)}")
     mark_runnable_as_ran(workflow, node, fact)
+  end
+
+  # =============================================================================
+  # Serialization API
+  # =============================================================================
+
+  @doc """
+  Serializes the workflow to Mermaid flowchart format.
+
+  Returns a string that can be rendered by Mermaid.js.
+
+  ## Options
+
+  - `:direction` - Flow direction: `:TB` (default), `:LR`, `:BT`, `:RL`
+  - `:include_memory` - Include causal reaction edges (default: `false`)
+  - `:title` - Optional title comment
+
+  ## Examples
+
+      iex> workflow |> Workflow.to_mermaid()
+      "flowchart TB\\n    ..."
+
+      iex> workflow |> Workflow.to_mermaid(direction: :LR, include_memory: true)
+      "flowchart LR\\n    ..."
+  """
+  @spec to_mermaid(t(), Keyword.t()) :: String.t()
+  def to_mermaid(%__MODULE__{} = workflow, opts \\ []) do
+    Runic.Workflow.Serializers.Mermaid.serialize(workflow, opts)
+  end
+
+  @doc """
+  Serializes causal reactions as a Mermaid sequence diagram.
+
+  Shows how facts flow through steps and produce new facts.
+
+  ## Examples
+
+      iex> workflow |> Workflow.plan_eagerly(input) |> Workflow.react() |> Workflow.to_mermaid_sequence()
+      "sequenceDiagram\\n    ..."
+  """
+  @spec to_mermaid_sequence(t(), Keyword.t()) :: String.t()
+  def to_mermaid_sequence(%__MODULE__{} = workflow, opts \\ []) do
+    Runic.Workflow.Serializers.Mermaid.serialize_causal(workflow, opts)
+  end
+
+  @doc """
+  Serializes the workflow to DOT (Graphviz) format.
+
+  ## Examples
+
+      iex> dot = Workflow.to_dot(workflow)
+      iex> File.write!("workflow.dot", dot)
+  """
+  @spec to_dot(t(), Keyword.t()) :: String.t()
+  def to_dot(%__MODULE__{} = workflow, opts \\ []) do
+    Runic.Workflow.Serializers.DOT.serialize(workflow, opts)
+  end
+
+  @doc """
+  Serializes the workflow to Cytoscape.js element JSON format.
+
+  Returns a list of node and edge elements compatible with Cytoscape.js.
+
+  ## Examples
+
+      iex> elements = Workflow.to_cytoscape(workflow)
+      iex> Kino.Cytoscape.new(elements)
+  """
+  @spec to_cytoscape(t(), Keyword.t()) :: list(map())
+  def to_cytoscape(%__MODULE__{} = workflow, opts \\ []) do
+    Runic.Workflow.Serializers.Cytoscape.serialize(workflow, opts)
+  end
+
+  @doc """
+  Serializes the workflow to an edgelist format.
+
+  Returns a list of `{from, to, label}` tuples by default.
+
+  ## Options
+
+  - `:format` - `:tuples` (default) or `:string`
+  - `:include_memory` - Include causal edges (default: `false`)
+
+  ## Examples
+
+      iex> Workflow.to_edgelist(workflow)
+      [{:root, :step1, :flow}, {:step1, :step2, :flow}]
+
+      iex> Workflow.to_edgelist(workflow, format: :string)
+      "root -> step1 [flow]\\nstep1 -> step2 [flow]"
+  """
+  @spec to_edgelist(t(), Keyword.t()) :: list(tuple()) | String.t()
+  def to_edgelist(%__MODULE__{} = workflow, opts \\ []) do
+    Runic.Workflow.Serializers.Edgelist.serialize(workflow, opts)
   end
 end
