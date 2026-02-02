@@ -1,28 +1,165 @@
 defmodule Runic.Workflow do
   @moduledoc """
-  Runic Workflows are used to compose many branching steps, rules and accumuluations/reductions
-  at runtime for lazy or eager evaluation.
+  Runtime evaluation engine for Runic workflows.
 
-  You can think of Runic Workflows as a recipe of rules that when fed a stream of facts may react.
+  Runic Workflows are used to compose many branching steps, rules and accumulations/reductions
+  at runtime for lazy or eager evaluation. You can think of Runic Workflows as a recipe of rules
+  that when fed a stream of facts may react.
 
-  The Runic.Component protocol facilitates a `to_workflow` transformation so expressions like a
-    Rule or an Accumulator may become a Workflow we can evaluate and compose with other workflows.
+  ## Quick Start
 
-  Any Workflow can be merged into another Workflow and evaluated together. This gives us a lot of flexibility
-  in expressing abstractions on top of Runic workflow constructs.
+      require Runic
+      alias Runic.Workflow
 
-  Runic Workflows are intended for use cases where your program is built or modified at runtime. If model can be expressed in advance with compiled code using
-  the usual control flow and concurrency tools available in Elixir/Erlang - Runic Workflows are not the tool
-  to reach for. There are performance trade-offs of doing more compilation and evaluation at runtime.
+      workflow = Runic.workflow(
+        steps: [
+          {Runic.step(fn x -> x + 1 end, name: :add),
+           [Runic.step(fn x -> x * 2 end, name: :double)]}
+        ]
+      )
 
-  Runic Workflows are useful for building complex data dependent pipelines, expert systems, and user defined
-  logical systems. If you do not need that level of dynamicism - Runic Workflows are not for you.
+      workflow
+      |> Workflow.react_until_satisfied(5)
+      |> Workflow.raw_productions()
+      # => [12]
 
-  A Runic Workflow supports lazy evaluation of both conditional (left hand side) and steps (right hand side).
-  This allows a runtime implementation to distribute work to infrastructure specific to their needs
-  independently of the model expressed. For example a Runic "Runner" implementation may want to use a Dynamically Supervised
-  GenServer, with cluster-aware registration for a given workflow, then execute conditionals eagerly, but
-  execute actual steps with side effects lazily as a GenStage pipeline with backpressure has availability.
+  ## Three-Phase Execution Model
+
+  All workflow evaluation uses a three-phase execution model that enables parallel execution
+  and external scheduler integration:
+
+  1. **Prepare** - Extract minimal context from the workflow into `%Runnable{}` structs
+  2. **Execute** - Run node work functions in isolation (can be parallelized)
+  3. **Apply** - Reduce results back into the workflow
+
+  ### Basic Execution
+
+  For simple use cases, use `react/2` for a single cycle or `react_until_satisfied/3`
+  to run to completion:
+
+      # Single cycle
+      workflow = Workflow.react(workflow, input)
+
+      # Run to completion (recommended for simple use)
+      workflow = Workflow.react_until_satisfied(workflow, input)
+
+  ### Parallel Execution
+
+  Enable parallel execution for I/O-bound or CPU-intensive workflows:
+
+      workflow = Workflow.react_until_satisfied(workflow, input,
+        async: true,
+        max_concurrency: 8,
+        timeout: :infinity
+      )
+
+  ### External Scheduler Integration
+
+  For custom schedulers, worker pools, or distributed execution, use the low-level
+  three-phase APIs directly:
+
+      # Phase 1: Prepare runnables for dispatch
+      workflow = Workflow.plan_eagerly(workflow, input)
+      {workflow, runnables} = Workflow.prepare_for_dispatch(workflow)
+
+      # Phase 2: Execute (dispatch to worker pool, external service, etc.)
+      executed = Task.async_stream(runnables, fn runnable ->
+        Runic.Workflow.Invokable.execute(runnable.node, runnable)
+      end, timeout: :infinity)
+
+      # Phase 3: Apply results back to workflow
+      workflow = Enum.reduce(executed, workflow, fn {:ok, runnable}, wrk ->
+        Workflow.apply_runnable(wrk, runnable)
+      end)
+
+      # Continue if more work is available
+      if Workflow.is_runnable?(workflow), do: # repeat...
+
+  Key APIs for external scheduling:
+
+  - `prepare_for_dispatch/1` - Returns `{workflow, [%Runnable{}]}` for dispatch
+  - `apply_runnable/2` - Applies a completed runnable back to the workflow
+  - `Invokable.execute/2` - Executes a runnable in isolation (no workflow access)
+
+  ## Workflow Composition
+
+  Workflows can be composed together using `merge/2` or by adding components with `add/3`:
+
+      # Merge two workflows
+      combined = Workflow.merge(workflow1, workflow2)
+
+      # Add components dynamically
+      workflow = Workflow.new()
+        |> Workflow.add(step1)
+        |> Workflow.add(step2, to: :step1)
+        |> Workflow.add(join_step, to: [:branch_a, :branch_b])
+
+  Any component implementing the `Runic.Transmutable` protocol can be merged into a workflow.
+
+  ## Introspection APIs
+
+  Query workflow structure and state:
+
+      # List all components by type
+      Workflow.steps(workflow)       # All Step structs
+      Workflow.conditions(workflow)  # All Condition structs
+
+      # Get components by name
+      Workflow.get_component(workflow, :my_step)
+
+      # Query execution state
+      Workflow.is_runnable?(workflow)     # Any work pending?
+      Workflow.next_runnables(workflow)   # List of {node, fact} pairs
+
+      # Traverse workflow structure
+      Workflow.next_steps(workflow, parent_step)  # Children of a step
+
+  ## Result Extraction
+
+  Extract results after workflow execution:
+
+      # Raw values (most common)
+      Workflow.raw_productions(workflow)           # All leaf outputs
+      Workflow.raw_productions(workflow, :step_name)  # From specific component
+
+      # Full Fact structs with ancestry
+      Workflow.productions(workflow)
+
+      # All facts including inputs
+      Workflow.facts(workflow)
+
+  ## Serialization
+
+  Serialize workflows for persistence and visualization:
+
+      # Build log for persistence
+      log = Workflow.build_log(workflow)
+      serialized = :erlang.term_to_binary(log)
+
+      # Rebuild from log
+      workflow = Workflow.from_log(:erlang.binary_to_term(serialized))
+
+      # Visualization formats
+      Workflow.to_mermaid(workflow)      # Mermaid flowchart
+      Workflow.to_dot(workflow)          # Graphviz DOT format
+      Workflow.to_cytoscape(workflow)    # Cytoscape.js JSON
+      Workflow.to_edgelist(workflow)     # Edge list tuples
+
+  ## When to Use Runic Workflows
+
+  Runic Workflows are intended for use cases where your program is built or modified at runtime.
+  They are useful for:
+
+  - Complex data-dependent pipelines
+  - Expert systems and rule engines
+  - User-defined logical systems (low-code tools, DSLs)
+  - Dynamic workflow composition at runtime
+
+  If your model can be expressed in advance with compiled code using the usual control flow
+  and concurrency tools available in Elixir/Erlang, Runic Workflows may not be necessary.
+  There are performance trade-offs of doing more compilation and evaluation at runtime.
+
+  See the [Cheatsheet](cheatsheet.html) and [Usage Rules](usage-rules.html) guides for more.
   """
   require Logger
   alias Runic.Closure
@@ -286,16 +423,30 @@ defmodule Runic.Workflow do
   end
 
   @doc """
-  Returns a list of serializeable `%ComponentAdded{}` events that can be used to rebuild the workflow using `from_log/1`.
+  Returns a list of `%ComponentAdded{}` events for serialization and recovery.
 
-  ## Examples
+  Use with `from_log/1` to persist and rebuild workflows.
 
-  ```elixir
-  iex> workflow = Workflow.new()
-  iex> workflow = Workflow.add(workflow, %Step{})
-  iex> Workflow.build_log(workflow)
-  > [%ComponentAdded{component: %Step{}}]
-  ```
+  ## Example
+
+      require Runic
+      alias Runic.Workflow
+
+      step = Runic.step(fn x -> x * 2 end, name: :double)
+      workflow = Workflow.new() |> Workflow.add(step)
+
+      # Get the build log for serialization
+      log = Workflow.build_log(workflow)
+      serialized = :erlang.term_to_binary(log)
+
+      # Later, rebuild from log
+      restored_log = :erlang.binary_to_term(serialized)
+      restored = Workflow.from_log(restored_log)
+
+  ## Returns
+
+  A list of `%ComponentAdded{}` events in order of addition, each containing
+  the closure needed to rebuild the component.
   """
   def build_log(wrk) do
     # BFS reduce the graph following only flow edges and accumulate into a list of ComponentAdded events
@@ -905,6 +1056,30 @@ defmodule Runic.Workflow do
     g.vertices |> Map.get(hash)
   end
 
+  @doc """
+  Retrieves a component from the workflow by name.
+
+  Returns the component struct or `nil` if not found.
+
+  ## Examples
+
+      iex> require Runic
+      iex> alias Runic.Workflow
+      iex> workflow = Runic.workflow(steps: [Runic.step(fn x -> x * 2 end, name: :double)])
+      iex> step = Workflow.get_component(workflow, :double)
+      iex> step.name
+      :double
+
+  ## Subcomponent Access
+
+  For composite components like rules, access subcomponents with a tuple:
+
+      # Get the condition of a rule
+      Workflow.get_component(workflow, {:my_rule, :condition})
+
+      # Get the reaction of a rule
+      Workflow.get_component(workflow, {:my_rule, :reaction})
+  """
   def get_component(
         %__MODULE__{} = wrk,
         {component_name, subcomponent_kind_or_name}
@@ -927,9 +1102,6 @@ defmodule Runic.Workflow do
     get_component(wrk, name)
   end
 
-  # def get_component(%__MODULE__{components: components}, names) when is_list(names) do
-  #   Enum.map(names, fn name -> Map.get(components, name) end)
-  # end
   def get_component(%__MODULE__{} = workflow, names) when is_list(names) do
     Enum.map(names, &get_component(workflow, &1))
   end
@@ -942,10 +1114,15 @@ defmodule Runic.Workflow do
     Map.get(g.vertices, component_hash)
   end
 
-  # def get_component(%__MODULE__{components: components}, name) do
-  #   Map.get(components, name)
-  # end
+  @doc """
+  Retrieves a component from the workflow by name, raising if not found.
 
+  Same as `get_component/2` but raises `KeyError` if no component matches.
+
+  ## Example
+
+      step = Workflow.get_component!(workflow, :my_step)
+  """
   def get_component!(wrk, name) do
     get_component(wrk, name) || raise(KeyError, "No component found with name #{name}")
   end
@@ -966,7 +1143,23 @@ defmodule Runic.Workflow do
   end
 
   @doc """
-  The next outgoing dataflow steps from a given `parent_step`.
+  Returns the child steps connected via dataflow edges from a parent step.
+
+  Useful for traversing the workflow graph structure.
+
+  ## Example
+
+      require Runic
+      alias Runic.Workflow
+
+      workflow = Runic.workflow(steps: [
+        {Runic.step(fn x -> x + 1 end, name: :add),
+         [Runic.step(fn x -> x * 2 end, name: :double)]}
+      ])
+
+      add_step = Workflow.get_component(workflow, :add)
+      [double_step] = Workflow.next_steps(workflow, add_step)
+      double_step.name  # => :double
   """
   def next_steps(%__MODULE__{graph: g}, parent_step) do
     next_steps(g, parent_step)
@@ -997,7 +1190,33 @@ defmodule Runic.Workflow do
   end
 
   @doc """
-  Merges the second workflow into the first maintaining the name of the first.
+  Merges the second workflow into the first, maintaining the name of the first.
+
+  All root-level components from `workflow2` are connected to the root of `workflow`,
+  making them siblings to the existing root components.
+
+  ## Examples
+
+      iex> require Runic
+      iex> alias Runic.Workflow
+      iex> w1 = Runic.workflow(steps: [Runic.step(fn x -> x + 1 end, name: :add)])
+      iex> w2 = Runic.workflow(steps: [Runic.step(fn x -> x * 2 end, name: :mult)])
+      iex> merged = Workflow.merge(w1, w2)
+      iex> merged |> Workflow.react_until_satisfied(5) |> Workflow.raw_productions() |> Enum.sort()
+      [6, 10]
+
+  ## Merging Other Types
+
+  Any value implementing the `Runic.Transmutable` protocol can be merged:
+
+      workflow = Workflow.merge(workflow, rule)
+      workflow = Workflow.merge(workflow, step)
+
+  ## Use Cases
+
+  - Combining modular workflow fragments at runtime
+  - Building workflows dynamically from configuration
+  - Composing reusable workflow templates
   """
   def merge(%__MODULE__{} = workflow, %__MODULE__{} = workflow2) do
     Component.connect(workflow2, %Root{}, workflow)
@@ -1099,14 +1318,43 @@ defmodule Runic.Workflow do
   end
 
   @doc """
-  Lists all steps in the workflow.
+  Lists all `%Step{}` structs in the workflow.
+
+  Useful for introspecting workflow structure.
+
+  ## Example
+
+      iex> require Runic
+      iex> alias Runic.Workflow
+      iex> workflow = Runic.workflow(steps: [
+      ...>   Runic.step(fn x -> x + 1 end, name: :add),
+      ...>   Runic.step(fn x -> x * 2 end, name: :mult)
+      ...> ])
+      iex> steps = Workflow.steps(workflow)
+      iex> length(steps)
+      2
+      iex> Enum.map(steps, & &1.name) |> Enum.sort()
+      [:add, :mult]
   """
   def steps(%__MODULE__{graph: g}) do
     Enum.filter(Graph.vertices(g), &match?(%Step{}, &1))
   end
 
   @doc """
-  Lists all conditions in the workflow.
+  Lists all `%Condition{}` structs in the workflow.
+
+  Conditions are the "left-hand side" predicates of rules.
+
+  ## Example
+
+      require Runic
+      alias Runic.Workflow
+
+      workflow = Runic.workflow(rules: [
+        Runic.rule(fn x when x > 0 -> :positive end)
+      ])
+
+      [condition] = Workflow.conditions(workflow)
   """
   def conditions(%__MODULE__{graph: g}) do
     Enum.filter(Graph.vertices(g), &match?(%Condition{}, &1))
@@ -1145,15 +1393,19 @@ defmodule Runic.Workflow do
   end
 
   @doc """
-  Lists all facts produced in the workflow so far.
+  Returns all `%Fact{}` structs produced by the workflow.
 
-  Does not return input facts only facts generated as a result of the workflow execution.
+  Unlike `raw_productions/1`, this returns the full Fact structs including
+  ancestry information for causal tracing. Does not include input facts.
 
-  ## Examples
+  ## Example
 
-      iex> workflow = Workflow.new()
-      ...> workflow |> Workflow.add(Runic.step(fn fact -> fact end)) |> Workflow.react("hello") |> Workflow.facts()
-      [%Fact{value: "hello"}]
+      iex> require Runic
+      iex> alias Runic.Workflow
+      iex> workflow = Runic.workflow(steps: [Runic.step(fn x -> x * 2 end)])
+      iex> [fact] = workflow |> Workflow.react(5) |> Workflow.productions()
+      iex> fact.value
+      10
   """
   def productions(%__MODULE__{graph: graph}) do
     for %Graph.Edge{} = edge <-
@@ -1201,15 +1453,28 @@ defmodule Runic.Workflow do
   end
 
   @doc """
-  Lists all raw values of facts produced in the workflow so far.
+  Returns the raw values from all produced facts.
 
-  Does not return input fact values only those generated as a result of the workflow execution.
+  This is the most common way to extract results from a workflow.
+  Returns unwrapped values without the `%Fact{}` struct metadata.
 
-  ## Examples
+  ## Example
 
-      iex> workflow = Workflow.new()
-      ...> workflow |> Workflow.add(Runic.step(fn fact -> fact end)) |> Workflow.react("hello") |> Workflow.raw_productions()
-      ["hello"]
+      iex> require Runic
+      iex> alias Runic.Workflow
+      iex> workflow = Runic.workflow(steps: [Runic.step(fn x -> x * 2 end)])
+      iex> workflow |> Workflow.react(5) |> Workflow.raw_productions()
+      [10]
+
+  ## By Component Name
+
+      iex> require Runic
+      iex> alias Runic.Workflow
+      iex> workflow = Runic.workflow(
+      ...>   steps: [Runic.step(fn x -> x * 2 end, name: :double)]
+      ...> )
+      iex> workflow |> Workflow.react(5) |> Workflow.raw_productions(:double)
+      [10]
   """
   def raw_productions(%__MODULE__{graph: graph}) do
     for %Graph.Edge{} = edge <-
@@ -1248,15 +1513,26 @@ defmodule Runic.Workflow do
 
   @spec facts(Runic.Workflow.t()) :: list(Runic.Workflow.Fact.t())
   @doc """
-  Lists facts processed in the workflow so far.
+  Returns all facts in the workflow, including inputs and productions.
 
-  Includes input facts with a `nil` ancestry and all facts generated as a result of the workflow execution.
+  Unlike `productions/1`, this includes input facts which have `ancestry: nil`.
+  Useful for tracing the full causal chain of workflow execution.
 
-  ## Examples
+  ## Example
 
-      iex> workflow = Workflow.new()
-      ...> workflow |> Workflow.add(Runic.step(fn fact -> fact <> " world" end)) |> Workflow.react("hello") |> Workflow.facts()
-      [%Fact{value: "hello", ancestry: nil}, %Fact{value: "hello world"}]
+      iex> require Runic
+      iex> alias Runic.Workflow
+      iex> workflow = Runic.workflow(steps: [Runic.step(fn x -> x * 2 end)])
+      iex> facts = workflow |> Workflow.react(5) |> Workflow.facts()
+      iex> length(facts)
+      2
+      iex> Enum.map(facts, & &1.value) |> Enum.sort()
+      [5, 10]
+
+  ## Ancestry
+
+  - Input facts have `ancestry: nil`
+  - Produced facts have `ancestry: {producer_hash, parent_fact_hash}`
   """
   def facts(%__MODULE__{graph: graph}) do
     for v <- Graph.vertices(graph), match?(%Fact{}, v), do: v
@@ -1272,7 +1548,17 @@ defmodule Runic.Workflow do
   @doc """
   Executes a single reaction cycle using the three-phase model.
 
-  Uses `prepare_for_dispatch/1` to prepare runnables, executes them, and applies results back.
+  This function advances the workflow by one "generation" - executing all currently
+  runnable steps/rules. Use `react_until_satisfied/3` to run to completion.
+
+  ## Basic Usage
+
+      iex> require Runic
+      iex> alias Runic.Workflow
+      iex> workflow = Runic.workflow(steps: [Runic.step(fn x -> x * 2 end)])
+      iex> workflow = Workflow.react(workflow, 5)
+      iex> Workflow.raw_productions(workflow)
+      [10]
 
   ## Options
 
@@ -1281,10 +1567,9 @@ defmodule Runic.Workflow do
   - `:max_concurrency` - Maximum parallel tasks when `async: true`. Default: `System.schedulers_online()`
   - `:timeout` - Timeout for each task when `async: true`. Default: `:infinity`
 
-  ## Example
+  ## Parallel Execution
 
-      workflow = Workflow.react(workflow)
-      workflow = Workflow.react(workflow, async: true, max_concurrency: 4)
+      workflow = Workflow.react(workflow, 5, async: true, max_concurrency: 4)
   """
   @spec react(t(), keyword()) :: t()
   def react(workflow, opts \\ [])
@@ -1312,19 +1597,16 @@ defmodule Runic.Workflow do
   end
 
   @doc """
-  Plans eagerly through the match phase then executes a single cycle of right hand side runnables.
+  Executes a single reaction cycle with the given input value.
+
+  Plans through the match phase and executes one cycle of runnables.
+  Commonly used with a raw value to start workflow processing.
 
   ## Options
 
   - `:async` - When `true`, executes runnables in parallel. Default: `false`
   - `:max_concurrency` - Maximum parallel tasks when `async: true`
   - `:timeout` - Timeout for each task when `async: true`
-
-  ## Example
-
-      iex> workflow = Workflow.new()
-      ...> workflow |> Workflow.add_step(fn fact -> fact end) |> Workflow.react("hello") |> Workflow.reactions()
-      [%Fact{value: "hello"}]
   """
   @spec react(t(), Fact.t() | term(), keyword()) :: t()
   def react(%__MODULE__{} = wrk, %Fact{ancestry: nil} = fact, opts) do
@@ -1364,19 +1646,24 @@ defmodule Runic.Workflow do
   end
 
   @doc """
-  Cycles eagerly through runnables resulting from the input fact until satisfied.
+  Executes the workflow until no more runnables remain.
 
-  Eagerly runs through the planning / match phase as does `react/2` but also eagerly executes
-  subsequent phases of runnables until satisfied (nothing new to react to i.e. all
-  terminating leaf nodes have been traversed to and executed) resulting in a fully satisfied agenda.
+  Iteratively calls `react/2` until all reachable nodes have been executed.
+  This is the recommended way to fully evaluate a workflow pipeline.
 
-  `react_until_satisfied/2` is good for nested step -> [child_step_1, child_step2, ...] dependencies
-  where the goal is to get to the results at the end of the pipeline of steps.
+  ## Basic Usage
 
-  Careful, react_until_satisfied can evaluate infinite loops if the expressed workflow will not terminate.
-
-  If your goal is to evaluate some non-terminating program to some finite number of generations - wrapping
-  `react/2` in a process that can track workflow evaluation livecycles until desired is recommended.
+      iex> require Runic
+      iex> alias Runic.Workflow
+      iex> workflow = Runic.workflow(
+      ...>   steps: [
+      ...>     {Runic.step(fn x -> x + 1 end, name: :add_one),
+      ...>      [Runic.step(fn x -> x * 2 end, name: :double)]}
+      ...>   ]
+      ...> )
+      iex> results = workflow |> Workflow.react_until_satisfied(5) |> Workflow.raw_productions()
+      iex> Enum.sort(results)
+      [6, 12]
 
   ## Options
 
@@ -1384,10 +1671,21 @@ defmodule Runic.Workflow do
   - `:max_concurrency` - Maximum parallel tasks when `async: true`
   - `:timeout` - Timeout for each task when `async: true`
 
-  ## Example
+  ## Warning
 
-      workflow = Workflow.react_until_satisfied(workflow, input)
-      workflow = Workflow.react_until_satisfied(workflow, input, async: true)
+  Workflows that don't terminate (e.g., hooks that continuously add steps) will
+  cause infinite loops. For non-terminating workflows, use `react/2` in a
+  controlled loop with exit conditions.
+
+  ## Best For
+
+  - IEx/REPL experimentation
+  - Scripts and notebooks
+  - Testing workflows
+  - Simple batch processing
+
+  For production use with complex scheduling needs, consider `prepare_for_dispatch/1`
+  with a custom scheduler process.
   """
   @spec react_until_satisfied(t(), Fact.t() | term(), keyword()) :: t()
   def react_until_satisfied(workflow, fact_or_value \\ nil, opts \\ [])
@@ -1654,16 +1952,41 @@ defmodule Runic.Workflow do
     end
   end
 
+  @doc """
+  Returns `true` if the workflow has pending work (runnable or matchable nodes).
+
+  Use this in scheduler loops to determine when to stop processing.
+
+  ## Example
+
+      iex> require Runic
+      iex> alias Runic.Workflow
+      iex> workflow = Runic.workflow(steps: [Runic.step(fn x -> x * 2 end)])
+      iex> Workflow.is_runnable?(workflow)
+      false
+      iex> workflow = Workflow.plan_eagerly(workflow, 5)
+      iex> Workflow.is_runnable?(workflow)
+      true
+      iex> workflow = Workflow.react(workflow)
+      iex> Workflow.is_runnable?(workflow)
+      false
+  """
   @spec is_runnable?(Runic.Workflow.t()) :: boolean()
   def is_runnable?(%__MODULE__{graph: graph}) do
     not Enum.empty?(Graph.edges(graph, by: [:runnable, :matchable]))
   end
 
   @doc """
-  Returns a list of the next {node, fact} i.e "runnable" pairs ready for activation in the next cycle.
+  Returns a list of `{node, fact}` pairs ready for activation in the next cycle.
 
-  All Runnables returned are independent and can be run in parallel then fed back into the Workflow
-  without wait or delays to get the same results.
+  All runnables returned are independent and can be executed in parallel.
+  This is a low-level API for custom schedulers. For most use cases, prefer
+  `prepare_for_dispatch/1` which returns fully prepared `%Runnable{}` structs.
+
+  ## Example
+
+      runnables = Workflow.next_runnables(workflow)
+      # => [{%Step{name: :add}, %Fact{value: 5}}, ...]
   """
   def next_runnables(%__MODULE__{graph: graph}) do
     for %Graph.Edge{} = edge <- Graph.edges(graph, by: [:runnable, :matchable]) do
@@ -1870,12 +2193,9 @@ defmodule Runic.Workflow do
   end
 
   @doc """
-  Returns the causal depth of a fact, preferring ancestry-based computation.
+  Returns the causal depth of a fact by walking its ancestry chain.
 
-  This is the new API that replaces `causal_generation/2`. It computes depth
-  by walking the ancestry chain rather than relying on generation edge weights.
-
-  For facts without ancestry (root inputs), returns 0.
+  Alias for `ancestry_depth/2`. For facts without ancestry (root inputs), returns 0.
 
   ## Examples
 
@@ -2095,9 +2415,10 @@ defmodule Runic.Workflow do
   @doc """
   Serializes causal reactions as a Mermaid sequence diagram.
 
-  Shows how facts flow through steps and produce new facts.
+  Shows how facts flow through steps and produce new facts over time.
+  Best used after workflow execution to visualize the causal chain.
 
-  ## Examples
+  ## Example
 
       iex> workflow |> Workflow.plan_eagerly(input) |> Workflow.react() |> Workflow.to_mermaid_sequence()
       "sequenceDiagram\\n    ..."
@@ -2110,7 +2431,9 @@ defmodule Runic.Workflow do
   @doc """
   Serializes the workflow to DOT (Graphviz) format.
 
-  ## Examples
+  Returns a string that can be rendered with Graphviz tools.
+
+  ## Example
 
       iex> dot = Workflow.to_dot(workflow)
       iex> File.write!("workflow.dot", dot)
@@ -2123,9 +2446,10 @@ defmodule Runic.Workflow do
   @doc """
   Serializes the workflow to Cytoscape.js element JSON format.
 
-  Returns a list of node and edge elements compatible with Cytoscape.js.
+  Returns a list of node and edge elements compatible with Cytoscape.js
+  and Kino.Cytoscape in Livebook.
 
-  ## Examples
+  ## Example
 
       iex> elements = Workflow.to_cytoscape(workflow)
       iex> Kino.Cytoscape.new(elements)

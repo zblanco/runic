@@ -47,6 +47,9 @@ defmodule Runic.Workflow.Step do
 
   defp maybe_hash_work(%Step{work: _work, hash: _} = step), do: step
 
+  @doc """
+  Executes the work function of the Lambda step returning the raw unwrapped value.
+  """
   def run(%__MODULE__{} = step, input) when not is_struct(input, Fact) do
     Components.run(step.work, input)
   end

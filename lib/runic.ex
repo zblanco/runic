@@ -24,55 +24,101 @@ defmodule Runic do
   end
 
   @doc """
-  Creates a %Step{}: a basic lambda expression that can be added to a workflow.
+  Creates a `%Step{}`: a basic lambda expression that can be added to a workflow.
 
-  Steps are basic input -> output dataflow primatives that can be connected together in a workflow.
+  Steps are the fundamental building blocks of Runic workflows, representing
+  input → output transformations. Each step wraps a function and can be composed
+  with other steps to form data processing pipelines.
 
-  A Step implements the Runic.Workflow.Activation, and Runic.Workflow.Component protocols for evaluation in a workflow and composition
-  with other Runic components.
+  ## Basic Usage
 
-  ## Examples
+      iex> require Runic
+      iex> step = Runic.step(fn x -> x * 2 end)
+      iex> step.work.(5)
+      10
 
-  ```elixir
-  require Runic
-  import Runic
+  ## Arities
 
-  # Simple steps without captured variables
-  iex> simple_0_arity_step = step(fn -> 42 end)
-  iex> 1_arity_step = step(fn input -> input * 2 end)
-  iex> 2_arity_step = step(fn input1, input2 -> input1 + input2 end)
+  Steps support 0, 1, or 2-arity functions:
 
-  # Steps with captured variables (use ^)
-  iex> outer_value = 100
-  iex> step_with_binding = step(fn x -> x + ^outer_value end)
-  ```
+      iex> require Runic
+      iex> zero_arity = Runic.step(fn -> 42 end)
+      iex> zero_arity.work.()
+      42
 
-  Steps that accept more than 1 input are not evaluated unless the workflow is evaluating a list of inputs the same length as its arity.
+      iex> require Runic
+      iex> one_arity = Runic.step(fn x -> x + 1 end)
+      iex> one_arity.work.(10)
+      11
 
-  Steps can also be defined with Options in a keyword list so that it can be referenced by other components.
+      iex> require Runic
+      iex> two_arity = Runic.step(fn a, b -> a + b end)
+      iex> two_arity.work.(3, 4)
+      7
+
+  Note: 2-arity steps only execute when the workflow receives a 2-element list as input.
+
+  ## Captured Variables with `^`
+
+  Use the pin operator `^` to capture outer scope variables. This is essential for:
+  - Content-addressable hashing (each bound value produces unique hashes)
+  - Serialization with `build_log/1` and recovery with `from_log/1`
+  - Dynamic workflow construction at runtime
+
+      iex> require Runic
+      iex> multiplier = 3
+      iex> step = Runic.step(fn x -> x * ^multiplier end)
+      iex> step.closure.bindings[:multiplier]
+      3
+      iex> step.work.(10)
+      30
+
+  Without `^`, Elixir's normal closure mechanism captures the variable, but Runic
+  cannot track, hash, or serialize it - the workflow will fail after persistence.
+
+  ## Captured Functions
+
+  Steps can wrap module functions using capture syntax:
+
+      iex> require Runic
+      iex> step = Runic.step(&String.upcase/1)
+      iex> step.work.("hello")
+      "HELLO"
 
   ## Options
 
-  - `:name` - a name for the step that can be used to reference it in other components.
-  - `:work` - the work to be done by the step, can be a function, or a quoted expression.
+  - `:name` - An atom or string identifier for referencing this step in workflows
+  - `:work` - The function to execute (alternative to passing as first argument)
+  - `:inputs` - Reserved for future schema-based type compatibility
+  - `:outputs` - Reserved for future schema-based type compatibility
 
-  ```elixir
-  iex> named_step = step(
-    name: :my_named_step,
-    work: fn input -> input * 2 end
-  )
+      iex> require Runic
+      iex> step = Runic.step(fn x -> x * 2 end, name: :doubler)
+      iex> step.name
+      :doubler
 
-  iex> alternately_named_step(
-    fn input -> input * 2 end, name: :alternately_named_step
-  )
-  ```
+      iex> require Runic
+      iex> step = Runic.step(name: :tripler, work: fn x -> x * 3 end)
+      iex> step.name
+      :tripler
 
-  Steps can also be defined using captured functions:
+  ## In Workflows
 
-  ```elixir
-  iex> captured_step = step(&Enum.map/2)
-  > %Runic.Workflow.Step{...}
-  ```
+  Steps can be connected in pipelines using the workflow DSL:
+
+      iex> require Runic
+      iex> alias Runic.Workflow
+      iex> workflow = Runic.workflow(
+      ...>   name: "pipeline",
+      ...>   steps: [
+      ...>     {Runic.step(fn x -> x + 1 end, name: :add_one),
+      ...>      [Runic.step(fn x -> x * 2 end, name: :double)]}
+      ...>   ]
+      ...> )
+      iex> results = workflow |> Workflow.react_until_satisfied(5) |> Workflow.raw_productions()
+      iex> Enum.sort(results)
+      [6, 12]
+
   """
   defmacro step({:fn, _, _} = work) do
     source =
@@ -310,7 +356,36 @@ defmodule Runic do
   end
 
   @doc """
-  Creates a %Condition{}: a conditional expression that can be added to a workflow or used as the left hand side of a rule.
+  Creates a `%Condition{}`: a standalone conditional expression.
+
+  Conditions represent the left-hand side (predicate) of a rule. They can be
+  reused across multiple rules when the same condition is expensive or shared.
+
+  ## Basic Usage
+
+      iex> require Runic
+      iex> cond = Runic.condition(fn x -> x > 10 end)
+      iex> cond.work.(15)
+      true
+      iex> cond.work.(5)
+      false
+
+  ## With Module Function Capture
+
+      iex> require Runic
+      iex> cond = Runic.condition({Kernel, :is_integer, 1})
+      iex> cond.work.(42)
+      true
+
+  ## Use Cases
+
+  - **Expensive checks**: When a condition involves costly operations (e.g., API calls,
+    database queries), define it once and reference it in multiple rules
+  - **Stateful conditions**: Use `state_of/1` to create conditions that depend on
+    accumulator or state machine state
+  - **Reusability**: Share predicates across rules for consistency
+
+  Note: Conditions should be pure and deterministic - they should not execute side effects.
   """
   def condition(fun) when is_function(fun) do
     Condition.new(fun)
@@ -321,7 +396,30 @@ defmodule Runic do
   end
 
   @doc """
-  Invokes the Transmutable protocol of a component until it becomes a workflow.
+  Converts a Runic component into a `%Workflow{}` via the `Transmutable` protocol.
+
+  Components like steps, rules, state machines, etc. can be transmuted into
+  standalone workflows for evaluation or composition.
+
+  ## Examples
+
+      iex> require Runic
+      iex> step = Runic.step(fn x -> x * 2 end)
+      iex> workflow = Runic.transmute(step)
+      iex> workflow.__struct__
+      Runic.Workflow
+
+      iex> require Runic
+      iex> rule = Runic.rule(fn x when x > 0 -> :positive end)
+      iex> workflow = Runic.transmute(rule)
+      iex> workflow.__struct__
+      Runic.Workflow
+
+  ## Use Cases
+
+  - Preparing components for standalone evaluation
+  - Converting natural representations (e.g., a single rule) into evaluable workflows
+  - Composing heterogeneous components by first converting to workflows, then merging
   """
   def transmute(component) do
     component
@@ -333,92 +431,84 @@ defmodule Runic do
   defp do_transmute(component), do: transmute(component)
 
   @doc """
-  Define a Runic.Workflow with options.
+  Creates a `%Workflow{}` from component options.
 
-  Runic Workflows are made up of many components connected to eachother through dataflow semantics.
+  Workflows are directed acyclic graphs (DAGs) of steps, rules, and other components
+  connected through dataflow semantics. They enable lazy or eager evaluation and can
+  be composed, persisted, and distributed.
 
-  Runic Workflows can be made up of built in components like steps, rules, statemachines, and map or reduce operations.
+  ## Basic Usage
 
-  Runic Components can be combined together at runtime and evaluated in composition.
-
-  See the `Runic.Workflow` documentation to learn more about using workflows in detail.
+      iex> require Runic
+      iex> alias Runic.Workflow
+      iex> workflow = Runic.workflow(
+      ...>   name: :simple,
+      ...>   steps: [Runic.step(fn x -> x * 2 end)]
+      ...> )
+      iex> workflow |> Workflow.react_until_satisfied(5) |> Workflow.raw_productions()
+      [10]
 
   ## Options
 
-  - `:name` - a name for the workflow that can be used to reference it in other components.
-  - `:steps` - a list of steps to add to the workflow. Steps defined here may be nested using the pipeline syntax, a tree of tuples with the step and any child steps.
-  - `:rules` - a list of rules to add to the workflow.
-  - `:before_hooks` - a list of hooks to run before a named component is evaluated in the workflow. Meant for debugging or dynamic changes to the workflow.
-  - `:after_hooks` - a list of hooks to run after a named component is evaluated in the workflow. Meant for debugging or dynamic changes to the workflow.
+  - `:name` - Identifier for the workflow (atom or string)
+  - `:steps` - List of steps, with optional pipeline syntax for parent-child relationships
+  - `:rules` - List of conditional rules to add
+  - `:before_hooks` - Debug hooks called before step execution
+  - `:after_hooks` - Debug hooks called after step execution
 
-  ## Examples
+  ## Pipeline Syntax
 
-  ```elixir
-  require Runic
-  require Logger
-  import Runic
-  alias Runic.Workflow
+  Use tuples `{parent, [children]}` to define step dependencies:
 
-  simple_workflow = workflow(
-    name: :simple_workflow,
-    steps: [
-      step(fn -> 42 end),
-      step(fn input -> String.upcase(input) end)
-    ],
-    rules: [
-      rule(
-        condition: fn input -> input == :hello end,
-        reaction: fn input -> "Greeting: \#{input}" end
+      iex> require Runic
+      iex> alias Runic.Workflow
+      iex> pipeline = Runic.workflow(
+      ...>   name: :pipeline,
+      ...>   steps: [
+      ...>     {Runic.step(fn x -> x + 1 end, name: :add_one),
+      ...>      [Runic.step(fn x -> x * 2 end, name: :double),
+      ...>       Runic.step(fn x -> x * 3 end, name: :triple)]}
+      ...>   ]
+      ...> )
+      iex> results = pipeline |> Workflow.react_until_satisfied(5) |> Workflow.raw_productions()
+      iex> Enum.sort(results)
+      [6, 12, 18]
+
+  ## With Rules
+
+      iex> require Runic
+      iex> alias Runic.Workflow
+      iex> workflow = Runic.workflow(
+      ...>   name: :rule_example,
+      ...>   rules: [
+      ...>     Runic.rule(fn x when is_integer(x) and x > 10 -> :large end),
+      ...>     Runic.rule(fn x when is_integer(x) and x <= 10 -> :small end)
+      ...>   ]
+      ...> )
+      iex> workflow |> Workflow.plan_eagerly(15) |> Workflow.react_until_satisfied() |> Workflow.raw_productions()
+      [:large]
+
+  ## Hooks
+
+  Hooks receive `(step, workflow, fact)` and must return the workflow.
+  Use them for debugging, logging, or dynamic workflow modification:
+
+      require Runic
+      alias Runic.Workflow
+
+      Runic.workflow(
+        name: :with_hooks,
+        steps: [Runic.step(fn x -> x * 2 end, name: :double)],
+        after_hooks: [
+          double: [
+            fn _step, workflow, fact ->
+              IO.puts("Produced: \#{inspect(fact.value)}")
+              workflow
+            end
+          ]
+        ]
       )
-    ]
-  )
 
-  iex> simple_workflow |> Workflow.react_until_satisfied(:hello) |> Workflow.raw_reactions()
-  > [42, "HELLO", "Greeting: :hello"]
-
-  workflow_with_hooks = workflow(
-    name: :workflow_with_hooks,
-    steps: [
-      step(fn num -> 42 * num end, :times_42)
-    ],
-    before_hooks: [
-      times_42: [
-        fn step, wrk, input_fact ->
-          Logger.debug(\"""
-          Processing step: \#{step.name}
-          with input: \#{fact.value}
-          \""")
-
-          wrk
-        end
-      ]
-    ],
-    after_hooks: [
-      times_42: [
-        fn step, wrk, output_fact ->
-          Logger.debug(\"""
-          Step processed: \#{step.name}
-          produced output: \#{fact.value}
-          \""")
-
-          wrk
-        end
-      ]
-    ]
-  )
-
-  workflow_with_pipeline_of_steps = workflow(
-    name: :nested_pipeline_workflow,
-    steps: [
-      {step(fn num -> num * 2), [
-        {step(fn num -> num + 2), [
-          step(fn num -> num * 42)
-        ]},
-        step(fn num -> num + 1)
-      ]}
-    ]
-  )
-  ```
   """
   def workflow(opts \\ []) do
     name = opts[:name]
@@ -435,78 +525,112 @@ defmodule Runic do
   end
 
   @doc """
-  Rules are a way to define conditional reactions within a Runic workflow.
+  Creates a `%Rule{}`: a conditional reaction for pattern-matched execution.
 
-  Every rule has a left hand side that must match conditionally to execute the right hand side.
+  Rules have two phases: a **condition** (left-hand side) that must match,
+  and a **reaction** (right-hand side) that executes when matched. This
+  separation enables efficient evaluation of many rules together.
 
-  A rule is like an elixir function except it's condition may be evaluated separately from its block of code.
+  ## Basic Usage
 
-  Rules also differ in that they can be evaluated with many other rules and evaluated together in composition.
+      iex> require Runic
+      iex> alias Runic.Workflow.Rule
+      iex> rule = Runic.rule(fn x when is_integer(x) and x > 0 -> :positive end)
+      iex> Rule.check(rule, 5)
+      true
+      iex> Rule.check(rule, -1)
+      false
+      iex> Rule.run(rule, 5)
+      :positive
 
-  ## Examples
+  ## Guard Clauses
 
-  ```elixir
+  Rules support full Elixir guard expressions:
 
-  require Runic
-  import Runic
-  alias Runic.Workflow.Rule
+      iex> require Runic
+      iex> alias Runic.Workflow.Rule
+      iex> rule = Runic.rule(fn x when is_binary(x) and byte_size(x) > 5 -> :long_string end)
+      iex> Rule.check(rule, "hello!")
+      true
+      iex> Rule.check(rule, "hi")
+      false
 
-  anonymous_function_rule = rule(fn input when is_binary(input) -> :string_found end)
+  ## Pattern Matching
 
-  iex> Rule.check(anonymous_function_rule, "hello")
-  > true
+      iex> require Runic
+      iex> alias Runic.Workflow.Rule
+      iex> rule = Runic.rule(fn %{status: :pending} -> :process end)
+      iex> Rule.check(rule, %{status: :pending, id: 1})
+      true
+      iex> Rule.check(rule, %{status: :done})
+      false
 
-  iex> Rule.run(anonymous_function_rule, "hello")
-  > :string_found
-  ```
+  ## Separated Condition and Reaction
 
-  We can also define the condition and reaction separately.
+  For expensive conditions shared by multiple rules, or clearer organization:
 
-  This can be advantageous if more than one rule share the same condition and/or it is an expensive operation you don't
-  want to evaluate many times for a single input.
+      iex> require Runic
+      iex> alias Runic.Workflow.Rule
+      iex> rule = Runic.rule(
+      ...>   name: :expensive_check,
+      ...>   condition: fn x -> rem(x, 2) == 0 end,
+      ...>   reaction: fn x -> x * 2 end
+      ...> )
+      iex> Rule.check(rule, 4)
+      true
+      iex> Rule.run(rule, 4)
+      8
 
-  ```elixir
-  example_rule = rule(
-    condition: fn input -> ExpensiveAIModel.is_input_okay?(input) end,
-    reaction: fn input -> MyModule.do_thing(input) end
-  )
-  ```
+  Also supports `:if` / `:do` aliases:
 
-  You can also name the rule and define it with `if` and `do` options.
+      Runic.rule(
+        name: :my_rule,
+        if: fn x -> x > 10 end,
+        do: fn x -> :large end
+      )
 
-  ```elixir
-  example_rule = rule(
-    name: :example_rule,
-    if: fn input -> ExpensiveAIModel.is_input_okay?(input) end,
-    do: fn input -> MyModule.do_thing(input) end
-  )
-  ```
+  ## Multi-Arity Rules
 
-  ## Explicit DSL Syntax
+  Rules can require multiple inputs (provided as a list):
 
-  For more complex rules with meta-conditions, use the explicit given/where/then syntax:
+      iex> require Runic
+      iex> alias Runic.Workflow.Rule
+      iex> rule = Runic.rule(fn a, b when is_integer(a) and is_integer(b) -> a + b end)
+      iex> Rule.check(rule, [3, 4])
+      true
+      iex> Rule.run(rule, [3, 4])
+      7
 
-  ```elixir
-  rule do
-    given order: %{status: status, total: total}
-    where status == :pending and total > 100
-    then fn %{order: order} -> {:apply_discount, order} end
-  end
-  ```
+  ## In Workflows
 
-  Or with options:
+  Rules are evaluated in the planning/match phase before execution:
 
-  ```elixir
-  rule name: :discount_rule do
-    given order: %{status: status, total: total}
-    where status == :pending and total > 100
-    then fn %{order: order} -> {:apply_discount, order} end
-  end
-  ```
+      iex> require Runic
+      iex> alias Runic.Workflow
+      iex> workflow = Runic.workflow(
+      ...>   name: :classifier,
+      ...>   rules: [
+      ...>     Runic.rule(fn x when x > 100 -> :xlarge end, name: :xlarge),
+      ...>     Runic.rule(fn x when x > 10 and x <= 100 -> :large end, name: :large),
+      ...>     Runic.rule(fn x when x > 0 and x <= 10 -> :small end, name: :small)
+      ...>   ]
+      ...> )
+      iex> workflow |> Workflow.plan_eagerly(50) |> Workflow.react_until_satisfied() |> Workflow.raw_productions()
+      [:large]
 
-  Note: We use `where` instead of `when` because `when` is a special form in Elixir
-  that binds to the previous expression (used for guards), which would interfere
-  with the DSL parsing.
+  ## Given/Where/Then DSL
+
+  For complex rules with pattern destructuring, use the explicit DSL:
+
+      require Runic
+
+      Runic.rule do
+        given order: %{status: status, total: total}
+        where status == :pending and total > 100
+        then fn %{order: order} -> {:apply_discount, order} end
+      end
+
+  Note: Use `where` instead of `when` because `when` is a reserved Elixir keyword.
   """
   # Handle rule with do block containing given/when/then DSL
   defmacro rule(opts_or_block)
@@ -786,43 +910,82 @@ defmodule Runic do
   defp traverse_options(opts, _env), do: {opts, []}
 
   @doc """
-  Defines a statemachine that can be evaluated within a Runic workflow.
+  Creates a `%StateMachine{}`: stateful workflows with reducers and conditional reactors.
 
-  Runic state machines are a way to model stateful workflows with reducers that can conditionally accumulate state
-  and reactors to act on the new state.
+  State machines combine an accumulator with rules that react to state changes.
+  The reducer processes inputs in context of accumulated state, and reactors
+  conditionally execute based on the new state.
 
-  You can think of a reducer as a rule that evaluates the input in context of the last known state accumulated.
-  And reactors as rules that conditionally evaluate the new state returned by the reducer.
+  ## Basic Usage
 
-  ## Example
-  ```elixir
-  require Runic
-  import Runic
+      iex> require Runic
+      iex> alias Runic.Workflow
+      iex> counter = Runic.state_machine(
+      ...>   name: :counter,
+      ...>   init: 0,
+      ...>   reducer: fn x, acc -> acc + x end
+      ...> )
+      iex> workflow = Workflow.new() |> Workflow.add(counter)
+      iex> results = workflow |> Workflow.plan_eagerly(5) |> Workflow.react_until_satisfied() |> Workflow.raw_productions()
+      iex> Enum.sort(results)
+      [0, 5]
 
-  potato_lock =
-    Runic.state_machine(
-      name: "potato lock",
-      init: %{code: "potato", state: :locked, contents: "ham"},
-      reducer: fn
-        :lock, state ->
-          %{state | state: :locked}
+  ## Options
 
-        {:unlock, input_code}, %{code: code, state: :locked} = state
-        when input_code == code ->
-          %{state | state: :unlocked}
+  - `:name` - Identifier for the state machine (required for referencing)
+  - `:init` - Initial state (literal value, function, or `{M, F, A}` tuple)
+  - `:reducer` - Function `(input, state) -> new_state` for state transitions
+  - `:reactors` - List of rules that react to state changes
+  - `:inputs` / `:outputs` - Reserved for future schema-based type compatibility
 
-        {:unlock, _input_code}, %{state: :locked} = state ->
-          state
+  ## With Reactors
 
-        _input_code, %{state: :unlocked} = state ->
-          state
-      end,
-      reactors: [
-        fn %{state: :unlocked, contents: contents} -> contents end,
-        fn %{state: :locked} -> {:error, :locked} end
-      ]
-    )
-  ```
+  Reactors are rules that fire when the accumulated state matches their conditions:
+
+      require Runic
+      alias Runic.Workflow
+
+      threshold_sm = Runic.state_machine(
+        name: :threshold_monitor,
+        init: 0,
+        reducer: fn x, acc -> acc + x end,
+        reactors: [
+          fn state when state > 100 -> :threshold_exceeded end,
+          fn state when state > 50 -> :warning end
+        ]
+      )
+
+  ## Lock/Unlock Example
+
+      require Runic
+
+      lock = Runic.state_machine(
+        name: :lock,
+        init: %{code: "secret", state: :locked},
+        reducer: fn
+          :lock, state ->
+            %{state | state: :locked}
+          {:unlock, code}, %{code: code, state: :locked} = state ->
+            %{state | state: :unlocked}
+          _, state ->
+            state
+        end,
+        reactors: [
+          fn %{state: :unlocked} -> :access_granted end,
+          fn %{state: :locked} -> :access_denied end
+        ]
+      )
+
+  ## Captured Variables
+
+  Use `^` for runtime values in reducers and reactors:
+
+      multiplier = 2
+      Runic.state_machine(
+        name: :scaled_sum,
+        init: 0,
+        reducer: fn x, acc -> acc + x * ^multiplier end
+      )
   """
   defmacro state_machine(opts) do
     {rewritten_opts, opts_bindings} = traverse_options(opts, __CALLER__)
@@ -878,38 +1041,61 @@ defmodule Runic do
   end
 
   @doc """
-  map/1 applies the expression to each element in the enumerable.
+  Creates a `%Map{}`: applies a transformation to each element of an enumerable.
 
-  A map expression can be a function, a list, or a nested pipeline expression of steps.
+  Map operations fan-out an enumerable input into individual elements, apply
+  the transformation to each, and can be followed by a reduce to fan-in results.
 
-  The input fact to the map expression must implement the Enumerable protocol so that during workflow evaluation
-  the map expression can be applied to each element as a runnable.
+  ## Basic Usage
 
-  A Runic map expression must be inside a Runic workflow to be evaluated.
+      iex> require Runic
+      iex> alias Runic.Workflow
+      iex> map_op = Runic.map(fn x -> x * 2 end, name: :double)
+      iex> workflow = Workflow.new() |> Workflow.add(map_op)
+      iex> results = workflow |> Workflow.plan_eagerly([1, 2, 3]) |> Workflow.react_until_satisfied() |> Workflow.raw_productions()
+      iex> Enum.sort(results)
+      [2, 4, 6]
 
-  Internally a map expression is a FanOut step that splits the input enumerable into separate facts that are then processed by the map expression.
+  ## Options
 
-  The map function itself is within a step with a connection flowing from the FanOut step.
+  - `:name` - Identifier for referencing in `reduce/3` via `:map` option
+  - `:inputs` / `:outputs` - Reserved for future schema-based type compatibility
 
-  ## Examples
+  ## With Pipeline
 
-  ```elixir
-  Runic.map(fn x -> x * 2 end)
+  Map can contain nested pipelines:
 
-  Runic.map(
-    {Runic.step(fn num -> num * 2 end),
-    [
-      Runic.step(fn num -> num + 1 end),
-      Runic.step(fn num -> num + 4 end)
-    ]}
-  )
+      require Runic
 
-  Runic.map([
-    Runic.step(fn num -> num * 2 end),
-    Runic.step(fn num -> num + 1 end),
-    Runic.step(fn num -> num + 4 end)
-  ])
-  ```
+      Runic.map(
+        {Runic.step(fn x -> x * 2 end, name: :double),
+         [Runic.step(fn x -> x + 1 end, name: :add_one)]}
+      )
+
+  ## Map-Reduce Pattern
+
+  Connect a reduce to collect mapped results. The reduce's `:map` option links
+  it to the upstream map:
+
+      iex> require Runic
+      iex> alias Runic.Workflow
+      iex> map_op = Runic.map(fn x -> x * 2 end, name: :double)
+      iex> reduce_op = Runic.reduce(0, fn x, acc -> x + acc end, name: :sum, map: :double)
+      iex> workflow = Workflow.new()
+      ...>   |> Workflow.add(map_op)
+      ...>   |> Workflow.add(reduce_op, to: :double)
+      iex> results = workflow
+      ...>   |> Workflow.plan_eagerly([1, 2, 3])
+      ...>   |> Workflow.react_until_satisfied()
+      ...>   |> Workflow.raw_productions(:sum)
+      iex> 12 in results
+      true
+
+  ## How It Works
+
+  Internally, map uses a FanOut component that splits the enumerable into
+  individual facts. Each element is processed independently, enabling
+  parallel execution with the `:async` option on `react/2`.
   """
   defmacro map(expression, opts \\ []) do
     {rewritten_opts, opts_bindings} =
@@ -992,64 +1178,72 @@ defmodule Runic do
   end
 
   @doc """
-  Includes a reduce expression in a Runic workflow.
+  Creates a `%Reduce{}`: aggregates multiple facts into a single accumulated result.
 
-  Reducers are used to accumulate many facts into a single fact.
+  Reduce operations fan-in results from a map operation or process an enumerable
+  from a parent step. Unlike `accumulator/3` which processes single values
+  cumulatively, `reduce/3` aggregates over collections.
 
-  A reduce expression can aggregate a map expression or a fact produced by a parent step that implements the enumerable protocol.
+  ## Basic Usage
 
-  By default reduce/2 will behave like Enum.reduce/3 does in Elixir where it expects an enumerable and applies the reducer function to each element.
+  Like `Enum.reduce/3`, process an enumerable from a parent step:
 
-  ```elixir
-  require Runic
+      require Runic
+      alias Runic.Workflow
 
-  simple_reduce_workflow = Runic.workflow(steps: [
-    {Runic.step(fn -> 0..5 end), [
-      Runic.reduce(0, fn acc, x -> acc + x end)
-    ]}
-  ])
-  ```
+      workflow = Runic.workflow(
+        name: :sum_range,
+        steps: [
+          {Runic.step(fn -> [1, 2, 3, 4, 5] end, name: :generate),
+           [Runic.reduce(0, fn x, acc -> x + acc end, name: :sum)]}
+        ]
+      )
 
-  This is similar to the Elixir code using the Enum module:
+  ## Options
 
-  ```elixir
-  Enum.reduce(0..5, 0, fn x, acc -> acc + x end)
-  ```
+  - `:name` - Identifier for the reduce component
+  - `:map` - Name of an upstream map component for fan-in (lazy evaluation)
+  - `:inputs` / `:outputs` - Reserved for future schema-based type compatibility
 
-  However evaluating the reduce in a single runnable invokation with Runic may incur greater costs as it evaluates eagerly.
+  ## Map-Reduce Pattern (Lazy Evaluation)
 
-  When the `step` option is provided with the name of an existing map expression, the reduce expression will be applied to each element in the enumerable produced by its parent step
-  that was fanned out by the map expression.
+  When `:map` is specified, reduce waits for all mapped elements before aggregating.
+  This enables lazy/parallel execution of the map phase:
 
-  This allows lazy workflow evaluation where separate runnables are produced for each element in the enumerable.
+      iex> require Runic
+      iex> alias Runic.Workflow
+      iex> map_op = Runic.map(fn x -> x * 2 end, name: :double)
+      iex> reduce_op = Runic.reduce(0, fn x, acc -> x + acc end, name: :sum, map: :double)
+      iex> workflow = Workflow.new()
+      ...>   |> Workflow.add(map_op)
+      ...>   |> Workflow.add(reduce_op, to: :double)
+      iex> results = workflow
+      ...>   |> Workflow.plan_eagerly([1, 2, 3])
+      ...>   |> Workflow.react_until_satisfied()
+      ...>   |> Workflow.raw_productions(:sum)
+      iex> 12 in results
+      true
 
-  If the work to compute within a map or within each reduce is expensive it may be preferred to allow the workflow scheduler to
-  execute how it sees fit.
+  ## Nested Pipeline with Reduce
 
-  ```elixir
-  Runic.workflow(steps: [
-    {Runic.step(fn -> 0..5 end), [
-      Runic.map(fn x -> x * 2 end, name: :map),
-      Runic.reduce(0, fn x, acc -> acc + x end, step: :map)
-    ]}
-  ])
-  ```
+  Reduce can follow a pipeline after the map:
 
-  The reason for an explicit designation of a map expression is so that the map expression can define a pipeline the reduce can follow where the direct parent of the reduce may not be the same step as the map.
+      require Runic
 
-  ```elixir
-  Runic.workflow(steps: [
-    {Runic.step(fn -> 0..5 end), [
-      {Runic.map(fn x -> x * 2 end, name: :map), [
-        {Runic.step(fn x -> x + 1 end), [
-          Runic.reduce(0, fn x, acc -> acc + x end, step: :map)
-        ]}
-      ]}
-    ]}
-  ])
-  ```
+      Runic.workflow(
+        steps: [
+          {Runic.map(fn x -> x * 2 end, name: :double),
+           [{Runic.step(fn x -> x + 1 end, name: :add_one),
+             [Runic.reduce(0, fn x, acc -> x + acc end, name: :sum, map: :double)]}]}
+        ]
+      )
 
-  In this workflow the reduce will be applied to the output of the step that adds 1 to each element in the enumerable produced by the map expression where it multiplies each element by 2.
+  ## Important Notes
+
+  - Reduce operations are inherently sequential and cannot be parallelized
+    unless your reducer has CRDT (commutative) properties
+  - Without `:map`, reduce processes the enumerable eagerly in one invocation
+  - With `:map`, reduce waits for all fan-out elements before reducing
   """
   defmacro reduce(acc, reducer_fun, opts \\ []) do
     {rewritten_opts, opts_bindings} =
@@ -1134,23 +1328,56 @@ defmodule Runic do
 
   # Schema validation helpers
   @doc """
-  accumulator/2 creates an accumulator that reduces parent facts starting with the init value.
+  Creates an `%Accumulator{}`: maintains cumulative state across individual inputs.
 
-  An accumulator differs from reduce in that it only runs once per fact during invoke
-  and does not expect an enumerable or a fan-in/fan-out/map-reduce scenario.
+  Unlike `reduce/3` which aggregates over collections, accumulators process
+  single values and maintain running state across multiple workflow invocations.
+  This makes them ideal for running totals, counters, and stateful computations.
 
-  ## Examples
+  ## Basic Usage
 
-  ```elixir
-  require Runic
-  import Runic
+      iex> require Runic
+      iex> alias Runic.Workflow
+      iex> acc = Runic.accumulator(0, fn x, state -> state + x end, name: :running_sum)
+      iex> workflow = Workflow.new() |> Workflow.add(acc)
+      iex> results = workflow |> Workflow.plan_eagerly(5) |> Workflow.react_until_satisfied() |> Workflow.raw_productions()
+      iex> 5 in results
+      true
 
-  # Simple accumulator
-  acc = Runic.accumulator(0, fn x, acc -> x + acc end)
+  ## Options
 
-  # Named accumulator
-  acc = Runic.accumulator(0, fn x, acc -> x + acc end, name: "adder")
-  ```
+  - `:name` - Identifier for the accumulator (useful for referencing in rules)
+  - `:inputs` / `:outputs` - Reserved for future schema-based type compatibility
+
+  ## Difference from Reduce
+
+  | Accumulator | Reduce |
+  |-------------|--------|
+  | Single value per invocation | Aggregates over enumerables |
+  | State persists across invocations | One-shot aggregation |
+  | For running totals/counters | For map-reduce patterns |
+
+  ## Building State Machines
+
+  Connect rules to accumulators to create state-machine-like behavior:
+
+      require Runic
+      alias Runic.Workflow
+
+      counter = Runic.accumulator(0, fn x, acc -> acc + x end, name: :counter)
+      threshold_rule = Runic.rule(
+        condition: fn {state, _input} -> state > 100 end,
+        reaction: fn _ -> :threshold_exceeded end
+      )
+
+  ## Captured Variables
+
+      iex> require Runic
+      iex> alias Runic.Workflow
+      iex> multiplier = 2
+      iex> acc = Runic.accumulator(0, fn x, state -> state + x * ^multiplier end, name: :scaled_sum)
+      iex> acc.closure.bindings[:multiplier]
+      2
   """
   defmacro accumulator(init, reducer_fun, opts \\ []) do
     {rewritten_opts, opts_bindings} =

@@ -256,7 +256,13 @@ defmodule Runic.Workflow.Serializers.Mermaid do
     end)
   end
 
-  defp add_causal_sequence(lines, %Workflow{graph: graph}, causal_edges, _component_info, participants) do
+  defp add_causal_sequence(
+         lines,
+         %Workflow{graph: graph},
+         causal_edges,
+         _component_info,
+         participants
+       ) do
     participant_lookup =
       participants
       |> Enum.flat_map(fn %{id: parent_id, children: children} = p ->
@@ -270,7 +276,12 @@ defmodule Runic.Workflow.Serializers.Mermaid do
       |> Enum.sort_by(fn {cycle, _} -> cycle end)
 
     Enum.reduce(edges_by_cycle, lines, fn {cycle, edges}, acc ->
-      acc = acc ++ ["    rect rgb(40, 40, 60)", "        Note right of #{hd(participants).id}: Cycle #{cycle}"]
+      acc =
+        acc ++
+          [
+            "    rect rgb(40, 40, 60)",
+            "        Note right of #{hd(participants).id}: Cycle #{cycle}"
+          ]
 
       acc =
         Enum.reduce(edges, acc, fn %{v1: producer, v2: fact, label: label}, inner_acc ->

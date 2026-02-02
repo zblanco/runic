@@ -8,7 +8,53 @@ defmodule Runic.MixProject do
       elixir: "~> 1.18",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
-      aliases: aliases()
+      aliases: aliases(),
+
+      # Docs
+      name: "Runic",
+      source_url: "https://github.com/zblanco/runic",
+      docs: docs()
+    ]
+  end
+
+  defp docs do
+    [
+      main: "readme",
+      extras: [
+        "README.md",
+        "guides/cheatsheet.md",
+        "guides/usage-rules.md"
+      ],
+      groups_for_extras: [
+        Guides: ~r/guides\/.*/
+      ],
+      groups_for_modules: [
+        Core: [Runic, Runic.Workflow],
+        Components: [
+          Runic.Workflow.Step,
+          Runic.Workflow.Rule,
+          Runic.Workflow.Condition,
+          Runic.Workflow.StateMachine,
+          Runic.Workflow.Accumulator,
+          Runic.Workflow.Map,
+          Runic.Workflow.Reduce,
+          Runic.Workflow.Join
+        ],
+        Protocols: [
+          Runic.Workflow.Invokable,
+          Runic.Component,
+          Runic.Transmutable
+        ],
+        Internal: [
+          Runic.Workflow.Fact,
+          Runic.Workflow.FanOut,
+          Runic.Workflow.FanIn,
+          Runic.Workflow.Runnable,
+          Runic.Workflow.Components,
+          Runic.Closure,
+          Runic.ClosureMetadata
+        ]
+      ]
     ]
   end
 
@@ -25,6 +71,7 @@ defmodule Runic.MixProject do
       {:uniq, "~> 0.6.1"},
       {:libgraph,
        git: "https://github.com/zblanco/libgraph.git", branch: "zw/multigraph-indexes"},
+      {:ex_doc, "~> 0.34", only: :dev, runtime: false},
       {:tidewave, "~> 0.4", only: :dev},
       {:bandit, "~> 1.0", only: :dev},
       {:benchee, "~> 1.3", only: :dev}

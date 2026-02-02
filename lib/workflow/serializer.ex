@@ -142,6 +142,7 @@ defmodule Runic.Workflow.Serializer do
   Escapes special characters for Mermaid labels.
   """
   def escape_label(label) when is_atom(label), do: escape_label(to_string(label))
+
   def escape_label(label) when is_binary(label) do
     label
     |> String.replace("\"", "'")
@@ -155,6 +156,7 @@ defmodule Runic.Workflow.Serializer do
     |> String.replace("#", "♯")
     |> String.slice(0, 60)
   end
+
   def escape_label(other), do: escape_label(inspect(other))
 
   @doc """

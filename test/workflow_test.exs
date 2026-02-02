@@ -1,5 +1,24 @@
 defmodule WorkflowTest do
   use ExUnit.Case
+
+  # Exclude functions with illustrative examples that reference undefined variables
+  doctest Runic.Workflow,
+    except: [
+      ancestry_depth: 2,
+      causal_depth: 2,
+      root_ancestor_hash: 2,
+      to_mermaid: 1,
+      to_mermaid: 2,
+      to_mermaid_sequence: 1,
+      to_mermaid_sequence: 2,
+      to_dot: 1,
+      to_dot: 2,
+      to_cytoscape: 1,
+      to_cytoscape: 2,
+      to_edgelist: 1,
+      to_edgelist: 2
+    ]
+
   require Runic
 
   alias Runic.Workflow

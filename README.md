@@ -159,10 +159,33 @@ text_processing_workflow
 
 Beyond steps, Runic has support for Rules, Joins, and State Machines for more complex control flow and stateful evaluation.
 
-The Runic.Workflow.Invokable protocol is what allows for extension of Runic and composability
-  of structures like Workflows, Steps, Rules, and Accumulators by allowing user defined structures to be integrated into a `Runic.Workflow`.
+The `Runic.Workflow.Invokable` protocol is what allows for extension of Runic and composability
+of structures like Workflows, Steps, Rules, and Accumulators by allowing user defined structures to be integrated into a `Runic.Workflow`.
 
-See the Runic.Workflow module for more information about evaluation APIs.
+## Workflow Composition
+
+Workflows can be composed dynamically at runtime:
+
+```elixir
+require Runic
+alias Runic.Workflow
+
+# Using Workflow.add/3 for dynamic composition
+workflow = Runic.workflow()
+  |> Workflow.add(Runic.step(fn x -> x + 1 end, name: :add))
+  |> Workflow.add(Runic.step(fn x -> x * 2 end, name: :double), to: :add)
+
+# Merge two workflows together
+workflow1 = Runic.workflow(steps: [Runic.step(fn x -> x + 1 end)])
+workflow2 = Runic.workflow(steps: [Runic.step(fn x -> x * 2 end)])
+combined = Workflow.merge(workflow1, workflow2)
+
+# Join multiple parent nodes
+workflow = workflow
+  |> Workflow.add(Runic.step(fn a, b -> a + b end, name: :join), to: [:branch_a, :branch_b])
+```
+
+See `Runic.Workflow` module documentation for comprehensive API coverage.
 
 ## Three-Phase Execution Model
 
@@ -195,27 +218,41 @@ defmodule MyApp.WorkflowScheduler do
   alias Runic.Workflow
   alias Runic.Workflow.Invokable
 
+# Phase 1: Prepare runnables for dispatch
   def handle_cast({:run, input}, %{workflow: workflow} = state) do
-    # Phase 1: Prepare runnables for dispatch
-    workflow = Workflow.plan_eagerly(workflow, input)
+    workflow = 
+      workflow
+      |> Workflow.plan_eagerly(input)
+      |> dispatch_tasks()
+
+    {:noreply, %{state | workflow: workflow}}
+  end
+
+  # Phase 2: Execute (dispatch to async worker pool, queue, external service, etc.)
+  defp dispatch_tasks(workflow) do
     {workflow, runnables} = Workflow.prepare_for_dispatch(workflow)
 
-    # Phase 2: Execute (dispatch to worker pool, external service, etc.)
-    executed =
-      Task.async_stream(runnables, fn runnable ->
+    Enum.map(runnables, fn runnable -> 
+      Task.async(fn ->
+        # consider logging, error handling, retries here
         Invokable.execute(runnable.node, runnable)
-      end, timeout: :infinity)
+      end)
+    end)
 
-    # Phase 3: Apply results back to workflow
-    workflow =
+    workflow
+  end
+
+  # Phase 3: Apply results back to workflow by handling async task callbacks with excecuted runnable
+  def handle_info({ref, executed_runnable}, %{workflow: workflow} = state) do
+    new_workflow =
       Enum.reduce(executed, workflow, fn {:ok, runnable}, wrk ->
         Workflow.apply_runnable(wrk, runnable)
       end)
 
-    # Continue if more work is available
-    if Workflow.is_runnable?(workflow) do
-      GenServer.cast(self(), :continue)
-    end
+    workflow = 
+      if Workflow.is_runnable?(new_workflow) do
+        dispatch_tasks(workflow)
+      end
 
     {:noreply, %{state | workflow: workflow}}
   end
@@ -228,10 +265,13 @@ Key APIs for external scheduling:
 - `Workflow.apply_runnable/2` - Applies a completed runnable back to the workflow
 - `Invokable.execute/2` - Executes a runnable in isolation (no workflow access)
 
-This top level module provides high level functions and macros for building Runic Components
+
+In summary, the `Runic` module provides high level functions and macros for building Runic Components
   such as Steps, Rules, Workflows, and Accumulators.
 
-Runic was designed to be used with custom process topologies and/or libraries such as GenStage, Broadway, and Flow.
+The `Runic.Workflow` module is for connecting components together and running them with inputs.
+
+Runic was designed to be used with custom process topologies and/or libraries such as GenStage, Broadway, and Flow without coupling you to one runtime model or a limited set of adapters.
 
 Runic is meant for dynamic runtime modification of a workflow where you might want to compose pieces of a workflow together at runtime.
 
@@ -241,6 +281,13 @@ These sorts of use cases are common in expert systems, user DSLs (e.g. Excel, lo
 If the runtime modification of a workflow or complex parallel dataflow evaluation isn't something your use case requires you might not need Runic and vanilla compiled Elixir code will be faster and simpler.
 
 Runic Workflows are essentially a dataflow based virtual machine running within Elixir and will not be faster than compiled Elixir code.
+
+## Guides
+
+For quick reference and best practices:
+
+- [**Cheatsheet**](guides/cheatsheet.md) - Quick reference for all core APIs
+- [**Usage Rules**](guides/usage-rules.md) - Core concepts, do's/don'ts, and patterns
 
 ## Installation
 

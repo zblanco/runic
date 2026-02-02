@@ -176,9 +176,10 @@ defmodule SerializerTest do
 
       elements = Workflow.to_cytoscape(wrk)
 
-      node = Enum.find(elements, fn el ->
-        el[:data][:name] == "my_step"
-      end)
+      node =
+        Enum.find(elements, fn el ->
+          el[:data][:name] == "my_step"
+        end)
 
       assert node != nil
       assert node.data[:id] != nil
@@ -191,16 +192,16 @@ defmodule SerializerTest do
         Runic.workflow(
           name: "test",
           steps: [
-            {Runic.step(fn x -> x end, name: :parent),
-             [Runic.step(fn x -> x end, name: :child)]}
+            {Runic.step(fn x -> x end, name: :parent), [Runic.step(fn x -> x end, name: :child)]}
           ]
         )
 
       elements = Workflow.to_cytoscape(wrk)
 
-      edge = Enum.find(elements, fn el ->
-        el[:data][:label] == "flow"
-      end)
+      edge =
+        Enum.find(elements, fn el ->
+          el[:data][:label] == "flow"
+        end)
 
       assert edge != nil
       assert edge.data[:source] != nil
@@ -214,8 +215,7 @@ defmodule SerializerTest do
         Runic.workflow(
           name: "edgelist test",
           steps: [
-            {Runic.step(fn x -> x end, name: :a),
-             [Runic.step(fn x -> x end, name: :b)]}
+            {Runic.step(fn x -> x end, name: :a), [Runic.step(fn x -> x end, name: :b)]}
           ]
         )
 
@@ -226,12 +226,12 @@ defmodule SerializerTest do
 
       # Should contain root -> a and a -> b edges
       assert Enum.any?(edges, fn {from, to, label} ->
-        from == :root and to == :a and label == :flow
-      end)
+               from == :root and to == :a and label == :flow
+             end)
 
       assert Enum.any?(edges, fn {from, to, label} ->
-        from == :a and to == :b and label == :flow
-      end)
+               from == :a and to == :b and label == :flow
+             end)
     end
 
     test "returns string format when requested" do
