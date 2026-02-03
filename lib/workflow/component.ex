@@ -1,6 +1,108 @@
 defprotocol Runic.Component do
   @moduledoc """
-  Protocol defining common behaviour of Runic components such as reflection, sub components or how the can be composed with others.
+  Protocol defining how Runic components compose together and connect within workflows.
+
+  The `Component` protocol supports extension of modeling new component types that can be
+  added and connected with other components in Runic workflows. It provides introspection
+  capabilities for components (sub-components, inputs, outputs) and connection semantics
+  for workflow composition.
+
+  ## Protocol Functions
+
+  | Function | Purpose |
+  |----------|---------|
+  | `components/1` | List all connectable sub-components of a component |
+  | `connectables/2` | List compatible sub-components with another component |
+  | `connectable?/2` | Check if a component can be connected to another |
+  | `connect/3` | Connect this component to a parent in a workflow |
+  | `source/1` | Returns the source AST for building/serializing the component |
+  | `hash/1` | Returns the content-addressable hash of the component |
+  | `inputs/1` | Returns the nimble_options schema for component inputs |
+  | `outputs/1` | Returns the nimble_options schema for component outputs |
+
+  ## Built-in Implementations
+
+  | Component Type | Description |
+  |----------------|-------------|
+  | `Runic.Workflow.Step` | Single transformation function |
+  | `Runic.Workflow.Rule` | Conditional logic with condition and reaction |
+  | `Runic.Workflow.Map` | Fan-out transformation over enumerables |
+  | `Runic.Workflow.Reduce` | Fan-in aggregation |
+  | `Runic.Workflow.Accumulator` | Stateful reducer across invocations |
+  | `Runic.Workflow.StateMachine` | Stateful reducer with reactive conditions |
+  | `Runic.Workflow` | Workflows themselves are components |
+  | `Tuple` | Pipeline syntax `{parent, [children]}` |
+
+  ## Type Compatibility
+
+  The `Component` protocol includes type compatibility checking via the
+  `Runic.Component.TypeCompatibility` helper module. This enables schema-based
+  validation when connecting components:
+
+      # Type compatibility checks
+      TypeCompatibility.types_compatible?(:any, :integer)  # => true
+      TypeCompatibility.types_compatible?(:string, :integer)  # => false
+
+      # Schema compatibility for connecting components
+      producer_outputs = [step: [type: {:list, :integer}]]
+      consumer_inputs = [step: [type: {:list, :any}]]
+      TypeCompatibility.schemas_compatible?(producer_outputs, consumer_inputs)  # => true
+
+  ## Usage
+
+      require Runic
+
+      step = Runic.step(fn x -> x * 2 end, name: :double)
+      rule = Runic.rule(fn x when x > 10 -> :large end, name: :classify)
+
+      # Introspection
+      Runic.Component.hash(step)  # => content-addressable hash
+      Runic.Component.source(step)  # => AST representation
+      Runic.Component.components(step)  # => [step: step]
+
+      # Compatibility checking
+      Runic.Component.connectable?(step, rule)  # => true
+
+      # Connection (typically done via Workflow.add/3)
+      workflow = Runic.Workflow.new()
+        |> Runic.Workflow.add(step)
+        |> Runic.Workflow.add(rule, to: :double)
+
+  ## Implementing Custom Component
+
+      defmodule MyApp.CustomComponent do
+        defstruct [:hash, :name, :config]
+      end
+
+      defimpl Runic.Component, for: MyApp.CustomComponent do
+        alias Runic.Workflow
+
+        def components(component), do: [{component.name, component}]
+
+        def connectables(component, _other), do: components(component)
+
+        def connectable?(_component, _other), do: true
+
+        def connect(component, to, workflow) do
+          workflow
+          |> Workflow.add_step(to, some_internal_step(component))
+          |> Workflow.register_component(component)
+        end
+
+        def source(component) do
+          quote do
+            MyApp.CustomComponent.new(name: unquote(component.name))
+          end
+        end
+
+        def hash(component), do: component.hash
+
+        def inputs(_component), do: [custom: [type: :any, doc: "Input value"]]
+
+        def outputs(_component), do: [custom: [type: :any, doc: "Output value"]]
+      end
+
+  See the [Protocols Guide](protocols.html) for more details and examples.
   """
 
   # @doc """

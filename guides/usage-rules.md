@@ -38,10 +38,10 @@ Runic workflows are **data structures** (decorated directed acyclic graphs) that
 
 | Scenario | Better Alternative |
 |----------|-------------------|
-| **Static, known-at-compile-time logic** | Plain compiled Elixir functions and pattern matching will be faster|
+| **Static, known-at-compile-time logic** | Plain compiled Elixir functions and pattern matching will be faster |
 | **Simple linear pipelines** | Elixir's `|>` operator |
-| **High-performance hot paths** | Compiled Elixir code (Runic has runtime overhead) |
-| **Simple async tasks** | `Task.async/await` or `Task.async_stream` |
+| **High-performance hot paths** | Compiled Elixir code (Runic has runtime overhead) | 
+| **Simple async tasks** | `Task.async/await` or `Task.async_stream` | 
 | **Message passing** | GenServer, GenStage, Broadway |
 
 > **Rule of thumb**: If your workflow structure is known at compile time, doesn't need parallel dataflow execution, and won't change, use vanilla Elixir. Runic adds value when workflows are built or modified at runtime and dataflow parallelism is inherent.

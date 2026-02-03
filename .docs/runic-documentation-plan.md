@@ -45,10 +45,12 @@ This document outlines a comprehensive documentation improvement plan for Runic,
 - [x] Workflow composition APIs - `merge/2`, `add/3` docs with doctests
 - [x] Introspection APIs - `get_component/2`, `steps/1`, `conditions/1`, `is_runnable?/1`, `next_runnables/1`, `next_steps/2` all documented with examples
 
-### 🔲 Phase 4: Protocol Docs (PENDING)
-- [ ] Invokable protocol
-- [ ] Component protocol
-- [ ] Transmutable protocol
+### ✅ Phase 4: Protocol Docs (COMPLETED)
+- [x] Invokable protocol - Comprehensive moduledoc with three-phase execution model, built-in implementations table, external scheduler integration examples, custom implementation guide
+- [x] Component protocol - Comprehensive moduledoc with protocol functions table, built-in implementations, type compatibility, usage examples, custom implementation guide
+- [x] Transmutable protocol - Comprehensive moduledoc with built-in implementations table, usage examples, Workflow.merge integration, custom implementation guide
+- [x] Created `guides/protocols.md` - Consolidated guide covering all three protocols with diagrams, examples, and when-to-use guidance
+- [x] Added protocols guide to ExDoc extras in `mix.exs`
 
 ### 🔲 Phase 5: Guides (PENDING)
 - [ ] Scheduler GenServer guide

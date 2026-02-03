@@ -4,9 +4,9 @@
 
 Runic is a tool for modeling your workflows as data that can be composed together at runtime.
 
-Runic components can be integrated into a Runic.Workflow and evaluated lazily in concurrent contexts.
+Runic components connect together in a `Runic.Workflow` supporting lazily evaluated concurrent execution.
 
-Runic Workflows are a decorated dataflow graph (a DAG - "directed acyclic graph") capable of modeling rules, pipelines, and state machines and more.
+Runic Workflows are a decorated dataflow graph (a DAG - "directed acyclic graph") capable of modeling pipelines of steps, rules, pipelines, and state machines and more.
 
 Basic data flow dependencies such as in a pipeline are modeled as `%Step{}` structs (nodes/vertices) in the graph with directed edges (arrows) between steps.
 
@@ -18,7 +18,7 @@ require Runic
 step = Runic.step(fn x -> x + 1 end)
 ```
 
-And since steps are composable, you can integrate them together in a workflow:
+Steps are composable in a workflow:
 
 ```elixir
 workflow = Runic.workflow(
@@ -31,16 +31,16 @@ workflow = Runic.workflow(
 )
 ```
 
-This produces a workflow graph like the following where R is the entrypoint or "root" of the tree:
+This produces a workflow graph where R is the entrypoint or "root" of the tree:
 
 ```mermaid
-  graph TD;
-      R-->A;
-      R-->B;
-      R-->C;
+graph TD;
+    R-->A;
+    R-->B;
+    R-->C;
 ```
 
-In Runic, inputs fed through a workflow are called "Facts". During workflow evaluation various steps are traversed to and invoked producing more Facts.
+In Runic, inputs flow through a workflow as a `%Fact{}`. During workflow evaluation various steps are traversed to and invoked producing more Facts.
 
 ```elixir
 alias Runic.Workflow
@@ -52,7 +52,7 @@ workflow
 [3, 4, 1]
 ```
 
-However we can go further with this dataflow idea and make pipelines with Runic that aren't just linear. We'll start by defining some functions. 
+A core benefit Runic workflows are modeling pipelines that aren't just linear. For example:
 
 ```elixir
 defmodule TextProcessing do
@@ -83,7 +83,7 @@ defmodule TextProcessing do
 end
 ```
 
-Notice we have 3 functions that expect a `list_of_words`. In Elixir if we wanted to evaluate each output we can pipe them together the `|>` expression...
+Notice we have 3 functions that expect a `list_of_words`. In Elixir if we wanted to evaluate each output we can pipe them together the pipeline `|>` operator...
 
 ```elixir
 import TextProcessing
@@ -104,9 +104,9 @@ last_word =
   |> last_word()
 ```
 
-However in evaluating these linearly we've used the common `tokenize/1` function 3 times for the same input text.
+However we're now evaluating linearly: using the common `tokenize/1` function 3 times for the same input text.
 
-This could be problematic if `tokenize/1` is expensive - we'd prefer to run it just once and then fed into the rest of our pipeline.
+This could be problematic if `tokenize/1` is expensive - we'd prefer to run `tokenize/1` just once and then fed into the rest of our pipeline.
 
 With Runic we can compose all of these steps into one workflow and evaluate them together.
 
@@ -131,12 +131,12 @@ text_processing_workflow =
 Our text processing workflow graph now looks something like this:
 
 ```mermaid
-  graph TD;
-      R-->tokenize;
-      tokenize-->first_word;
-      tokenize-->last_word;
-      tokenize-->count_words;
-      count_words-->count_uniques;
+graph TD;
+    R-->tokenize;
+    tokenize-->first_word;
+    tokenize-->last_word;
+    tokenize-->count_words;
+    count_words-->count_uniques;
 ```
 
 Now Runic can traverse over the graph of dataflow connections only evaluating `tokenize/1` once for all three dependent steps.
@@ -159,10 +159,11 @@ text_processing_workflow
 
 Beyond steps, Runic has support for Rules, Joins, and State Machines for more complex control flow and stateful evaluation.
 
-The `Runic.Workflow.Invokable` protocol is what allows for extension of Runic and composability
-of structures like Workflows, Steps, Rules, and Accumulators by allowing user defined structures to be integrated into a `Runic.Workflow`.
+The `Runic.Workflow.Invokable` protocol is what allows for extension of Runic's runtime supporting nodes with different execution properties and evaluation. 
 
-## Workflow Composition
+The `Runic.Component` protocol supports extension of modeling new components that can be added and connected with other components in Runic workflows.
+
+## Runtime Workflow Composition
 
 Workflows can be composed dynamically at runtime:
 
@@ -185,15 +186,15 @@ workflow = workflow
   |> Workflow.add(Runic.step(fn a, b -> a + b end, name: :join), to: [:branch_a, :branch_b])
 ```
 
-See `Runic.Workflow` module documentation for comprehensive API coverage.
+See `Runic.Workflow` module documentation for adding components to workflows and running them.
 
 ## Three-Phase Execution Model
 
-Runic supports a three-phase execution model designed for parallel execution and external scheduling:
+Runic's Invokable protocol enforces a three-phase execution model designed for parallel execution and external scheduling:
 
 1. **Prepare** - Extract minimal context from the workflow into `%Runnable{}` structs
-2. **Execute** - Run node work functions in isolation (can be parallelized)
-3. **Apply** - Reduce results back into the workflow
+2. **Execute** - Run runnables containing work functions and their inputs in isolation (can be parallelized)
+3. **Apply** - Reduce results back into the workflow so next steps can be determined
 
 ### Parallel Execution
 
@@ -204,7 +205,7 @@ alias Runic.Workflow
 
 # Execute runnables in parallel with configurable concurrency
 workflow
-|> Workflow.react_until_satisfied_parallel(input, max_concurrency: 8)
+|> Workflow.react_until_satisfied_parallel(input, max_concurrency: 8) # Task.async_stream options
 |> Workflow.raw_productions()
 ```
 
@@ -265,22 +266,20 @@ Key APIs for external scheduling:
 - `Workflow.apply_runnable/2` - Applies a completed runnable back to the workflow
 - `Invokable.execute/2` - Executes a runnable in isolation (no workflow access)
 
-
 In summary, the `Runic` module provides high level functions and macros for building Runic Components
   such as Steps, Rules, Workflows, and Accumulators.
 
 The `Runic.Workflow` module is for connecting components together and running them with inputs.
 
-Runic was designed to be used with custom process topologies and/or libraries such as GenStage, Broadway, and Flow without coupling you to one runtime model or a limited set of adapters.
+Runic was designed to be used with custom process topologies and libraries such as GenStage, Broadway, and Flow without coupling you to one runtime model or a limited set of adapters.
 
-Runic is meant for dynamic runtime modification of a workflow where you might want to compose pieces of a workflow together at runtime.
+Runic has first class support for dynamic runtime composition of workflows.
 
-These sorts of use cases are common in expert systems, user DSLs (e.g. Excel, low-code tools) where a developer cannot know
-  upfront the logic or data flow to be expressed in compiled code.
+Runic is useful in problems where a developer cannot know upfront the logic or data flow in compiled code  such as expert systems, user DSLs like Excel spreadsheets, low/no-code tools, or dynamic data pipelines.
 
-If the runtime modification of a workflow or complex parallel dataflow evaluation isn't something your use case requires you might not need Runic and vanilla compiled Elixir code will be faster and simpler.
+If the runtime modification of a workflow or complex parallel dataflow evaluation isn't something your use case requires you might not need Runic.
 
-Runic Workflows are essentially a dataflow based virtual machine running within Elixir and will not be faster than compiled Elixir code.
+Runic Workflows are essentially a dataflow based virtual machine running within Elixir and will not be faster than compiled Elixir code. If you know the flow of the program upfront during development you might not need Runic.
 
 ## Guides
 
@@ -288,6 +287,7 @@ For quick reference and best practices:
 
 - [**Cheatsheet**](guides/cheatsheet.md) - Quick reference for all core APIs
 - [**Usage Rules**](guides/usage-rules.md) - Core concepts, do's/don'ts, and patterns
+- [**Protocols**](guides/protocols.md) - Extending Runic with custom components and execution behavior
 
 ## Installation
 

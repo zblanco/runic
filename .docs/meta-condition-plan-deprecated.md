@@ -1,4 +1,4 @@
-# Meta-Condition Implementation Plan
+# Meta-Condition Implementation Plan (DEPRECATED DO NOT REFERENCE)
 
 ## Executive Summary
 

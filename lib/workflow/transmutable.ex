@@ -1,7 +1,98 @@
 defprotocol Runic.Transmutable do
   @moduledoc """
-  The Transmutable protocol is implemented by datastructures which know how to become a Runic Workflow
-    or Component through transformations.
+  Protocol for converting data structures into Runic workflows or components.
+
+  The `Transmutable` protocol enables natural integration of domain-specific data structures
+  into Runic workflows. Any data type that implements this protocol can be converted to a
+  `%Runic.Workflow{}` or a Runic component (Step, Rule, etc.).
+
+  ## Protocol Functions
+
+  | Function | Purpose |
+  |----------|---------|
+  | `transmute/1` | *Deprecated* - use `to_workflow/1` instead |
+  | `to_workflow/1` | Converts data to a `%Runic.Workflow{}` |
+  | `to_component/1` | Converts data to a Runic component (Step, Rule, etc.) |
+
+  ## Built-in Implementations
+
+  | Type | `to_workflow/1` Behavior | `to_component/1` Behavior |
+  |------|-------------------------|--------------------------|
+  | `Runic.Workflow` | Returns itself | Extracts first component or raises |
+  | `Runic.Workflow.Rule` | Wraps rule in workflow | Returns the rule |
+  | `Runic.Workflow.Step` | Wraps step in workflow | Returns the step |
+  | `Runic.Workflow.StateMachine` | Wraps FSM in workflow | Returns the FSM |
+  | `Function` | Creates workflow with function as step | Creates Step wrapping the function |
+  | `List` | Merges transmuted elements | Recursively converts elements |
+  | `Tuple` (AST) | Creates Rule from quoted function | Creates Rule from AST |
+  | `Any` | Creates workflow with constant step | Creates Step returning the value |
+
+  ## Usage
+
+      require Runic
+      alias Runic.Transmutable
+
+      # Convert a function to workflow
+      fn_workflow = Transmutable.to_workflow(fn x -> x * 2 end)
+
+      # Convert a rule to workflow
+      rule = Runic.rule(fn x when x > 0 -> :positive end)
+      rule_workflow = Transmutable.to_workflow(rule)
+
+      # Convert a list of components to merged workflow
+      components = [
+        Runic.step(fn x -> x + 1 end),
+        Runic.step(fn x -> x * 2 end)
+      ]
+      merged_workflow = Transmutable.to_workflow(components)
+
+      # Use the Runic.transmute/1 macro for convenient conversion
+      workflow = Runic.transmute(fn x -> x * 2 end)
+
+  ## Integration with Workflow.merge/2
+
+  The `Transmutable` protocol integrates with `Workflow.merge/2`:
+
+      workflow = Runic.Workflow.new()
+
+      # Merge a rule (transmuted to workflow first)
+      rule = Runic.rule(fn x when x > 0 -> :positive end)
+      workflow = Workflow.merge(workflow, rule)
+
+      # Merge a function directly
+      workflow = Workflow.merge(workflow, fn x -> x * 2 end)
+
+  ## Implementing Custom Transmutable
+
+      defmodule MyApp.DataProcessor do
+        defstruct [:name, :transform_fn]
+      end
+
+      defimpl Runic.Transmutable, for: MyApp.DataProcessor do
+        alias Runic.Workflow
+
+        def transmute(processor), do: to_workflow(processor)
+
+        def to_workflow(%MyApp.DataProcessor{} = processor) do
+          step = Runic.Workflow.Step.new(
+            work: processor.transform_fn,
+            name: processor.name
+          )
+
+          Workflow.new(name: processor.name)
+          |> Workflow.add_step(step)
+          |> Map.put(:components, %{processor.name => processor})
+        end
+
+        def to_component(%MyApp.DataProcessor{} = processor) do
+          Runic.Workflow.Step.new(
+            work: processor.transform_fn,
+            name: processor.name
+          )
+        end
+      end
+
+  See the [Protocols Guide](protocols.html) for more details and examples.
   """
   @fallback_to_any true
 

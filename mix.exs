@@ -23,7 +23,8 @@ defmodule Runic.MixProject do
       extras: [
         "README.md",
         "guides/cheatsheet.md",
-        "guides/usage-rules.md"
+        "guides/usage-rules.md",
+        "guides/protocols.md"
       ],
       groups_for_extras: [
         Guides: ~r/guides\/.*/

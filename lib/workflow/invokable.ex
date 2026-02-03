@@ -1,25 +1,48 @@
 defprotocol Runic.Workflow.Invokable do
   @moduledoc """
-  Protocol enforcing how an operation/step/node within a workflow can always be activated in context of a workflow.
+  Protocol defining how workflow nodes execute within a workflow context.
+
+  The `Invokable` protocol is the runtime heart of Runic. It defines how each node type
+  (Step, Condition, Rule, Accumulator, etc.) executes within the context of a workflow,
+  enabling extension of Runic's runtime with nodes that have different execution properties
+  and evaluation semantics.
 
   ## Three-Phase Execution Model
 
-  All workflow execution uses the three-phase model:
+  All workflow execution uses a three-phase model that enables parallel execution
+  and external scheduler integration:
 
-  1. **Prepare** (`prepare/3`) - Extract minimal context from workflow, build a `%Runnable{}`
-  2. **Execute** (`execute/2`) - Run the node's work function in isolation (parallelizable)
+  ```
+  ┌─────────────┐      ┌─────────────┐      ┌─────────────┐
+  │   PREPARE   │ ───► │   EXECUTE   │ ───► │    APPLY    │
+  │  (Phase 1)  │      │  (Phase 2)  │      │  (Phase 3)  │
+  └─────────────┘      └─────────────┘      └─────────────┘
+        │                    │                    │
+        ▼                    ▼                    ▼
+   Extract context      Run work fn         Reduce results
+   from workflow        in isolation         into workflow
+   → %Runnable{}        (parallelizable)     (sequential)
+  ```
+
+  1. **Prepare** (`prepare/3`) - Extract minimal context from workflow into a `%Runnable{}` struct
+  2. **Execute** (`execute/2`) - Run the node's work function in isolation (can be parallelized)
   3. **Apply** - The `apply_fn` on the Runnable reduces results back into the workflow
 
-  This model enables:
-  - Parallel execution of independent nodes
-  - External scheduler integration via `prepare_for_dispatch/1` and `apply_runnable/2`
-  - Separation of pure computation from stateful workflow updates
+  This separation enables:
 
-  ## API
+  - **Parallel execution** of independent nodes (Phase 2 has no workflow access)
+  - **External scheduler integration** via `prepare_for_dispatch/1` and `apply_runnable/2`
+  - **Distributed execution** by dispatching Runnables to remote workers
+  - **Separation of concerns** between pure computation and stateful workflow updates
 
-  - `prepare/3` - Returns `{:ok, %Runnable{}}`, `{:skip, reducer_fn}`, or `{:defer, reducer_fn}`
-  - `execute/2` - Returns `%Runnable{}` with status `:completed`, `:failed`, or `:skipped`
-  - `invoke/3` - High-level API that delegates to prepare → execute → apply internally
+  ## Protocol Functions
+
+  | Function | Purpose |
+  |----------|---------|
+  | `match_or_execute/1` | Declares whether node is a `:match` (predicate) or `:execute` (produces facts) |
+  | `invoke/3` | High-level API that runs all three phases internally |
+  | `prepare/3` | Phase 1: Extract context from workflow, build a `%Runnable{}` |
+  | `execute/2` | Phase 2: Run the work function using only Runnable context |
 
   ## Return Types
 
@@ -32,6 +55,95 @@ defprotocol Runic.Workflow.Invokable do
     - `status: :completed` - With `result` and `apply_fn` populated
     - `status: :failed` - With `error` populated
     - `status: :skipped` - With `apply_fn` for skip handling
+
+  ## Built-in Implementations
+
+  Runic provides `Invokable` implementations for all core node types:
+
+  | Node Type | Match/Execute | Description |
+  |-----------|---------------|-------------|
+  | `Runic.Workflow.Root` | `:match` | Entry point for facts into the workflow |
+  | `Runic.Workflow.Condition` | `:match` | Boolean predicate check |
+  | `Runic.Workflow.Step` | `:execute` | Transform input fact to output fact |
+  | `Runic.Workflow.Conjunction` | `:match` | Logical AND of multiple conditions |
+  | `Runic.Workflow.MemoryAssertion` | `:match` | Check for facts in workflow memory |
+  | `Runic.Workflow.StateCondition` | `:match` | Check accumulator state |
+  | `Runic.Workflow.StateReaction` | `:execute` | Produce facts based on accumulator state |
+  | `Runic.Workflow.Accumulator` | `:execute` | Stateful reducer across invocations |
+  | `Runic.Workflow.Join` | `:execute` | Wait for multiple parent facts before firing |
+  | `Runic.Workflow.FanOut` | `:execute` | Spread enumerable into parallel branches |
+  | `Runic.Workflow.FanIn` | `:execute` | Collect parallel results back together |
+
+  ## External Scheduler Integration
+
+  The three-phase model enables integration with custom schedulers:
+
+      # Phase 1: Prepare runnables for dispatch
+      workflow = Workflow.plan_eagerly(workflow, input)
+      {workflow, runnables} = Workflow.prepare_for_dispatch(workflow)
+
+      # Phase 2: Execute (dispatch to worker pool, external service, etc.)
+      executed = Task.async_stream(runnables, fn runnable ->
+        Runic.Workflow.Invokable.execute(runnable.node, runnable)
+      end, timeout: :infinity)
+
+      # Phase 3: Apply results back to workflow
+      workflow = Enum.reduce(executed, workflow, fn {:ok, runnable}, wrk ->
+        Workflow.apply_runnable(wrk, runnable)
+      end)
+
+  ## Implementing Custom Invokable
+
+  To create a custom node type, implement the protocol:
+
+      defmodule MyApp.CustomNode do
+        defstruct [:hash, :name, :work]
+      end
+
+      defimpl Runic.Workflow.Invokable, for: MyApp.CustomNode do
+        alias Runic.Workflow
+        alias Runic.Workflow.{Fact, Runnable, CausalContext}
+
+        def match_or_execute(_node), do: :execute
+
+        def invoke(%MyApp.CustomNode{} = node, workflow, fact) do
+          result = node.work.(fact.value)
+          result_fact = Fact.new(value: result, ancestry: {node.hash, fact.hash})
+
+          workflow
+          |> Workflow.log_fact(result_fact)
+          |> Workflow.draw_connection(node, result_fact, :produced)
+          |> Workflow.mark_runnable_as_ran(node, fact)
+          |> Workflow.prepare_next_runnables(node, result_fact)
+        end
+
+        def prepare(%MyApp.CustomNode{} = node, workflow, fact) do
+          context = CausalContext.new(
+            node_hash: node.hash,
+            input_fact: fact,
+            ancestry_depth: Workflow.ancestry_depth(workflow, fact)
+          )
+
+          {:ok, Runnable.new(node, fact, context)}
+        end
+
+        def execute(%MyApp.CustomNode{} = node, %Runnable{input_fact: fact} = runnable) do
+          result = node.work.(fact.value)
+          result_fact = Fact.new(value: result, ancestry: {node.hash, fact.hash})
+
+          apply_fn = fn workflow ->
+            workflow
+            |> Workflow.log_fact(result_fact)
+            |> Workflow.draw_connection(node, result_fact, :produced)
+            |> Workflow.mark_runnable_as_ran(node, fact)
+            |> Workflow.prepare_next_runnables(node, result_fact)
+          end
+
+          Runnable.complete(runnable, result_fact, apply_fn)
+        end
+      end
+
+  See the [Protocols Guide](protocols.html) for more details and examples.
   """
 
   alias Runic.Workflow.Runnable
