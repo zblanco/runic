@@ -224,7 +224,7 @@ end
 
 ### Type Compatibility
 
-The `Component` protocol includes type compatibility checking via the `Runic.Component.TypeCompatibility` helper module. This enables schema-based validation when connecting components:
+The `Component` protocol includes type compatibility checking via an internal `TypeCompatibility` helper module. This enables schema-based validation when connecting components:
 
 ```elixir
 # Type compatibility checks

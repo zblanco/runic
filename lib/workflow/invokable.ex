@@ -269,12 +269,20 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Condition do
   end
 
   def prepare(%Condition{} = condition, %Workflow{} = workflow, %Fact{} = fact) do
+    meta_context =
+      if Condition.has_meta_refs?(condition) do
+        Workflow.prepare_meta_context(workflow, condition)
+      else
+        %{}
+      end
+
     context =
       CausalContext.new(
         node_hash: condition.hash,
         input_fact: fact,
         ancestry_depth: Workflow.ancestry_depth(workflow, fact),
-        hooks: Workflow.get_hooks(workflow, condition.hash)
+        hooks: Workflow.get_hooks(workflow, condition.hash),
+        meta_context: meta_context
       )
 
     {:ok, Runnable.new(condition, fact, context)}
@@ -282,7 +290,12 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Condition do
 
   def execute(%Condition{} = condition, %Runnable{input_fact: fact, context: ctx} = runnable) do
     with {:ok, before_apply_fns} <- HookRunner.run_before(ctx, condition, fact) do
-      satisfied = Condition.check(condition, fact)
+      satisfied =
+        if Condition.has_meta_refs?(condition) and ctx.meta_context != %{} do
+          Condition.check_with_meta_context(condition, fact, ctx.meta_context)
+        else
+          Condition.check(condition, fact)
+        end
 
       case HookRunner.run_after(ctx, condition, fact, satisfied) do
         {:ok, after_apply_fns} ->
@@ -351,13 +364,21 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Step do
   def prepare(%Step{} = step, %Workflow{} = workflow, %Fact{} = fact) do
     fan_out_context = build_fan_out_context(workflow, step, fact)
 
+    meta_context =
+      if Step.has_meta_refs?(step) do
+        Workflow.prepare_meta_context(workflow, step)
+      else
+        %{}
+      end
+
     context =
       CausalContext.new(
         node_hash: step.hash,
         input_fact: fact,
         ancestry_depth: Workflow.ancestry_depth(workflow, fact),
         hooks: Workflow.get_hooks(workflow, step.hash),
-        fan_out_context: fan_out_context
+        fan_out_context: fan_out_context,
+        meta_context: meta_context
       )
 
     {:ok, Runnable.new(step, fact, context)}
@@ -366,7 +387,13 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Step do
   def execute(%Step{} = step, %Runnable{input_fact: fact, context: ctx} = runnable) do
     with {:ok, before_apply_fns} <- HookRunner.run_before(ctx, step, fact) do
       try do
-        result = Components.run(step.work, fact.value, Components.arity_of(step.work))
+        result =
+          if Step.has_meta_refs?(step) and ctx.meta_context != %{} do
+            Step.run_with_meta_context(step, fact.value, ctx.meta_context)
+          else
+            Components.run(step.work, fact.value, Components.arity_of(step.work))
+          end
+
         result_fact = Fact.new(value: result, ancestry: {step.hash, fact.hash})
 
         case HookRunner.run_after(ctx, step, fact, result_fact) do

@@ -620,17 +620,109 @@ defmodule Runic do
 
   ## Given/Where/Then DSL
 
-  For complex rules with pattern destructuring, use the explicit DSL:
+  For complex rules with pattern destructuring, use the explicit DSL with
+  three clauses:
+
+  - **`given`** — a pattern-matching clause that destructures the input and binds
+    variables. The binding name becomes the key in the bindings map passed to `then`.
+  - **`where`** — a boolean expression evaluated at runtime. Unlike `when` guards,
+    `where` supports **any** Elixir expression including function calls like
+    `String.starts_with?/2`, `Enum.member?/2`, etc.
+  - **`then`** — a function that receives the bindings map and produces a result.
+    The bindings from `given` are available as keys.
+
+  Note: Use `where` instead of `when` because `when` is a reserved Elixir keyword.
+
+  ### Do/End Block Form
 
       require Runic
 
       Runic.rule do
-        given order: %{status: status, total: total}
-        where status == :pending and total > 100
-        then fn %{order: order} -> {:apply_discount, order} end
+        given(order: %{status: status, total: total})
+        where(status == :pending and total > 100)
+        then(fn %{order: order, total: total} -> {:apply_discount, order, total * 0.9} end)
       end
 
-  Note: Use `where` instead of `when` because `when` is a reserved Elixir keyword.
+  ### Named Do/End Block Form
+
+  Pass options before the `do` block to name the rule:
+
+      require Runic
+
+      Runic.rule name: :premium_discount do
+        given(order: %{customer: %{tier: tier}, total: total})
+        where(tier == :premium and total > 50)
+        then(fn %{order: order} -> {:apply_discount, order} end)
+      end
+
+  ### Keyword Form
+
+  The same rule can be written as a keyword list:
+
+      require Runic
+
+      Runic.rule(
+        name: :threshold_check,
+        given: [value: v],
+        where: v > 100,
+        then: fn %{value: v} -> {:over_threshold, v} end
+      )
+
+  Direct map patterns are also supported in the keyword form:
+
+      Runic.rule(
+        name: :map_pattern,
+        given: %{x: x, y: y},
+        where: x + y > 10,
+        then: fn %{x: x, y: y} -> {:sum, x + y} end
+      )
+
+  ### Non-Guard Expressions in `where`
+
+  Unlike `when` guards, `where` supports any boolean expression:
+
+      require Runic
+
+      Runic.rule do
+        given(name: name)
+        where(String.starts_with?(name, "prefix_"))
+        then(fn %{name: n} -> {:matched, n} end)
+      end
+
+  ### Capturing External Variables with `^`
+
+  Use the pin operator `^` to capture variables from the surrounding scope.
+  This is essential when dynamically constructing rules in loops or functions:
+
+      require Runic
+      alias Runic.Workflow
+
+      threshold = 100
+
+      rule =
+        Runic.rule do
+          given(value: v)
+          where(v > ^threshold)
+          then(fn %{value: v} -> {:over_threshold, v} end)
+        end
+
+      Workflow.new()
+      |> Workflow.add(rule)
+      |> Workflow.react_until_satisfied(150)
+      |> Workflow.raw_productions()
+      # => [{:over_threshold, 150}]
+
+  The `^` pin also works in the keyword form and in `condition`/`reaction` style:
+
+      some_values = [:potato, :ham, :tomato]
+
+      Runic.rule(
+        name: "escaped rule",
+        condition: fn val when is_atom(val) -> true end,
+        reaction: fn val ->
+          Enum.map(^some_values, fn x -> {val, x} end)
+        end
+      )
   """
   # Handle rule with do block containing given/when/then DSL
   defmacro rule(opts_or_block)
@@ -640,80 +732,34 @@ defmodule Runic do
   end
 
   defmacro rule(opts) when is_list(opts) do
-    {rewritten_opts, opts_bindings} = traverse_options(opts, __CALLER__)
+    # Phase 3: Detect given/where/then keys and transform to DSL form
+    has_given_where_then = Keyword.has_key?(opts, :given) or Keyword.has_key?(opts, :then)
 
-    name = rewritten_opts[:name]
-    condition = rewritten_opts[:condition] || rewritten_opts[:if]
-    reaction = rewritten_opts[:reaction] || rewritten_opts[:do]
+    has_condition_reaction =
+      Keyword.has_key?(opts, :condition) or Keyword.has_key?(opts, :if) or
+        Keyword.has_key?(opts, :reaction) or Keyword.has_key?(opts, :do)
 
-    arity = Components.arity_of(reaction)
+    # Error if mixing styles
+    if has_given_where_then and has_condition_reaction do
+      raise ArgumentError, """
+      Cannot mix given/where/then style with condition/reaction style in rule macro.
 
-    {rewritten_reaction, reaction_bindings} = traverse_expression(reaction, __CALLER__)
+      Use either:
+        Runic.rule(given: pattern, where: condition, then: action)
+      Or:
+        Runic.rule(condition: fn -> ... end, reaction: fn -> ... end)
+      """
+    end
 
-    variable_bindings =
-      (reaction_bindings ++ opts_bindings)
-      |> Enum.uniq()
-
-    {workflow, condition_hash, reaction_hash} =
-      workflow_of_rule({condition, rewritten_reaction}, arity)
-
-    source =
-      quote do
-        Runic.rule(unquote(opts))
-      end
-
-    # Build closure with full rule creation
-    closure_source =
-      quote do
-        Runic.rule(unquote(rewritten_opts))
-      end
-
-    closure = build_closure(closure_source, variable_bindings, __CALLER__)
-
-    if Enum.empty?(variable_bindings) do
-      rule_hash = Components.fact_hash(source)
-      rule_name = name || default_component_name("rule", rule_hash)
-
-      quote do
-        %Rule{
-          name: unquote(rule_name),
-          arity: unquote(arity),
-          workflow: unquote(workflow),
-          condition_hash: unquote(condition_hash),
-          reaction_hash: unquote(reaction_hash),
-          hash: unquote(rule_hash),
-          closure: unquote(closure),
-          inputs: unquote(rewritten_opts[:inputs]),
-          outputs: unquote(rewritten_opts[:outputs])
-        }
-      end
+    if has_given_where_then do
+      # Transform keyword opts to synthetic DSL block AST
+      compile_keyword_given_when_then_rule(opts, __CALLER__)
     else
-      base_name = name
-
-      quote do
-        closure = unquote(closure)
-        rule_hash = closure.hash
-
-        rule_name =
-          if unquote(base_name),
-            do: unquote(base_name),
-            else: unquote(default_component_name("rule", "_")) <> "_#{rule_hash}"
-
-        %Rule{
-          name: rule_name,
-          arity: unquote(arity),
-          workflow: unquote(workflow),
-          condition_hash: unquote(condition_hash),
-          reaction_hash: unquote(reaction_hash),
-          hash: rule_hash,
-          closure: closure,
-          inputs: unquote(rewritten_opts[:inputs]),
-          outputs: unquote(rewritten_opts[:outputs])
-        }
-      end
+      compile_condition_reaction_rule(opts, __CALLER__)
     end
   end
 
+  # Catch-all for anonymous function expressions: rule(fn x -> ... end)
   defmacro rule(expression) do
     arity = Components.arity_of(expression)
     {rewritten_expression, expression_bindings} = traverse_expression(expression, __CALLER__)
@@ -768,6 +814,122 @@ defmodule Runic do
         }
       end
     end
+  end
+
+  # Original condition/reaction keyword form
+  defp compile_condition_reaction_rule(opts, env) do
+    {rewritten_opts, opts_bindings} = traverse_options(opts, env)
+
+    name = rewritten_opts[:name]
+    condition = rewritten_opts[:condition] || rewritten_opts[:if]
+    reaction = rewritten_opts[:reaction] || rewritten_opts[:do]
+
+    arity = Components.arity_of(reaction)
+
+    {rewritten_reaction, reaction_bindings} = traverse_expression(reaction, env)
+
+    variable_bindings =
+      (reaction_bindings ++ opts_bindings)
+      |> Enum.uniq()
+
+    {workflow, condition_hash, reaction_hash} =
+      workflow_of_rule({condition, rewritten_reaction}, arity)
+
+    source =
+      quote do
+        Runic.rule(unquote(opts))
+      end
+
+    # Build closure with full rule creation
+    closure_source =
+      quote do
+        Runic.rule(unquote(rewritten_opts))
+      end
+
+    closure = build_closure(closure_source, variable_bindings, env)
+
+    if Enum.empty?(variable_bindings) do
+      rule_hash = Components.fact_hash(source)
+      rule_name = name || default_component_name("rule", rule_hash)
+
+      quote do
+        %Rule{
+          name: unquote(rule_name),
+          arity: unquote(arity),
+          workflow: unquote(workflow),
+          condition_hash: unquote(condition_hash),
+          reaction_hash: unquote(reaction_hash),
+          hash: unquote(rule_hash),
+          closure: unquote(closure),
+          inputs: unquote(rewritten_opts[:inputs]),
+          outputs: unquote(rewritten_opts[:outputs])
+        }
+      end
+    else
+      base_name = name
+
+      quote do
+        closure = unquote(closure)
+        rule_hash = closure.hash
+
+        rule_name =
+          if unquote(base_name),
+            do: unquote(base_name),
+            else: unquote(default_component_name("rule", "_")) <> "_#{rule_hash}"
+
+        %Rule{
+          name: rule_name,
+          arity: unquote(arity),
+          workflow: unquote(workflow),
+          condition_hash: unquote(condition_hash),
+          reaction_hash: unquote(reaction_hash),
+          hash: rule_hash,
+          closure: closure,
+          inputs: unquote(rewritten_opts[:inputs]),
+          outputs: unquote(rewritten_opts[:outputs])
+        }
+      end
+    end
+  end
+
+  # Phase 3: Compile keyword form with given/where/then keys
+  defp compile_keyword_given_when_then_rule(opts, env) do
+    # Extract given/where/then from opts
+    given_expr = Keyword.get(opts, :given)
+    where_expr = Keyword.get(opts, :where, true)
+    then_expr = Keyword.get(opts, :then)
+
+    unless then_expr do
+      raise ArgumentError,
+            "rule with given/where/then style requires a `:then` key with an action function"
+    end
+
+    # Build synthetic block AST for compile_given_when_then_rule
+    # The block looks like: {:__block__, [], [given(...), where(...), then(...)]}
+    statements = []
+
+    statements =
+      if given_expr do
+        [{:given, [], [given_expr]} | statements]
+      else
+        statements
+      end
+
+    statements =
+      if where_expr != true do
+        [{:where, [], [where_expr]} | statements]
+      else
+        statements
+      end
+
+    statements = [{:then, [], [then_expr]} | statements]
+
+    block = {:__block__, [], Enum.reverse(statements)}
+
+    # Extract non-DSL options (name, inputs, outputs)
+    preserved_opts = Keyword.drop(opts, [:given, :where, :then])
+
+    compile_given_when_then_rule(block, preserved_opts, env)
   end
 
   # Handle rule name: :foo do given/when/then end
@@ -888,6 +1050,29 @@ defmodule Runic do
 
   defp traverse_expression({:&, _, _} = expression, _env) do
     {expression, []}
+  end
+
+  # Fallback for arbitrary expressions (e.g., where clauses with boolean expressions)
+  # Phase 1: Support pin operators in any expression, not just function bodies
+  defp traverse_expression(expression, env) do
+    traverse_any_expression(expression, env)
+  end
+
+  # Traverse any AST to find and rewrite pinned variables (^var syntax)
+  # Returns {rewritten_ast, bindings} where bindings are assignments to capture pinned vars
+  defp traverse_any_expression(ast, env) do
+    {rewritten_ast, bindings} =
+      Macro.prewalk(ast, [], fn
+        {:^, pin_meta, [{var, _, ctx} = _expr]} = _pinned_ast, acc ->
+          # Pinned variable - capture it
+          new_var = Macro.var(var, ctx)
+          {new_var, [{:=, pin_meta, [new_var, {var, [], ctx}]} | acc]}
+
+        otherwise, acc ->
+          {Macro.expand(otherwise, env), acc}
+      end)
+
+    {rewritten_ast, bindings}
   end
 
   # Traverse keyword options looking for pinned variables (^var syntax)
@@ -1458,7 +1643,26 @@ defmodule Runic do
   Used inside Runic macros such as rules to reference the state of another component such as an accumulator
   or reduce.
 
-  Expands into a `%StateCondition{}` in conjunction with any other conditions of the rule's expression to evaluate against the last known state of the component.
+  Expands in conjunction with the rest of the expression of the rule's expression to evaluate against the last known state of the component.
+
+  ## Examples
+
+      require Runic
+      alias Runic.Workflow
+
+      counter = Runic.accumulator(0, fn x, acc -> acc + x end, name: :counter)
+
+      threshold_rule =
+        Runic.rule name: :threshold_check do
+          given(x: x)
+          where(state_of(:counter) > 5)
+          then(fn %{x: x} -> {:above_threshold, x} end)
+        end
+
+      workflow =
+        Workflow.new()
+        |> Workflow.add(counter)
+        |> Workflow.add(threshold_rule, to: :counter)
   """
   def state_of(component_name_or_hash), do: doc!([component_name_or_hash])
 
@@ -1466,6 +1670,18 @@ defmodule Runic do
   Evaluates to true in a condition if the specified step has ever been ran.
 
   Note that this evaluates to true globally for any prior execution of the workflow, not just within the current invocation.
+
+  ## Examples
+
+      require Runic
+      alias Runic.Workflow
+
+      rule =
+        Runic.rule name: :after_validation do
+          given(x: x)
+          where(step_ran?(:validator))
+          then(fn %{x: x} -> {:validated, x} end)
+        end
   """
   def step_ran?(component_name_or_hash), do: doc!([component_name_or_hash])
 
@@ -1473,9 +1689,130 @@ defmodule Runic do
   Evaluates to true if the specified step has been executed for the given input fact.
 
   Considers only input facts for a generation of invokations fed into the root of the workflow.
+
+  ## Examples
+
+      require Runic
+      alias Runic.Workflow
+
+      rule =
+        Runic.rule name: :scoped_check do
+          given(x: x)
+          where(step_ran?(:validator, x))
+          then(fn %{x: x} -> {:validated, x} end)
+        end
   """
   def step_ran?(component_name_or_hash, fact_or_hash),
     do: doc!([component_name_or_hash, fact_or_hash])
+
+  @doc """
+  Returns the number of facts produced by a given component in the workflow.
+
+  Used inside `where` clauses of rules to gate on how many facts a component has produced.
+
+  ## Examples
+
+      require Runic
+
+      Runic.rule name: :batch_ready do
+        given(x: x)
+        where(fact_count(:items) >= 3)
+        then(fn %{x: x} -> {:process_batch, x} end)
+      end
+  """
+  def fact_count(component_name_or_hash), do: doc!([component_name_or_hash])
+
+  @doc """
+  Returns the most recent raw value produced by a component.
+
+  Useful in `where` clauses to compare against the latest output, or in `then`
+  clauses to incorporate another component's latest result.
+
+  ## Examples
+
+  In a `where` clause:
+
+      require Runic
+
+      Runic.rule name: :high_temp_alert do
+        given(x: x)
+        where(latest_value_of(:sensor) > 100)
+        then(fn %{x: x} -> {:alert, x} end)
+      end
+
+  In a `then` clause:
+
+      require Runic
+
+      Runic.rule name: :echo_latest do
+        given(x: x)
+        then(fn %{x: x} -> {:latest, x, latest_value_of(:sensor)} end)
+      end
+  """
+  def latest_value_of(component_name_or_hash), do: doc!([component_name_or_hash])
+
+  @doc """
+  Returns the most recent `%Fact{}` struct produced by a component.
+
+  Unlike `latest_value_of/1`, this returns the full `%Fact{}` struct including
+  metadata such as `hash` and `ancestry`, not just the raw value.
+
+  ## Examples
+
+      require Runic
+
+      Runic.rule name: :check_latest_fact do
+        given(x: x)
+        where(latest_fact_of(:processor) != nil)
+        then(fn %{x: x} -> {:ok, x} end)
+      end
+  """
+  def latest_fact_of(component_name_or_hash), do: doc!([component_name_or_hash])
+
+  @doc """
+  Returns a list of all raw values produced by a component across all invocations.
+
+  Useful for aggregation in `where` or `then` clauses, e.g. summing all scores.
+
+  ## Examples
+
+  In a `where` clause:
+
+      require Runic
+
+      Runic.rule name: :sum_check do
+        given(x: x)
+        where(Enum.sum(all_values_of(:scores)) > 100)
+        then(fn %{x: x} -> {:high_score, x} end)
+      end
+
+  In a `then` clause:
+
+      require Runic
+
+      Runic.rule name: :sum_all_scores do
+        given(x: _x)
+        then(fn _bindings -> Enum.sum(all_values_of(:scores)) end)
+      end
+  """
+  def all_values_of(component_name_or_hash), do: doc!([component_name_or_hash])
+
+  @doc """
+  Returns a list of all `%Fact{}` structs produced by a component across all invocations.
+
+  Unlike `all_values_of/1`, this returns full `%Fact{}` structs with metadata.
+
+  ## Examples
+
+      require Runic
+
+      Runic.rule name: :multi_fact_check do
+        given(x: x)
+        where(length(all_facts_of(:events)) > 0)
+        then(fn %{x: x} -> {:has_events, x} end)
+      end
+  """
+  def all_facts_of(component_name_or_hash), do: doc!([component_name_or_hash])
 
   defp doc!(_) do
     raise "these Runic meta APIs should not be invoked directly, " <>
@@ -1951,23 +2288,70 @@ defmodule Runic do
     # Extract bindings and pattern from given clause
     {pattern_ast, top_binding, binding_vars} = compile_given_clause(given_clause)
 
-    # Compile where clause into a condition function
-    # The condition receives the input and returns true/false
-    condition_fn = compile_when_clause(where_clause, pattern_ast, top_binding, binding_vars, env)
+    # Detect meta expressions in the where clause
+    condition_meta_refs = detect_meta_expressions(where_clause)
+    has_condition_meta = condition_meta_refs != []
 
-    # Compile then clause - it receives the input and builds bindings internally
-    reaction_fn = compile_then_clause(then_clause, pattern_ast, top_binding, binding_vars, env)
+    # Compile where clause into a condition function
+    # If meta expressions present, compile with 2-arity (input, meta_ctx)
+    {condition_fn, condition_arity, condition_meta_refs} =
+      if has_condition_meta do
+        fn_ast =
+          compile_meta_when_clause(
+            where_clause,
+            pattern_ast,
+            top_binding,
+            binding_vars,
+            env,
+            condition_meta_refs
+          )
+
+        {fn_ast, 2, condition_meta_refs}
+      else
+        fn_ast = compile_when_clause(where_clause, pattern_ast, top_binding, binding_vars, env)
+        {fn_ast, 1, []}
+      end
+
+    # Detect meta expressions in the then clause
+    reaction_meta_refs = detect_meta_expressions(then_clause)
+    has_reaction_meta = reaction_meta_refs != []
+
+    # Compile then clause - if meta expressions present, compile with 2-arity (input, meta_ctx)
+    {reaction_fn, reaction_meta_refs} =
+      if has_reaction_meta do
+        fn_ast =
+          compile_meta_then_clause(
+            then_clause,
+            pattern_ast,
+            top_binding,
+            binding_vars,
+            env,
+            reaction_meta_refs
+          )
+
+        {fn_ast, reaction_meta_refs}
+      else
+        fn_ast = compile_then_clause(then_clause, pattern_ast, top_binding, binding_vars, env)
+        {fn_ast, []}
+      end
 
     # Get options
     {rewritten_opts, opts_bindings} = traverse_options(opts, env)
     name = rewritten_opts[:name]
 
-    # Determine arity (always 1 for DSL rules - single input matched against pattern)
+    # Determine arity for the rule (always 1 for DSL rules - single input matched against pattern)
+    # But condition may be 2-arity if it has meta refs
     arity = 1
 
-    # Build the rule workflow
+    # Build the rule workflow with meta refs if present
     {workflow, condition_hash, reaction_hash} =
-      workflow_of_rule({condition_fn, reaction_fn}, arity)
+      workflow_of_rule_with_meta(
+        {condition_fn, reaction_fn},
+        arity,
+        condition_arity,
+        condition_meta_refs,
+        reaction_meta_refs
+      )
 
     source =
       quote do
@@ -1979,9 +2363,12 @@ defmodule Runic do
         Runic.rule(unquote(rewritten_opts), do: unquote(block))
       end
 
+    # Collect bindings from where clause (for pin operators in conditions)
+    {_rewritten_where, where_bindings} = traverse_expression(where_clause, env)
+
     # Collect bindings from then clause
     {_rewritten_then, then_bindings} = traverse_expression(then_clause, env)
-    variable_bindings = Enum.uniq(then_bindings ++ opts_bindings)
+    variable_bindings = Enum.uniq(where_bindings ++ then_bindings ++ opts_bindings)
 
     closure = build_closure(closure_source, variable_bindings, env)
 
@@ -2076,6 +2463,55 @@ defmodule Runic do
   defp compile_given_clause(:match_any) do
     # Match anything - bind to `input` for the then clause
     {generated_var(:input), :input, [{:input, generated_var(:input)}]}
+  end
+
+  # Phase 2: Direct map pattern - given(%{item: i, quantity: q})
+  defp compile_given_clause({:%{}, _, pairs} = pattern) when is_list(pairs) do
+    # Mark variables as generated to suppress unused variable warnings
+    pattern = mark_vars_generated(pattern)
+
+    # For direct map patterns, we need to:
+    # 1. Extract all variables from the map pattern (the variable names like `i`, `q`)
+    # 2. Also add the map keys themselves (like `item`, `quantity`) bound to their values
+    #
+    # This allows `then(fn %{item: i} -> ... end)` to work correctly
+    binding_vars = extract_pattern_variables(pattern)
+
+    # Add key bindings: for %{item: i}, add both `i` (the variable) and `item` bound to same value
+    key_bindings =
+      Enum.flat_map(pairs, fn
+        {key, {var_name, _, ctx}} when is_atom(key) and is_atom(var_name) and is_atom(ctx) ->
+          # Key maps to a variable - bind key to the same variable
+          [{key, generated_var(var_name)}]
+
+        {key, _pattern} when is_atom(key) ->
+          # Key maps to a complex pattern - try to bind key to the whole match if possible
+          # For now, we can't easily do this, so skip
+          []
+
+        _ ->
+          []
+      end)
+
+    # Merge: key_bindings first, then binding_vars (vars take precedence if same name)
+    all_vars = Enum.uniq_by(key_bindings ++ binding_vars, fn {name, _} -> name end)
+
+    # No top_binding for direct map patterns (input IS the map)
+    {pattern, nil, all_vars}
+  end
+
+  # Phase 2: Direct tuple pattern (3+ elements) - given({:event, type, payload})
+  defp compile_given_clause({:{}, _, elements} = pattern) when is_list(elements) do
+    pattern = mark_vars_generated(pattern)
+    binding_vars = extract_pattern_variables(pattern)
+    {pattern, nil, binding_vars}
+  end
+
+  # Phase 2: Two-element tuple pattern - given({:ok, value})
+  defp compile_given_clause({_first, _second} = pattern) do
+    pattern = mark_vars_generated(pattern)
+    binding_vars = extract_pattern_variables(pattern)
+    {pattern, nil, binding_vars}
   end
 
   defp compile_given_clause(bindings) when is_list(bindings) do
@@ -2177,18 +2613,27 @@ defmodule Runic do
     Enum.uniq_by(vars, fn {name, _} -> name end)
   end
 
-  defp compile_when_clause(when_expr, pattern, top_binding, _binding_vars, _env) do
+  defp compile_when_clause(when_expr, pattern, top_binding, _binding_vars, env) do
     # Build a condition function that:
     # 1. Matches the input against the pattern
     # 2. If matched, evaluates the when expression with bindings
     # 3. Returns boolean
+    #
+    # Phase 1: where clauses are now compiled as full function bodies,
+    # supporting pin operators (^var) and any Elixir expression (not just guards).
+
+    # Check if the when_expr is literal true (no condition)
+    is_always_true = when_expr == true
+
+    # Traverse the where expression for pinned variables (^var)
+    {rewritten_when_expr, when_bindings} = traverse_expression(when_expr, env)
 
     # The when expression, with variables bound
     when_body =
-      if when_expr == true do
+      if is_always_true do
         true
       else
-        when_expr
+        rewritten_when_expr
       end
 
     # Build the case pattern - if we have a top_binding, use = to bind the whole value
@@ -2213,6 +2658,9 @@ defmodule Runic do
 
     # Build the condition function
     # Use generated: true to suppress unused variable warnings for pattern bindings
+    # If we have pinned bindings, we need to capture them in the closure
+    _ = when_bindings
+
     quote generated: true do
       fn input ->
         case input do
@@ -2245,10 +2693,11 @@ defmodule Runic do
           {:=, [], [generated_var(top_binding), pattern]}
       end
 
-    # Build bindings map from the extracted variables (use generated vars)
+    # Build bindings map from the extracted variables
+    # Use the stored AST for each binding - this allows key aliases (like :item -> :i variable)
     bindings_map_entries =
-      Enum.map(binding_vars, fn {name, _ast} ->
-        {name, generated_var(name)}
+      Enum.map(binding_vars, fn {name, ast} ->
+        {name, ast}
       end)
 
     bindings_map = {:%{}, [], bindings_map_entries}
@@ -2455,6 +2904,52 @@ defmodule Runic do
     {workflow, condition_ast_hash, reaction_ast_hash}
   end
 
+  defp workflow_of_rule_with_meta(
+         {condition, reaction},
+         rule_arity,
+         condition_arity,
+         condition_meta_refs,
+         reaction_meta_refs
+       ) do
+    reaction_ast_hash = Components.fact_hash(reaction)
+    escaped_reaction_meta_refs = Macro.escape(reaction_meta_refs)
+
+    reaction_step =
+      quote do
+        Step.new(
+          work: unquote(reaction),
+          hash: unquote(reaction_ast_hash),
+          meta_refs: unquote(escaped_reaction_meta_refs)
+        )
+      end
+
+    condition_ast_hash = Components.fact_hash(condition)
+    escaped_condition_meta_refs = Macro.escape(condition_meta_refs)
+
+    condition_node =
+      quote do
+        Condition.new(
+          work: unquote(condition),
+          hash: unquote(condition_ast_hash),
+          arity: unquote(condition_arity),
+          meta_refs: unquote(escaped_condition_meta_refs)
+        )
+      end
+
+    workflow =
+      quote do
+        import Runic
+
+        Workflow.new()
+        |> Workflow.add_step(unquote(condition_node))
+        |> Workflow.add_step(unquote(condition_node), unquote(reaction_step))
+      end
+
+    _ = rule_arity
+
+    {workflow, condition_ast_hash, reaction_ast_hash}
+  end
+
   defp binds_of_guarded_anonymous(
          {:fn, _meta, [{:->, _, [[lhs], _rhs]}]} = _quoted_fun_expression,
          arity
@@ -2466,66 +2961,313 @@ defmodule Runic do
     Enum.take(guarded_expression, arity)
   end
 
-  # Collect variables assigned in the body (left side of = expressions)
-  # defp collect_assigned_vars(ast) do
-  #   {_, vars} =
-  #     Macro.prewalk(ast, MapSet.new(), fn
-  #       # Don't traverse into nested functions
-  #       {:fn, _, _} = nested_fn, acc ->
-  #         {nested_fn, acc}
+  # =============================================================================
+  # Meta Expression Detection and Compilation
+  # =============================================================================
 
-  #       # Collect variables from left side of assignments
-  #       {:=, _, [left, _right]} = assign_node, acc ->
-  #         new_vars = collect_pattern_vars(left)
-  #         {assign_node, MapSet.union(acc, MapSet.new(new_vars))}
+  @meta_expression_kinds [
+    :state_of,
+    :step_ran?,
+    :fact_count,
+    :latest_value_of,
+    :latest_fact_of,
+    :all_values_of,
+    :all_facts_of
+  ]
 
-  #       node, acc ->
-  #         {node, acc}
-  #     end)
+  @doc false
+  def detect_meta_expressions(ast) do
+    {_rewritten, refs} = Macro.prewalk(ast, [], &collect_meta_ref/2)
+    Enum.reverse(refs)
+  end
 
-  #   vars
-  # end
+  # Handle field access: check if it's accessing a meta expression (potentially chained)
+  defp collect_meta_ref({:., _, [_inner, field]} = node, acc) when is_atom(field) do
+    case extract_meta_expression_with_fields(node) do
+      {:ok, kind, target, field_path} ->
+        existing = find_ref_by_target(acc, target, kind)
 
-  # Collect variable names from a pattern (handles nested patterns and guards)
-  # defp collect_pattern_vars({var, _, ctx}) when is_atom(var) and (is_atom(ctx) or is_nil(ctx)),
-  #   do: [var]
+        if existing do
+          # Update the field_path to the longer path (we process outer-to-inner)
+          updated = update_field_path_if_longer(acc, target, kind, field_path)
+          {node, updated}
+        else
+          context_key = build_context_key(target, kind)
 
-  # # Handle guards: {:when, _, [arg1, arg2, ..., guard_expr]}
-  # defp collect_pattern_vars({:when, _, elements})
-  #      when is_list(elements) and length(elements) > 1 do
-  #   {patterns, [_guard | _]} = Enum.split(elements, -1)
-  #   Enum.flat_map(patterns, &collect_pattern_vars/1)
-  # end
+          ref = %{
+            kind: kind,
+            target: target,
+            field_path: field_path,
+            context_key: context_key
+          }
 
-  # # Handle pattern matches
-  # defp collect_pattern_vars({:=, _, [left, right]}),
-  #   do: collect_pattern_vars(left) ++ collect_pattern_vars(right)
+          {node, [ref | acc]}
+        end
 
-  # defp collect_pattern_vars({:{}, _, elements}),
-  #   do: Enum.flat_map(elements, &collect_pattern_vars/1)
+      :not_meta ->
+        {node, acc}
+    end
+  end
 
-  # defp collect_pattern_vars({left, right}),
-  #   do: collect_pattern_vars(left) ++ collect_pattern_vars(right)
+  defp collect_meta_ref({kind, _, [target]} = node, acc)
+       when kind in @meta_expression_kinds do
+    existing = find_ref_by_target(acc, target, kind)
 
-  # defp collect_pattern_vars({:%, _, [_alias, {:%{}, _, fields}]}),
-  #   do: Enum.flat_map(fields, fn {_, v} -> collect_pattern_vars(v) end)
+    unless existing do
+      context_key = build_context_key(target, kind)
 
-  # defp collect_pattern_vars({:%{}, _, fields}),
-  #   do: Enum.flat_map(fields, fn {_, v} -> collect_pattern_vars(v) end)
+      ref = %{
+        kind: kind,
+        target: target,
+        field_path: [],
+        context_key: context_key
+      }
 
-  # defp collect_pattern_vars([_ | _] = list), do: Enum.flat_map(list, &collect_pattern_vars/1)
-  # defp collect_pattern_vars(_), do: []
+      {node, [ref | acc]}
+    else
+      {node, acc}
+    end
+  end
 
-  # Check if a name is a special form or built-in
-  # defp is_special_form(name) do
-  #   name in [
-  #     :__MODULE__,
-  #     :__DIR__,
-  #     :__ENV__,
-  #     :__CALLER__,
-  #     :__STACKTRACE__,
-  #     :_,
-  #     :...
-  #   ] or String.starts_with?(to_string(name), "_")
-  # end
+  defp collect_meta_ref(node, acc), do: {node, acc}
+
+  # Extract meta expression and field path from chained field access
+  # e.g., state_of(:config).database.connection.pool_size
+  # Returns {:ok, kind, target, field_path} or :not_meta
+  defp extract_meta_expression_with_fields({:., _, [inner, field]}) when is_atom(field) do
+    case extract_meta_expression_with_fields(inner) do
+      {:ok, kind, target, inner_fields} ->
+        {:ok, kind, target, inner_fields ++ [field]}
+
+      :not_meta ->
+        :not_meta
+    end
+  end
+
+  # Match the call form of dot access (e.g., `foo.bar` becomes `{{:., _, [foo, :bar]}, _, []}`)
+  defp extract_meta_expression_with_fields({{:., _, [inner, field]}, _, []})
+       when is_atom(field) do
+    case extract_meta_expression_with_fields(inner) do
+      {:ok, kind, target, inner_fields} ->
+        {:ok, kind, target, inner_fields ++ [field]}
+
+      :not_meta ->
+        :not_meta
+    end
+  end
+
+  # Base case: bare meta expression like state_of(:config)
+  defp extract_meta_expression_with_fields({:state_of, _, [target]}) do
+    {:ok, :state_of, target, []}
+  end
+
+  # For other meta expression kinds (they don't typically have field access, but handle for completeness)
+  defp extract_meta_expression_with_fields({kind, _, [target]})
+       when kind in @meta_expression_kinds do
+    {:ok, kind, target, []}
+  end
+
+  defp extract_meta_expression_with_fields(_), do: :not_meta
+
+  defp find_ref_by_target(refs, target, kind) do
+    Enum.find(refs, fn ref -> ref.target == target and ref.kind == kind end)
+  end
+
+  # Update field_path only if the new path is longer (outer nodes have longer paths)
+  defp update_field_path_if_longer(refs, target, kind, new_field_path) do
+    Enum.map(refs, fn ref ->
+      if ref.target == target and ref.kind == kind and
+           length(new_field_path) > length(ref.field_path) do
+        %{ref | field_path: new_field_path}
+      else
+        ref
+      end
+    end)
+  end
+
+  defp build_context_key(target, kind) when is_atom(target) do
+    suffix =
+      case kind do
+        :state_of -> "_state"
+        :step_ran? -> "_ran"
+        :fact_count -> "_count"
+        :latest_value_of -> "_latest_value"
+        :latest_fact_of -> "_latest_fact"
+        :all_values_of -> "_all_values"
+        :all_facts_of -> "_all_facts"
+      end
+
+    String.to_atom("#{target}#{suffix}")
+  end
+
+  defp build_context_key(_target, kind) do
+    String.to_atom("meta_#{kind}")
+  end
+
+  @doc false
+  def has_meta_expressions?(ast) do
+    detect_meta_expressions(ast) != []
+  end
+
+  @doc false
+  def rewrite_meta_refs_in_ast(ast, meta_refs) do
+    # Use var! with Runic context to match compile_meta_when_clause
+    meta_ctx_var = quote(do: var!(meta_ctx, Runic))
+
+    Macro.prewalk(ast, fn node ->
+      case node do
+        # state_of(:x).field - full dot access expression with call
+        {{:., dot_meta, [{:state_of, _, [target]}, field]}, call_meta, []} ->
+          ref = find_ref_by_target(meta_refs, target, :state_of)
+
+          if ref do
+            # Build: Map.get(meta_ctx, :context_key, %{}).field
+            # Use Map.get with default empty map to avoid KeyError
+            map_get = quote(do: Map.get(unquote(meta_ctx_var), unquote(ref.context_key), %{}))
+            {{:., dot_meta, [map_get, field]}, call_meta, []}
+          else
+            node
+          end
+
+        # state_of(:x) without field access
+        {:state_of, _, [target]} ->
+          ref = find_ref_by_target(meta_refs, target, :state_of)
+
+          if ref do
+            # Build: Map.get(meta_ctx, :context_key)
+            quote(do: Map.get(unquote(meta_ctx_var), unquote(ref.context_key)))
+          else
+            node
+          end
+
+        # Other meta expressions: step_ran?, fact_count, etc.
+        {kind, _, [target]} when kind in @meta_expression_kinds ->
+          ref = find_ref_by_target(meta_refs, target, kind)
+
+          if ref do
+            quote(do: Map.get(unquote(meta_ctx_var), unquote(ref.context_key)))
+          else
+            node
+          end
+
+        other ->
+          other
+      end
+    end)
+  end
+
+  @doc false
+  def compile_meta_then_clause(
+        then_expr,
+        pattern,
+        top_binding,
+        binding_vars,
+        env,
+        meta_refs
+      ) do
+    # Build bindings map from the extracted variables
+    # Use the stored AST for each binding - this allows key aliases (like :item -> :i variable)
+    bindings_map_entries =
+      Enum.map(binding_vars, fn {name, ast} ->
+        {name, ast}
+      end)
+
+    bindings_map = {:%{}, [], bindings_map_entries}
+
+    case_pattern =
+      cond do
+        is_nil(top_binding) ->
+          pattern
+
+        match?({^top_binding, _, ctx} when is_atom(ctx), pattern) ->
+          pattern
+
+        true ->
+          {:=, [], [generated_var(top_binding), pattern]}
+      end
+
+    case then_expr do
+      {:fn, _, _} ->
+        # User provided a function - traverse for ^ bindings, rewrite meta expressions
+        {rewritten_fn, _bindings} = traverse_expression(then_expr, env)
+        rewritten_fn = rewrite_meta_refs_in_ast(rewritten_fn, meta_refs)
+
+        quote generated: true do
+          fn input, var!(meta_ctx, Runic) ->
+            _ = var!(meta_ctx, Runic)
+
+            case input do
+              unquote(case_pattern) ->
+                bindings = unquote(bindings_map)
+                unquote(rewritten_fn).(bindings)
+            end
+          end
+        end
+
+      {:&, _, _} ->
+        # Capture syntax - wrap to pass bindings
+        # Note: Capture syntax can't use meta expressions directly in the captured function
+        # The meta expressions would need to be in the wrapping function
+        quote generated: true do
+          fn input, var!(meta_ctx, Runic) ->
+            _ = var!(meta_ctx, Runic)
+
+            case input do
+              unquote(case_pattern) ->
+                bindings = unquote(bindings_map)
+                unquote(then_expr).(bindings)
+            end
+          end
+        end
+
+      _ ->
+        # Raw expression - wrap in a function, rewrite meta expressions
+        rewritten_expr = rewrite_meta_refs_in_ast(then_expr, meta_refs)
+        rewritten_expr = mark_vars_generated(rewritten_expr)
+
+        quote generated: true do
+          fn input, var!(meta_ctx, Runic) ->
+            _ = var!(meta_ctx, Runic)
+
+            case input do
+              unquote(case_pattern) ->
+                _bindings = unquote(bindings_map)
+                unquote(rewritten_expr)
+            end
+          end
+        end
+    end
+  end
+
+  @doc false
+  def compile_meta_when_clause(when_expr, pattern, top_binding, _binding_vars, _env, meta_refs) do
+    rewritten_body = rewrite_meta_refs_in_ast(when_expr, meta_refs)
+    rewritten_body = mark_vars_generated(rewritten_body)
+
+    case_pattern =
+      cond do
+        is_nil(top_binding) ->
+          pattern
+
+        match?({^top_binding, _, ctx} when is_atom(ctx), pattern) ->
+          pattern
+
+        true ->
+          {:=, [], [generated_var(top_binding), pattern]}
+      end
+
+    quote generated: true do
+      fn input, var!(meta_ctx, Runic) ->
+        _ = var!(meta_ctx, Runic)
+
+        case input do
+          unquote(case_pattern) ->
+            unquote(rewritten_body)
+
+          _ ->
+            false
+        end
+      end
+    end
+  end
 end

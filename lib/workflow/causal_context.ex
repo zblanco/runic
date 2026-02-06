@@ -37,7 +37,8 @@ defmodule Runic.Workflow.CausalContext do
           join_context: map() | nil,
           fan_out_context: map() | nil,
           fan_in_context: map() | nil,
-          mergeable: boolean()
+          mergeable: boolean(),
+          meta_context: map()
         }
 
   defstruct [
@@ -51,7 +52,8 @@ defmodule Runic.Workflow.CausalContext do
     join_context: nil,
     fan_out_context: nil,
     fan_in_context: nil,
-    mergeable: false
+    mergeable: false,
+    meta_context: %{}
   ]
 
   @doc """
@@ -151,4 +153,34 @@ defmodule Runic.Workflow.CausalContext do
   """
   @spec mergeable?(t()) :: boolean()
   def mergeable?(%__MODULE__{mergeable: mergeable}), do: mergeable
+
+  @doc """
+  Adds meta context for nodes with meta expression dependencies.
+
+  Meta context contains values prepared from `:meta_ref` edges during the
+  prepare phase. These values are then available during execution without
+  requiring workflow access.
+
+  ## Example
+
+      context = CausalContext.new(...)
+      |> CausalContext.with_meta_context(%{cart_state: %{total: 150, items: []}})
+  """
+  @spec with_meta_context(t(), map()) :: t()
+  def with_meta_context(%__MODULE__{} = ctx, meta_context) when is_map(meta_context) do
+    %{ctx | meta_context: meta_context}
+  end
+
+  @doc """
+  Returns the meta context map from the context.
+  """
+  @spec meta_context(t()) :: map()
+  def meta_context(%__MODULE__{meta_context: meta_context}), do: meta_context
+
+  @doc """
+  Returns whether this context has any meta context populated.
+  """
+  @spec has_meta_context?(t()) :: boolean()
+  def has_meta_context?(%__MODULE__{meta_context: meta_context}),
+    do: meta_context != %{}
 end

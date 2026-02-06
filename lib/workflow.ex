@@ -165,7 +165,6 @@ defmodule Runic.Workflow do
   alias Runic.Closure
   alias Runic.Workflow.ReactionOccurred
   alias Runic.Component
-  alias Runic.Workflow.FanOut
   alias Runic.Transmutable
   alias Runic.Workflow.Components
   alias Runic.Workflow.Root
@@ -173,12 +172,12 @@ defmodule Runic.Workflow do
   alias Runic.Workflow.Condition
   alias Runic.Workflow.Fact
   alias Runic.Workflow.Rule
-  alias Runic.Workflow.FanIn
   alias Runic.Workflow.Join
   alias Runic.Workflow.Invokable
   alias Runic.Workflow.ComponentAdded
   alias Runic.Workflow.ReactionOccurred
   alias Runic.Workflow.Runnable
+  alias Runic.Workflow.Private
 
   @type t() :: %__MODULE__{
           name: String.t(),
@@ -207,10 +206,27 @@ defmodule Runic.Workflow do
             build_log: [],
             inputs: %{}
 
+  @doc """
+  Creates an empty workflow with no components.
+
+  ## Example
+
+      iex> alias Runic.Workflow
+      iex> workflow = Workflow.new()
+      iex> workflow.__struct__
+      Runic.Workflow
+  """
   def new(), do: new([])
 
   @doc """
-  Constructs a new Runic Workflow.
+  Constructs a new Runic Workflow with the given name or parameters.
+
+  ## Examples
+
+      iex> alias Runic.Workflow
+      iex> workflow = Workflow.new(:my_workflow)
+      iex> workflow.name
+      :my_workflow
   """
   def new(name) when is_binary(name) or is_atom(name) do
     new(name: name)
@@ -237,10 +253,52 @@ defmodule Runic.Workflow do
   end
 
   @doc false
-  def root(), do: %Root{}
+  def root(), do: Private.root()
 
   @doc """
   Adds a component to the workflow, connecting it to the parent step or root if no parent is specified.
+
+  ## Examples
+
+      iex> require Runic
+      iex> alias Runic.Workflow
+      iex> step = Runic.step(fn x -> x + 1 end, name: :add_one)
+      iex> workflow = Workflow.new() |> Workflow.add(step)
+      iex> Workflow.get_component(workflow, :add_one) |> Map.get(:name)
+      :add_one
+
+      iex> require Runic
+      iex> alias Runic.Workflow
+      iex> s1 = Runic.step(fn x -> x + 1 end, name: :first)
+      iex> s2 = Runic.step(fn x -> x * 2 end, name: :second)
+      iex> workflow = Workflow.new() |> Workflow.add(s1) |> Workflow.add(s2, to: :first)
+      iex> workflow |> Workflow.react_until_satisfied(5) |> Workflow.raw_productions() |> Enum.sort()
+      [6, 12]
+
+  When `:to` is a list of parent names, a Join is created so the dependent step
+  waits for all parents to produce facts before running:
+
+      require Runic
+      alias Runic.Workflow
+
+      a_step = Runic.step(fn x -> x + 1 end, name: :a)
+      b_step = Runic.step(fn x -> x * 2 end, name: :b)
+      sum_step = Runic.step(fn a, b -> a + b end, name: :sum)
+
+      workflow =
+        Workflow.new()
+        |> Workflow.add(a_step)
+        |> Workflow.add(b_step)
+        |> Workflow.add(sum_step, to: [:a, :b])
+
+      result =
+        workflow
+        |> Workflow.react_until_satisfied(5)
+        |> Workflow.raw_reactions()
+
+      6 in result  # :a produced 5 + 1
+      10 in result # :b produced 5 * 2
+      16 in result # :sum produced 6 + 10
   """
   def add(%__MODULE__{} = workflow, component, opts \\ []) do
     case opts[:to] do
@@ -321,6 +379,24 @@ defmodule Runic.Workflow do
     end
   end
 
+  @doc """
+  Adds a component to the workflow and returns the updated workflow along with
+  the `%ComponentAdded{}` events produced.
+
+  This is useful for event-sourced workflow construction where you need to
+  capture the events for later replay via `apply_events/2`.
+
+  ## Example
+
+      require Runic
+      alias Runic.Workflow
+
+      step = Runic.step(fn x -> x + 1 end, name: :add_one)
+      {workflow, events} = Workflow.add_with_events(Workflow.new(), step)
+
+      # Events can rebuild the same workflow
+      rebuilt = Workflow.apply_events(Workflow.new(), events)
+  """
   def add_with_events(%__MODULE__{} = workflow, component, opts \\ []) do
     to = opts[:to]
 
@@ -454,12 +530,37 @@ defmodule Runic.Workflow do
     Enum.reverse(wrk.build_log)
   end
 
+  @doc """
+  Applies a single `%ComponentAdded{}` event to the workflow, adding the
+  component described by the event.
+
+  Part of the event sourcing system — use with events captured from
+  `add_with_events/2` or `build_log/1` to reconstruct a workflow incrementally.
+  """
   def apply_event(%__MODULE__{} = wrk, %ComponentAdded{} = event) do
     component = component_from_added(event)
 
     add(wrk, component, to: event.to)
   end
 
+  @doc """
+  Applies a list of `%ComponentAdded{}` events to the workflow.
+
+  Batch version of `apply_event/2`. Events are applied in order via `Enum.reduce/3`.
+
+  ## Example
+
+      require Runic
+      alias Runic.Workflow
+
+      step1 = Runic.step(fn x -> x + 1 end, name: :add_one)
+      step2 = Runic.step(fn x -> x * 2 end, name: :double)
+
+      {workflow, events1} = Workflow.add_with_events(Workflow.new(), step1)
+      {_workflow, events2} = Workflow.add_with_events(workflow, step2, to: :add_one)
+
+      rebuilt = Workflow.apply_events(Workflow.new(), events1 ++ events2)
+  """
   def apply_events(%__MODULE__{} = wrk, events) when is_list(events) do
     Enum.reduce(events, wrk, fn event, acc ->
       apply_event(acc, event)
@@ -527,6 +628,19 @@ defmodule Runic.Workflow do
 
   @doc """
   Rebuilds a workflow from a list of `%ComponentAdded{}` and/or `%ReactionOccurred{}` events.
+
+  ## Examples
+
+      require Runic
+      alias Runic.Workflow
+
+      step = Runic.step(fn x -> x * 2 end, name: :double)
+      workflow = Workflow.new() |> Workflow.add(step)
+      log = Workflow.build_log(workflow)
+
+      restored = Workflow.from_log(log)
+      restored |> Workflow.react_until_satisfied(5) |> Workflow.raw_productions()
+      # => [10]
   """
   def from_log(events) do
     Enum.reduce(events, new(), fn
@@ -541,13 +655,16 @@ defmodule Runic.Workflow do
         wrk
 
       %ReactionOccurred{} = ro, wrk ->
+        # Rebuild getter_fn for :meta_ref edges during restoration
+        properties = restore_meta_ref_properties(ro.reaction, ro.properties)
+
         reaction_edge =
           Graph.Edge.new(
             ro.from,
             ro.to,
             label: ro.reaction,
             weight: ro.weight,
-            properties: ro.properties
+            properties: properties
           )
 
         %__MODULE__{
@@ -557,6 +674,15 @@ defmodule Runic.Workflow do
     end)
   end
 
+  # Rebuild getter_fn for :meta_ref edges during from_log restoration
+  # The getter_fn was stripped during serialization and must be rebuilt
+  defp restore_meta_ref_properties(:meta_ref, properties) when is_map(properties) do
+    getter_fn = build_getter_fn(properties)
+    Map.put(properties, :getter_fn, getter_fn)
+  end
+
+  defp restore_meta_ref_properties(_label, properties), do: properties
+
   defp build_eval_env() do
     require Runic
     import Runic, warn: false
@@ -564,6 +690,25 @@ defmodule Runic.Workflow do
     __ENV__
   end
 
+  @doc """
+  Returns the complete event log combining `build_log/1` and reaction events.
+
+  The returned list contains `%ComponentAdded{}` events followed by
+  `%ReactionOccurred{}` events, providing a full serializable snapshot of
+  the workflow structure and execution state. Use with `from_log/1` to
+  persist and restore both the workflow definition and its runtime state.
+
+  ## Example
+
+      require Runic
+      alias Runic.Workflow
+
+      workflow = Runic.workflow(steps: [Runic.step(fn x -> x + 1 end, name: :add)])
+      ran = Workflow.react_until_satisfied(workflow, 5)
+
+      log = Workflow.log(ran)
+      restored = Workflow.from_log(log)
+  """
   def log(wrk) do
     build_log(wrk) ++ reactions_occurred(wrk)
   end
@@ -575,15 +720,27 @@ defmodule Runic.Workflow do
 
     for %Graph.Edge{} = edge <-
           Graph.edges(g, by: reaction_edge_kinds) do
+      # Strip getter_fn from :meta_ref edges - it cannot be serialized
+      # and will be rebuilt during from_log restoration
+      properties = strip_getter_fn_for_serialization(edge.label, edge.properties)
+
       %ReactionOccurred{
         from: edge.v1,
         to: edge.v2,
         reaction: edge.label,
         weight: edge.weight,
-        properties: edge.properties
+        properties: properties
       }
     end
   end
+
+  # Strip getter_fn from :meta_ref edge properties for serialization
+  # The getter_fn is rebuilt during from_log restoration using build_getter_fn/1
+  defp strip_getter_fn_for_serialization(:meta_ref, properties) when is_map(properties) do
+    Map.delete(properties, :getter_fn)
+  end
+
+  defp strip_getter_fn_for_serialization(_label, properties), do: properties
 
   # def replay(%__MODULE__{}, log) when is_list(log) do
   #   Enum.reduce(log, new(), fn
@@ -599,38 +756,24 @@ defmodule Runic.Workflow do
   # end
 
   @doc false
-  def register_component(%__MODULE__{} = workflow, component) do
-    hash = Component.hash(component)
-
-    workflow =
-      %__MODULE__{
-        workflow
-        | components: Map.put(workflow.components, component.name, hash)
-      }
-
-    # For Map components, also register their sub-components with proper namespacing
-    case component do
-      %Runic.Workflow.Map{components: map_components, name: map_name}
-      when not is_nil(map_components) ->
-        Enum.reduce(map_components, workflow, fn {sub_name, sub_component}, acc ->
-          case sub_name do
-            :fan_out ->
-              # Register fan_out as {map_name, :fan_out}
-              components = Map.put(acc.components, {map_name, :fan_out}, sub_component.hash)
-              %__MODULE__{acc | components: components}
-
-            _ ->
-              acc
-          end
-        end)
-
-      _ ->
-        workflow
-    end
-  end
+  def register_component(workflow, component), do: Private.register_component(workflow, component)
 
   @doc """
   Returns a map of all registered components in the workflow by the registered component name.
+
+  ## Examples
+
+      iex> require Runic
+      iex> alias Runic.Workflow
+      iex> workflow = Runic.workflow(steps: [
+      ...>   Runic.step(fn x -> x + 1 end, name: :add),
+      ...>   Runic.step(fn x -> x * 2 end, name: :mult)
+      ...> ])
+      iex> components = Workflow.components(workflow)
+      iex> is_map(components)
+      true
+      iex> Map.keys(components) |> Enum.sort()
+      [:add, :mult]
   """
   def components(%__MODULE__{} = workflow) do
     Map.new(workflow.components, fn {name, hash} ->
@@ -640,6 +783,16 @@ defmodule Runic.Workflow do
 
   @doc """
   Returns a keyword list of sub-components of the given component by kind.
+
+  ## Examples
+
+      iex> require Runic
+      iex> alias Runic.Workflow
+      iex> rule = Runic.rule(fn x when x > 0 -> :positive end, name: :pos_check)
+      iex> workflow = Workflow.new() |> Workflow.add(rule)
+      iex> subs = Workflow.sub_components(workflow, :pos_check)
+      iex> Keyword.keys(subs) |> Enum.sort()
+      [:condition, :reaction]
   """
   def sub_components(%__MODULE__{} = workflow, component_name) do
     component = get_component(workflow, component_name)
@@ -649,6 +802,13 @@ defmodule Runic.Workflow do
     |> Enum.map(fn edge -> {edge.properties.kind, edge.v2} end)
   end
 
+  @doc """
+  Returns a list of components in the workflow graph that are compatible for
+  connection with the given component.
+
+  Compatibility is determined by matching arity and requiring the vertex to
+  implement the `Component` protocol. Accepts a component name or struct.
+  """
   # extend with I/O contract checks
   def connectables(%__MODULE__{} = wrk, name)
       when is_binary(name) or is_atom(name) or is_tuple(name) do
@@ -672,6 +832,16 @@ defmodule Runic.Workflow do
     end)
   end
 
+  @doc """
+  Checks whether a component can be connected at a given point in the workflow.
+
+  When called with `to: component_name`, validates that the target component
+  exists, arities match, and the components are connectable per the `Component`
+  protocol. Returns `:ok` on success or `{:error, reason}` on failure.
+
+  The 2-arity version (no `:to` option) always returns `:ok`, since any
+  component can be added to the workflow root.
+  """
   def connectable?(wrk, component, to: component_name) do
     with {:ok, added_to} <- fetch_component(wrk, component_name),
          :ok <- arity_match(component, added_to),
@@ -699,49 +869,10 @@ defmodule Runic.Workflow do
     end
   end
 
-  def add_before_hooks(%__MODULE__{} = workflow, nil), do: workflow
-
-  def add_before_hooks(%__MODULE__{} = workflow, hooks) do
-    %__MODULE__{
-      workflow
-      | before_hooks:
-          Enum.reduce(hooks, workflow.before_hooks, fn
-            {name, hook}, acc when is_function(hook, 3) ->
-              node = resolve_component_to_node(workflow, name)
-              node_hash = node.hash
-              hooks_for_component = Map.get(acc, node_hash, [])
-              Map.put(acc, node_hash, Enum.reverse([hook | hooks_for_component]))
-
-            {name, hooks}, acc when is_list(hooks) ->
-              node = resolve_component_to_node(workflow, name)
-              node_hash = node.hash
-              hooks_for_component = Map.get(acc, node_hash, [])
-              Map.put(acc, node_hash, hooks ++ hooks_for_component)
-          end)
-    }
-  end
-
-  def add_after_hooks(%__MODULE__{} = workflow, nil), do: workflow
-
-  def add_after_hooks(%__MODULE__{} = workflow, hooks) do
-    %__MODULE__{
-      workflow
-      | after_hooks:
-          Enum.reduce(hooks, workflow.after_hooks, fn
-            {name, hook}, acc when is_function(hook, 3) ->
-              node = resolve_component_to_node(workflow, name)
-              node_hash = node.hash
-              hooks_for_component = Map.get(acc, node_hash, [])
-              Map.put(acc, node_hash, Enum.reverse([hook | hooks_for_component]))
-
-            {name, hooks}, acc when is_list(hooks) ->
-              node = resolve_component_to_node(workflow, name)
-              node_hash = node.hash
-              hooks_for_component = Map.get(acc, node_hash, [])
-              Map.put(acc, node_hash, hooks ++ hooks_for_component)
-          end)
-    }
-  end
+  @doc false
+  def add_before_hooks(workflow, hooks), do: Private.add_before_hooks(workflow, hooks)
+  @doc false
+  def add_after_hooks(workflow, hooks), do: Private.add_after_hooks(workflow, hooks)
 
   defp resolve_component_to_node(%__MODULE__{} = workflow, {component_name, sub_component_kind}) do
     get_component(workflow, {component_name, sub_component_kind}) |> List.first()
@@ -756,6 +887,20 @@ defmodule Runic.Workflow do
     get_by_hash(workflow, hash)
   end
 
+  @doc """
+  Attaches a hook function to be run before a given component step.
+
+  The hook is a 3-arity function receiving `(step, workflow, input_fact)` and
+  must return the (possibly modified) workflow.
+
+  ## Example
+
+      workflow
+      |> Workflow.attach_before_hook(:my_step, fn step, workflow, input_fact ->
+        IO.inspect(input_fact, label: "Input fact")
+        workflow
+      end)
+  """
   def attach_before_hook(%__MODULE__{} = workflow, component_name, hook)
       when is_function(hook, 3) do
     node = resolve_component_to_node(workflow, component_name)
@@ -805,29 +950,12 @@ defmodule Runic.Workflow do
   end
 
   @doc false
-  def run_before_hooks(%__MODULE__{} = workflow, %{hash: hash} = step, input_fact) do
-    case get_before_hooks(workflow, hash) do
-      nil ->
-        workflow
+  def run_before_hooks(workflow, step, input_fact),
+    do: Private.run_before_hooks(workflow, step, input_fact)
 
-      hooks ->
-        Enum.reduce(hooks, workflow, fn hook, wrk -> hook.(step, wrk, input_fact) end)
-    end
-  end
-
-  def run_before_hooks(%__MODULE__{} = workflow, _step, _input_fact), do: workflow
-
-  def run_after_hooks(%__MODULE__{} = workflow, %{hash: hash} = step, output_fact) do
-    case get_after_hooks(workflow, hash) do
-      nil ->
-        workflow
-
-      hooks ->
-        Enum.reduce(hooks, workflow, fn hook, wrk -> hook.(step, wrk, output_fact) end)
-    end
-  end
-
-  def run_after_hooks(%__MODULE__{} = workflow, _step, _input_fact), do: workflow
+  @doc false
+  def run_after_hooks(workflow, step, output_fact),
+    do: Private.run_after_hooks(workflow, step, output_fact)
 
   @doc """
   Applies a list of hook apply functions to the workflow.
@@ -848,14 +976,6 @@ defmodule Runic.Workflow do
   end
 
   def apply_hook_fns(%__MODULE__{} = workflow, nil), do: workflow
-
-  defp get_before_hooks(%__MODULE__{} = workflow, hash) do
-    Map.get(workflow.before_hooks, hash)
-  end
-
-  defp get_after_hooks(%__MODULE__{} = workflow, hash) do
-    Map.get(workflow.after_hooks, hash)
-  end
 
   # def remove_component(%__MODULE__{} = workflow, component_name) do
   #   component = get_component(workflow, component_name)
@@ -878,13 +998,7 @@ defmodule Runic.Workflow do
   @doc """
   Adds a step to the root of the workflow that is always evaluated with a new fact.
   """
-  def add_step(%__MODULE__{} = workflow, child_step) when is_function(child_step) do
-    add_step(workflow, %Root{}, Step.new(work: child_step))
-  end
-
-  def add_step(%__MODULE__{} = workflow, child_step) do
-    add_step(workflow, %Root{}, child_step)
-  end
+  def add_step(workflow, child_step), do: Private.add_step(workflow, child_step)
 
   @doc """
   Adds a dependent step to some other step in a workflow by name.
@@ -895,68 +1009,26 @@ defmodule Runic.Workflow do
 
   If you're just building a pipeline, dependent steps can be sufficient, however you might want Rules for conditional branching logic.
   """
-  def add_step(%__MODULE__{graph: g} = workflow, %Root{}, %Condition{} = child_step) do
-    %__MODULE__{
-      workflow
-      | graph:
-          g
-          |> Graph.add_vertex(child_step, child_step.hash)
-          |> Graph.add_edge(%Root{}, child_step, label: :flow, weight: 0)
-    }
-  end
+  def add_step(workflow, parent_step, child_step),
+    do: Private.add_step(workflow, parent_step, child_step)
 
-  def add_step(%__MODULE__{graph: g} = workflow, %Root{}, %{} = child_step) do
-    %__MODULE__{
-      workflow
-      | graph:
-          g
-          |> Graph.add_vertex(child_step, child_step.hash)
-          |> Graph.add_edge(%Root{}, child_step, label: :flow, weight: 0)
-    }
-  end
+  @doc """
+  Adds a list of rules to the workflow root.
 
-  def add_step(
-        %__MODULE__{} = workflow,
-        %{} = parent_step,
-        {child_step, grand_child_steps}
-      ) do
-    Enum.reduce(
-      grand_child_steps,
-      add_step(workflow, parent_step, child_step),
-      fn grand_child_step, wrk -> add_step(wrk, child_step, grand_child_step) end
-    )
-  end
+  Each rule is added via `add/2`. Passing `nil` is a no-op.
 
-  def add_step(
-        %__MODULE__{} = workflow,
-        {%FanOut{}, [%Step{} = map_step]},
-        child_step
-      ) do
-    add_step(workflow, map_step, child_step)
-  end
+  ## Example
 
-  def add_step(%__MODULE__{graph: g} = workflow, %{} = parent_step, %{} = child_step) do
-    %__MODULE__{
-      workflow
-      | graph:
-          g
-          |> Graph.add_vertex(child_step, to_string(child_step.hash))
-          |> Graph.add_edge(parent_step, child_step, label: :flow, weight: 0)
-    }
-  end
+      require Runic
+      alias Runic.Workflow
 
-  def add_step(%__MODULE__{} = workflow, parent_steps, %{} = child_step)
-      when is_list(parent_steps) do
-    Enum.reduce(parent_steps, workflow, fn parent_step, wrk ->
-      add_step(wrk, parent_step, child_step)
-    end)
-  end
+      rules = [
+        Runic.rule(fn x when x > 0 -> :positive end, name: :pos),
+        Runic.rule(fn x when x < 0 -> :negative end, name: :neg)
+      ]
 
-  def add_step(%__MODULE__{} = workflow, parent_step_name, child_step)
-      when is_atom(parent_step_name) or is_binary(parent_step_name) do
-    add_step(workflow, get_component!(workflow, parent_step_name), child_step)
-  end
-
+      workflow = Workflow.new() |> Workflow.add_rules(rules)
+  """
   def add_rules(workflow, nil), do: workflow
 
   def add_rules(workflow, rules) do
@@ -965,6 +1037,29 @@ defmodule Runic.Workflow do
     end)
   end
 
+  @doc """
+  Adds a batch of steps to the workflow, supporting pipelines and joins.
+
+  Accepts a list where each element is one of:
+
+    - `%Step{}` — added directly to the workflow root
+    - `{%Step{}, dependent_steps}` — a pipeline: the parent step is added to root,
+      then dependent steps are connected downstream
+    - `{[%Step{}, ...], dependent_steps}` — multiple parent steps joined: all parents
+      are added to root, a `Join` node is created, and dependents follow the join
+
+  Passing `nil` is a no-op.
+
+  ## Example
+
+      require Runic
+      alias Runic.Workflow
+
+      workflow = Workflow.new() |> Workflow.add_steps([
+        {Runic.step(fn x -> x + 1 end, name: :add),
+         [Runic.step(fn x -> x * 2 end, name: :double)]}
+      ])
+  """
   def add_steps(workflow, steps) when is_list(steps) do
     # root level pass
     Enum.reduce(steps, workflow, fn
@@ -995,61 +1090,11 @@ defmodule Runic.Workflow do
 
   def add_steps(workflow, nil), do: workflow
 
-  def add_dependent_steps(workflow, {parent_step, dependent_steps}) do
-    Enum.reduce(dependent_steps, workflow, fn
-      {[_step | _] = parent_steps, dependent_steps}, wrk ->
-        wrk =
-          Enum.reduce(parent_steps, wrk, fn step, wrk ->
-            add(wrk, step, to: parent_step)
-          end)
+  @doc false
+  def add_dependent_steps(workflow, parent_and_deps),
+    do: Private.add_dependent_steps(workflow, parent_and_deps)
 
-        join =
-          parent_steps
-          |> Enum.map(& &1.hash)
-          |> Join.new()
-
-        wrk = add_step(wrk, parent_steps, join)
-
-        add_dependent_steps(wrk, {join, dependent_steps})
-
-      {%Join{} = step, _dependent_steps} = parent_and_children, wrk ->
-        wrk = add_step(wrk, parent_step, step)
-        add_dependent_steps(wrk, parent_and_children)
-
-      {step, _dependent_steps} = parent_and_children, wrk ->
-        wrk = add(wrk, step, to: parent_step)
-        add_dependent_steps(wrk, parent_and_children)
-
-      step, wrk ->
-        add(wrk, step, to: parent_step)
-    end)
-  end
-
-  def maybe_put_component(
-        %__MODULE__{components: components} = workflow,
-        %FanOut{name: name} = step
-      ) do
-    %__MODULE__{
-      workflow
-      | components: Map.put(components, name, step)
-    }
-  end
-
-  def maybe_put_component(
-        %__MODULE__{components: components} = workflow,
-        %{name: name} = step
-      ) do
-    %__MODULE__{
-      workflow
-      | components: Map.put(components, name, step)
-    }
-  end
-
-  def maybe_put_component(%__MODULE__{} = workflow, %FanIn{map: nil}) do
-    workflow
-  end
-
-  def maybe_put_component(%__MODULE__{} = workflow, %{} = _step), do: workflow
+  def maybe_put_component(workflow, step), do: Private.maybe_put_component(workflow, step)
 
   def get_named_vertex(%__MODULE__{graph: g, mapped: mapped}, name) do
     hash = Map.get(mapped, name)
@@ -1127,6 +1172,23 @@ defmodule Runic.Workflow do
     get_component(wrk, name) || raise(KeyError, "No component found with name #{name}")
   end
 
+  @doc """
+  Retrieves a component from the workflow by name, returning an ok/error tuple.
+
+  Returns `{:ok, component}` if found, or `{:error, :no_component_by_name}` if
+  no component is registered with the given name.
+
+  ## Example
+
+      iex> require Runic
+      iex> alias Runic.Workflow
+      iex> workflow = Workflow.new() |> Workflow.add(Runic.step(fn x -> x end, name: :identity))
+      iex> {:ok, step} = Workflow.fetch_component(workflow, :identity)
+      iex> step.name
+      :identity
+      iex> Workflow.fetch_component(workflow, :nonexistent)
+      {:error, :no_component_by_name}
+  """
   def fetch_component(%__MODULE__{} = wrk, %{name: name}) do
     fetch_component(wrk, name)
   end
@@ -1175,19 +1237,8 @@ defmodule Runic.Workflow do
     for e <- Graph.out_edges(g, parent_step, by: :flow), do: e.v2
   end
 
-  @doc """
-  Adds a rule to the workflow. A rule's left hand side (condition) is a runnable which should return booleans.
-
-  In some cases the condition is in multiple parts and some of the conditional clauses already exist as steps
-  in which case we add the sub-clause(s) of the condition that don't exist as a dependent step to the conditions
-  that do exist and add the reaction step to the sub-conditions.
-  """
-  def add_rule(
-        %__MODULE__{} = workflow,
-        %Rule{} = rule
-      ) do
-    add(workflow, rule)
-  end
+  @doc false
+  def add_rule(workflow, rule), do: Private.add_rule(workflow, rule)
 
   @doc """
   Merges the second workflow into the first, maintaining the name of the first.
@@ -1361,14 +1412,20 @@ defmodule Runic.Workflow do
   end
 
   @doc false
-  def satisfied_condition_hashes(%__MODULE__{graph: graph}, %Fact{} = fact) do
-    for %Graph.Edge{} = edge <- Graph.out_edges(graph, fact, by: :satisfied),
-        do: edge.v2.hash
-  end
+  def satisfied_condition_hashes(workflow, fact),
+    do: Private.satisfied_condition_hashes(workflow, fact)
 
   @spec raw_reactions(Runic.Workflow.t()) :: list(any())
   @doc """
   Returns raw (output value) side effects of the workflow - i.e. facts resulting from the execution of a Runic.Step
+
+  ## Examples
+
+      iex> require Runic
+      iex> alias Runic.Workflow
+      iex> workflow = Runic.workflow(steps: [Runic.step(fn x -> x * 2 end)])
+      iex> workflow |> Workflow.react(5) |> Workflow.raw_reactions() |> Enum.sort()
+      [5, 10]
   """
   def raw_reactions(%__MODULE__{} = wrk) do
     wrk
@@ -1379,6 +1436,15 @@ defmodule Runic.Workflow do
   @spec reactions(Runic.Workflow.t()) :: list(Runic.Workflow.Fact.t())
   @doc """
   Returns raw (output value) side effects of the workflow - i.e. facts resulting from the execution of a Runic.Step
+
+  ## Examples
+
+      iex> require Runic
+      iex> alias Runic.Workflow
+      iex> workflow = Runic.workflow(steps: [Runic.step(fn x -> x * 2 end)])
+      iex> facts = workflow |> Workflow.react(5) |> Workflow.reactions()
+      iex> Enum.map(facts, & &1.value) |> Enum.sort()
+      [5, 10]
   """
   def reactions(%__MODULE__{graph: graph}) do
     for %Graph.Edge{} = edge <-
@@ -1418,6 +1484,15 @@ defmodule Runic.Workflow do
   Returns all productions of a component or sub component by name.
 
   Many components are made up of sub components so this may return multiple facts for each part.
+
+  ## Examples
+
+      iex> require Runic
+      iex> alias Runic.Workflow
+      iex> workflow = Runic.workflow(steps: [Runic.step(fn x -> x * 2 end, name: :double)])
+      iex> [fact] = workflow |> Workflow.react(5) |> Workflow.productions(:double)
+      iex> fact.value
+      10
   """
   def productions(%__MODULE__{} = wrk, component_name)
       when is_atom(component_name) or is_binary(component_name) do
@@ -1443,6 +1518,20 @@ defmodule Runic.Workflow do
   Returns all facts produced in the workflow so far by component name and sub component.
 
   Returns a map where each key is the name of the component and the value is a list of facts produced by that component.
+
+  ## Examples
+
+      iex> require Runic
+      iex> alias Runic.Workflow
+      iex> workflow = Runic.workflow(steps: [
+      ...>   Runic.step(fn x -> x + 1 end, name: :add),
+      ...>   Runic.step(fn x -> x * 2 end, name: :mult)
+      ...> ])
+      iex> pbc = workflow |> Workflow.react(5) |> Workflow.productions_by_component()
+      iex> is_map(pbc)
+      true
+      iex> Map.keys(pbc) |> Enum.sort()
+      [:add, :mult]
   """
   def productions_by_component(%__MODULE__{components: components} = wrk) do
     Map.new(components, fn {name, component} ->
@@ -1483,6 +1572,28 @@ defmodule Runic.Workflow do
     end
   end
 
+  @doc """
+  Returns a map of component name to raw production values for all components.
+
+  Like `raw_productions/1` but grouped by component name.
+
+  ## Example
+
+      require Runic
+      alias Runic.Workflow
+
+      workflow = Runic.workflow(
+        steps: [
+          {Runic.step(fn x -> x + 1 end, name: "step 1"),
+           [Runic.step(fn x -> x + 2 end, name: "step 2")]}
+        ]
+      )
+
+      %{"step 1" => [2], "step 2" => [4]} =
+        workflow
+        |> Workflow.react_until_satisfied(1)
+        |> Workflow.raw_productions_by_component()
+  """
   def raw_productions_by_component(%__MODULE__{components: components} = wrk) do
     Map.new(components, fn {name, component} ->
       productions = raw_productions(wrk, component)
@@ -1539,11 +1650,7 @@ defmodule Runic.Workflow do
   end
 
   @doc false
-  def matches(%__MODULE__{graph: graph}) do
-    for %Graph.Edge{} = edge <- Graph.edges(graph, by: [:matchable, :satisfied]) do
-      edge.v2
-    end
-  end
+  def matches(workflow), do: Private.matches(workflow)
 
   @doc """
   Executes a single reaction cycle using the three-phase model.
@@ -1713,6 +1820,28 @@ defmodule Runic.Workflow do
   defp do_react_until_satisfied(%__MODULE__{} = workflow, false = _is_runnable?, _opts),
     do: workflow
 
+  @doc """
+  Removes all `%Fact{}` vertices and generation integers from the workflow graph.
+
+  This clears the workflow's accumulated memory while preserving its structure
+  (steps, rules, conditions, and flow edges). Useful for long-running workflows
+  to free memory between processing batches.
+
+  ## Example
+
+      require Runic
+      alias Runic.Workflow
+
+      workflow = Runic.workflow(steps: [Runic.step(fn x -> x + 1 end)])
+      workflow = Workflow.react(workflow, 5)
+
+      # Facts exist after reaction
+      refute Enum.empty?(Workflow.facts(workflow))
+
+      # Purge clears them
+      workflow = Workflow.purge_memory(workflow)
+      assert Enum.empty?(Workflow.facts(workflow))
+  """
   def purge_memory(%__MODULE__{} = wrk) do
     %__MODULE__{
       wrk
@@ -1742,6 +1871,17 @@ defmodule Runic.Workflow do
 
   Plan will always match through a single level of nodes and identify the next runnable activations
   available.
+
+  ## Examples
+
+      iex> require Runic
+      iex> alias Runic.Workflow
+      iex> workflow = Runic.workflow(steps: [Runic.step(fn x -> x * 2 end, name: :double)])
+      iex> workflow = Workflow.plan(workflow, 5)
+      iex> Workflow.is_runnable?(workflow)
+      true
+      iex> workflow |> Workflow.react() |> Workflow.raw_productions()
+      [10]
   """
   def plan(%__MODULE__{} = wrk, %Fact{} = fact) do
     invoke(wrk, root(), fact)
@@ -1753,6 +1893,17 @@ defmodule Runic.Workflow do
 
   @doc """
   `plan/1` will, for all next left hand side / match phase runnables activate and prepare next match runnables.
+
+  ## Examples
+
+      iex> require Runic
+      iex> alias Runic.Workflow
+      iex> rule = Runic.rule(fn x when x > 0 -> :positive end, name: :pos)
+      iex> workflow = Runic.workflow(rules: [rule])
+      iex> workflow = Workflow.plan(workflow, 5)
+      iex> workflow = Workflow.plan(workflow)
+      iex> Workflow.is_runnable?(workflow)
+      true
   """
   def plan(%__MODULE__{} = wrk) do
     wrk
@@ -1771,6 +1922,21 @@ defmodule Runic.Workflow do
   and you want to continue preparing reactions in the workflow from output facts.
 
   Finds facts via `:produced` edges that don't have pending `:runnable` or `:matchable` edges.
+
+  ## Examples
+
+      iex> require Runic
+      iex> alias Runic.Workflow
+      iex> workflow = Runic.workflow(steps: [
+      ...>   {Runic.step(fn x -> x + 1 end, name: :add),
+      ...>    [Runic.step(fn x -> x * 2 end, name: :double)]}
+      ...> ])
+      iex> workflow = Workflow.react_until_satisfied(workflow, 5)
+      iex> Workflow.is_runnable?(workflow)
+      false
+      iex> workflow = Workflow.plan_eagerly(workflow)
+      iex> Workflow.is_runnable?(workflow)
+      true
   """
   def plan_eagerly(%__MODULE__{graph: graph} = workflow) do
     # Find all produced facts that don't have pending activations
@@ -1794,6 +1960,18 @@ defmodule Runic.Workflow do
   Invokes all left hand side / match-phase runnables in the workflow for a given input fact until all are satisfied.
 
   Upon calling plan_eagerly/2, the workflow will only have right hand side runnables left to execute that react or react_until_satisfied can execute.
+
+  ## Examples
+
+      iex> require Runic
+      iex> alias Runic.Workflow
+      iex> rule = Runic.rule(fn x when x > 0 -> :positive end, name: :pos)
+      iex> workflow = Runic.workflow(rules: [rule])
+      iex> workflow = Workflow.plan_eagerly(workflow, 5)
+      iex> Workflow.is_runnable?(workflow)
+      true
+      iex> workflow |> Workflow.react() |> Workflow.raw_productions()
+      [:positive]
   """
   def plan_eagerly(%__MODULE__{} = workflow, %Fact{ancestry: nil} = input_fact) do
     workflow
@@ -1852,6 +2030,20 @@ defmodule Runic.Workflow do
 
   See `invoke_with_events/2` for a version that returns events produced by the invokation that can be
   persisted incrementally as the workflow is executed for durable execution of long running workflows.
+
+  ## Examples
+
+      require Runic
+      alias Runic.Workflow
+      alias Runic.Workflow.Fact
+
+      step = Runic.step(fn x -> x * 2 end, name: :double)
+      workflow = Workflow.new() |> Workflow.add(step)
+      fact = Fact.new(value: 5)
+
+      workflow = Workflow.invoke(workflow, Workflow.root(), fact)
+      Workflow.is_runnable?(workflow)
+      # => true
   """
   def invoke(%__MODULE__{} = wrk, step, fact) do
     case Invokable.prepare(step, wrk, fact) do
@@ -1869,6 +2061,21 @@ defmodule Runic.Workflow do
 
   @doc """
   Executes the Invokable protocol for runnable.
+
+  ## Examples
+
+      require Runic
+      alias Runic.Workflow
+      alias Runic.Workflow.Invokable
+
+      step = Runic.step(fn x -> x * 2 end, name: :double)
+      workflow = Workflow.new() |> Workflow.add(step)
+      workflow = Workflow.plan_eagerly(workflow, 5)
+
+      [runnable | _] = Workflow.prepared_runnables(workflow)
+      executed = Workflow.execute_runnable(runnable)
+      executed.status
+      # => :completed
   """
   def execute_runnable(%Runnable{} = runnable) do
     Invokable.execute(runnable.node, runnable)
@@ -1877,8 +2084,7 @@ defmodule Runic.Workflow do
   @doc false
   @deprecated "Use causal_depth/2 or ancestry_depth/2 instead"
   def causal_generation(%__MODULE__{} = workflow, %Fact{} = fact) do
-    # Backward compatibility: returns depth + 1 to match old behavior
-    ancestry_depth(workflow, fact) + 1
+    Private.causal_generation(workflow, fact)
   end
 
   @doc """
@@ -1886,6 +2092,20 @@ defmodule Runic.Workflow do
 
   This API is intended to enable durable execution of long running workflows by returning events that can be persisted elsewhere
   so the workflow state can be rebuilt with `from_log/1`.
+
+  ## Examples
+
+      require Runic
+      alias Runic.Workflow
+      alias Runic.Workflow.Fact
+
+      step = Runic.step(fn x -> x * 2 end, name: :double)
+      workflow = Workflow.new() |> Workflow.add(step)
+      fact = Fact.new(value: 5)
+
+      {workflow, events} = Workflow.invoke_with_events(workflow, Workflow.root(), fact)
+      is_list(events)
+      # => true
   """
   def invoke_with_events(%__MODULE__{} = wrk, step, fact) do
     wrk = invoke(wrk, step, fact)
@@ -1899,6 +2119,20 @@ defmodule Runic.Workflow do
 
   Uses ancestry-based causal ordering. Returns events with depth greater than
   the reference fact's depth, scoped to the same causal root.
+
+  ## Examples
+
+      require Runic
+      alias Runic.Workflow
+      alias Runic.Workflow.Fact
+
+      step = Runic.step(fn x -> x * 2 end, name: :double)
+      workflow = Workflow.new() |> Workflow.add(step)
+      fact = Fact.new(value: 5)
+      workflow = Workflow.react(workflow, fact)
+      events = Workflow.events_produced_since(workflow, fact)
+      length(events) > 0
+      # => true
   """
   def events_produced_since(
         %__MODULE__{graph: graph} = wrk,
@@ -1994,42 +2228,10 @@ defmodule Runic.Workflow do
     end
   end
 
-  def next_runnables(
-        %__MODULE__{} = wrk,
-        %Fact{ancestry: {parent_step_hash, _parent_fact}} = fact
-      ) do
-    wrk =
-      unless Graph.has_vertex?(wrk.graph, fact) do
-        log_fact(wrk, fact)
-      else
-        wrk
-      end
+  def next_runnables(workflow, fact_or_raw), do: Private.next_runnables(workflow, fact_or_raw)
 
-    parent_step = Map.get(wrk.graph.vertices, parent_step_hash)
-
-    next_step_hashes =
-      wrk
-      |> next_steps(parent_step)
-      |> Enum.map(& &1.hash)
-
-    for %Graph.Edge{} = edge <-
-          Enum.flat_map(next_step_hashes, &Graph.out_edges(wrk.graph, &1, by: :runnable)) do
-      {Map.get(wrk.graph.vertices, edge.v2), edge.v1}
-    end
-  end
-
-  def next_runnables(%__MODULE__{graph: graph}, raw_fact) do
-    for %Graph.Edge{} = edge <- Graph.out_edges(graph, root(), by: :flow) do
-      {edge.v1, Fact.new(value: raw_fact)}
-    end
-  end
-
-  def log_fact(%__MODULE__{graph: graph} = wrk, %Fact{} = fact) do
-    %__MODULE__{
-      wrk
-      | graph: Graph.add_vertex(graph, fact)
-    }
-  end
+  @doc false
+  def log_fact(workflow, fact), do: Private.log_fact(workflow, fact)
 
   defp maybe_prepare_next_generation_from_state_accumulations(
          %__MODULE__{graph: graph} = workflow
@@ -2064,11 +2266,11 @@ defmodule Runic.Workflow do
               relevant_state_produced_fact = Map.get(state_produced_facts_by_ancestor, state_hash)
 
               {:next,
-               draw_connection(
+               Private.draw_connection(
                  wrk,
                  relevant_state_produced_fact,
                  node.hash,
-                 connection_for_activatable(node)
+                 Private.connection_for_activatable(node)
                )}
             else
               {:next, wrk}
@@ -2091,77 +2293,27 @@ defmodule Runic.Workflow do
 
   @doc false
   @deprecated "Generation counters removed; use ancestry_depth/2 for causal ordering"
-  def prepare_next_generation(%__MODULE__{} = workflow, %Fact{}), do: workflow
+  def prepare_next_generation(%__MODULE__{} = workflow, %Fact{} = fact),
+    do: Private.prepare_next_generation(workflow, fact)
 
-  def prepare_next_generation(%__MODULE__{} = workflow, [%Fact{} | _] = _facts),
-    do: workflow
-
-  def draw_connection(%__MODULE__{graph: g} = wrk, node_1, node_2, connection, opts \\ []) do
-    opts = Keyword.put(opts, :label, connection)
-    %__MODULE__{wrk | graph: Graph.add_edge(g, node_1, node_2, opts)}
-  end
+  def prepare_next_generation(%__MODULE__{} = workflow, [%Fact{} | _] = facts),
+    do: Private.prepare_next_generation(workflow, facts)
 
   @doc false
-  def mark_runnable_as_ran(%__MODULE__{graph: graph} = workflow, step, fact) do
-    graph =
-      case Graph.update_labelled_edge(graph, fact, step, connection_for_activatable(step),
-             label: :ran
-           ) do
-        %Graph{} = graph -> graph
-        {:error, :no_such_edge} -> graph
-      end
-
-    %__MODULE__{
-      workflow
-      | graph: graph
-    }
-  end
+  def draw_connection(workflow, node_1, node_2, connection, opts \\ []),
+    do: Private.draw_connection(workflow, node_1, node_2, connection, opts)
 
   @doc false
-  def prepare_next_runnables(%__MODULE__{} = workflow, node, fact) do
-    workflow
-    |> next_steps(node)
-    |> Enum.reduce(workflow, fn step, wrk ->
-      draw_connection(wrk, fact, step, connection_for_activatable(step))
-    end)
-  end
+  def mark_runnable_as_ran(workflow, step, fact),
+    do: Private.mark_runnable_as_ran(workflow, step, fact)
 
   @doc false
-  def last_known_state(%__MODULE__{} = workflow, state_reaction) do
-    accumulator = Map.get(workflow.graph.vertices, state_reaction.state_hash)
+  def prepare_next_runnables(workflow, node, fact),
+    do: Private.prepare_next_runnables(workflow, node, fact)
 
-    state_from_memory =
-      for edge <- Graph.out_edges(workflow.graph, accumulator),
-          edge.label == :state_produced do
-        edge
-      end
-      |> List.first(%{})
-      |> Map.get(:v2)
-
-    init_state =
-      workflow.graph.vertices
-      |> Map.get(state_reaction.state_hash)
-      |> Map.get(:init)
-
-    unless is_nil(state_from_memory) do
-      state_from_memory
-      |> Map.get(:value)
-      |> invoke_init()
-    else
-      invoke_init(init_state)
-    end
-  end
-
-  defp invoke_init(init) when is_function(init), do: init.()
-  defp invoke_init(init), do: init
-
-  # todo extend this concept into protocol more completely
-  defp connection_for_activatable(step) do
-    case Invokable.match_or_execute(step) do
-      :match -> :matchable
-      :execute -> :runnable
-    end
-  end
+  @doc false
+  def last_known_state(workflow, state_reaction),
+    do: Private.last_known_state(workflow, state_reaction)
 
   @doc """
   Computes the causal depth of a fact by walking its ancestry chain.
@@ -2245,9 +2397,7 @@ defmodule Runic.Workflow do
   Returns a tuple of {before_hooks, after_hooks} for use in CausalContext.
   """
   @spec get_hooks(t(), integer()) :: {list(), list()}
-  def get_hooks(%__MODULE__{before_hooks: before, after_hooks: after_hooks}, node_hash) do
-    {Map.get(before, node_hash, []), Map.get(after_hooks, node_hash, [])}
-  end
+  def get_hooks(workflow, node_hash), do: Private.get_hooks(workflow, node_hash)
 
   # =============================================================================
   # Three-Phase Execution API (Phase 4 & 5)
@@ -2481,4 +2631,134 @@ defmodule Runic.Workflow do
   def to_edgelist(%__MODULE__{} = workflow, opts \\ []) do
     Runic.Workflow.Serializers.Edgelist.serialize(workflow, opts)
   end
+
+  # =============================================================================
+  # Meta Expression Support
+  # =============================================================================
+
+  @doc """
+  Prepares meta context for a node by traversing its `:meta_ref` edges.
+
+  Each `:meta_ref` edge has a `getter_fn` in its properties that extracts
+  the needed value from the workflow. This function executes all getter functions
+  and builds a map of context_key => value pairs.
+
+  ## Example
+
+      # For a Condition with state_of(:cart_accumulator) in its where clause
+      meta_context = prepare_meta_context(workflow, condition)
+      # => %{cart_accumulator_state: %{total: 150, items: [...]}}
+  """
+  @spec prepare_meta_context(t(), struct()) :: map()
+  def prepare_meta_context(workflow, node), do: Private.prepare_meta_context(workflow, node)
+
+  @doc """
+  Returns the list of components that a node depends on via `:meta_ref` edges.
+
+  This is useful for understanding what state a rule or step will read during
+  execution, and for validation/visualization.
+
+  ## Example
+
+      deps = meta_dependencies(workflow, my_rule_condition)
+      # => [%Accumulator{name: :cart_state, ...}]
+  """
+  @spec meta_dependencies(t(), struct()) :: list(struct())
+  def meta_dependencies(%__MODULE__{graph: graph} = _workflow, node) do
+    node_vertex =
+      case node do
+        %{hash: hash} -> hash
+        _ -> node
+      end
+
+    graph
+    |> Graph.out_edges(node_vertex, by: :meta_ref)
+    |> Enum.map(fn edge ->
+      case edge.v2 do
+        %{hash: hash} ->
+          Map.get(graph.vertices, hash, edge.v2)
+
+        hash when is_integer(hash) ->
+          Map.get(graph.vertices, hash)
+
+        _ ->
+          edge.v2
+      end
+    end)
+    |> Enum.reject(&is_nil/1)
+  end
+
+  @doc """
+  Returns the list of nodes that depend on a component via `:meta_ref` edges.
+
+  This is the inverse of `meta_dependencies/2` - it shows what nodes will
+  read this component's state.
+
+  ## Example
+
+      dependents = meta_dependents(workflow, cart_accumulator)
+      # => [%Condition{...}, %Step{...}]
+  """
+  @spec meta_dependents(t(), struct()) :: list(struct())
+  def meta_dependents(%__MODULE__{graph: graph} = _workflow, node) do
+    node_vertex =
+      case node do
+        %{hash: hash} -> hash
+        _ -> node
+      end
+
+    graph
+    |> Graph.in_edges(node_vertex, by: :meta_ref)
+    |> Enum.map(fn edge ->
+      case edge.v1 do
+        %{hash: hash} ->
+          Map.get(graph.vertices, hash, edge.v1)
+
+        hash when is_integer(hash) ->
+          Map.get(graph.vertices, hash)
+
+        _ ->
+          edge.v1
+      end
+    end)
+    |> Enum.reject(&is_nil/1)
+  end
+
+  @doc """
+  Builds a getter function for a meta reference based on its kind.
+
+  The getter function has signature `(workflow, target) -> value` and is
+  stored in the `:meta_ref` edge properties for use during the prepare phase.
+
+  ## Supported Kinds
+
+  - `:state_of` - Returns the last known state of an Accumulator/StateMachine
+  - `:step_ran?` - Returns boolean indicating if step has run
+  - `:fact_count` - Returns count of facts produced by a component
+  - `:latest_value` - Returns the most recent value produced
+  - `:latest_fact` - Returns the most recent fact produced
+  - `:all_values` - Returns all values produced as a list
+  - `:all_facts` - Returns all facts produced as a list
+  """
+  @spec build_getter_fn(map()) :: (t(), term() -> term())
+  def build_getter_fn(meta_ref), do: Private.build_getter_fn(meta_ref)
+
+  @doc """
+  Creates a `:meta_ref` edge from a node to its meta expression target.
+
+  This is called during `Component.connect/3` when a node has meta references.
+  The edge stores the getter function and context key for use during prepare.
+
+  ## Example
+
+      workflow = draw_meta_ref_edge(
+        workflow,
+        condition.hash,
+        accumulator.hash,
+        %{kind: :state_of, field_path: [:total], context_key: :cart_total}
+      )
+  """
+  @spec draw_meta_ref_edge(t(), term(), term(), map()) :: t()
+  def draw_meta_ref_edge(workflow, from, to, meta_ref),
+    do: Private.draw_meta_ref_edge(workflow, from, to, meta_ref)
 end

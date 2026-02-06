@@ -1,7 +1,5 @@
 <!-- MDOC !-->
 
-# Runic
-
 Runic is a tool for modeling your workflows as data that can be composed together at runtime.
 
 Runic components connect together in a `Runic.Workflow` supporting lazily evaluated concurrent execution.

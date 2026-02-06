@@ -35,8 +35,8 @@ defprotocol Runic.Component do
 
   ## Type Compatibility
 
-  The `Component` protocol includes type compatibility checking via the
-  `Runic.Component.TypeCompatibility` helper module. This enables schema-based
+  The `Component` protocol includes type compatibility checking via an internal
+  `TypeCompatibility` helper module. This enables schema-based
   validation when connecting components:
 
       # Type compatibility checks
@@ -713,6 +713,8 @@ defimpl Runic.Component, for: Runic.Workflow.Rule do
     |> Workflow.register_component(rule)
     |> Workflow.draw_connection(rule, reaction, :component_of, properties: %{kind: :reaction})
     |> Workflow.draw_connection(rule, condition, :component_of, properties: %{kind: :condition})
+    |> create_meta_ref_edges_for_node(rule.name, condition)
+    |> create_meta_ref_edges_for_node(rule.name, reaction)
   end
 
   def connect(rule, to, workflow) do
@@ -725,7 +727,50 @@ defimpl Runic.Component, for: Runic.Workflow.Rule do
     |> Workflow.register_component(rule)
     |> Workflow.draw_connection(rule, reaction, :component_of, properties: %{kind: :reaction})
     |> Workflow.draw_connection(rule, condition, :component_of, properties: %{kind: :condition})
+    |> create_meta_ref_edges_for_node(rule.name, condition)
+    |> create_meta_ref_edges_for_node(rule.name, reaction)
   end
+
+  defp create_meta_ref_edges_for_node(workflow, component_name, %{
+         meta_refs: meta_refs,
+         hash: node_hash
+       })
+       when is_list(meta_refs) and meta_refs != [] do
+    Enum.reduce(meta_refs, workflow, fn meta_ref, wrk ->
+      target = meta_ref.target
+
+      target_component =
+        case target do
+          name when is_atom(name) ->
+            Workflow.get_component(wrk, name)
+
+          hash when is_integer(hash) ->
+            Map.get(wrk.graph.vertices, hash)
+
+          {_parent, _subcomponent} = tuple_ref ->
+            # get_component/2 already handles tuple refs
+            case Workflow.get_component(wrk, tuple_ref) do
+              [component | _] -> component
+              [] -> nil
+              component -> component
+            end
+
+          _ ->
+            nil
+        end
+
+      if target_component do
+        Workflow.draw_meta_ref_edge(wrk, node_hash, target_component.hash, meta_ref)
+      else
+        raise Runic.UnresolvedReferenceError,
+          component_name: component_name,
+          reference_kind: meta_ref.kind,
+          target: target
+      end
+    end)
+  end
+
+  defp create_meta_ref_edges_for_node(workflow, _component_name, _node), do: workflow
 
   def get_component(rule, :reaction) do
     Map.get(rule.workflow.graph.vertices, rule.reaction_hash)
@@ -821,12 +866,21 @@ defimpl Runic.Component, for: Runic.Workflow.StateMachine do
   alias Runic.Workflow.Root
 
   def connect(state_machine, %Root{}, workflow) do
+    accumulator =
+      state_machine.workflow.graph
+      |> Graph.vertices()
+      |> Enum.find(&match?(%Accumulator{}, &1))
+
     state_machine.workflow.graph
     |> Graph.edges(by: :flow)
     |> Enum.reduce(workflow, fn edge, wrk ->
       %Workflow{wrk | graph: Graph.add_edge(wrk.graph, edge)}
     end)
     |> Map.put(:components, Map.merge(state_machine.workflow.components, workflow.components))
+    |> Workflow.register_component(state_machine)
+    |> Workflow.draw_connection(state_machine, accumulator, :component_of,
+      properties: %{kind: :accumulator}
+    )
   end
 
   def connect(state_machine, to, workflow) do
@@ -850,6 +904,10 @@ defimpl Runic.Component, for: Runic.Workflow.StateMachine do
           wrk
       end
     end)
+    |> Workflow.register_component(state_machine)
+    |> Workflow.draw_connection(state_machine, accumulator, :component_of,
+      properties: %{kind: :accumulator}
+    )
   end
 
   # def connect(state_machine, to, workflow) do

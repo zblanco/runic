@@ -25,6 +25,13 @@ defmodule Runic.ClosureMetadata do
       # Returns a %Macro.Env{} suitable for Code.eval_quoted/3
   """
 
+  @type t :: %__MODULE__{
+          imports: [module()] | nil,
+          aliases: [{atom(), module()}] | nil,
+          requires: [module()] | nil,
+          module: module() | nil
+        }
+
   @derive {Inspect, only: [:imports, :aliases, :requires, :module]}
   defstruct [
     # [module_name]

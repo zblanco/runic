@@ -35,6 +35,13 @@ defmodule Runic.Closure do
   alias Runic.ClosureMetadata
   alias Runic.Workflow.Components
 
+  @type t :: %__MODULE__{
+          source: Macro.t(),
+          bindings: map(),
+          metadata: ClosureMetadata.t() | nil,
+          hash: integer() | nil
+        }
+
   @derive {Inspect, only: [:hash, :bindings]}
   defstruct [
     # Quoted AST
