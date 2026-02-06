@@ -16,6 +16,7 @@ defmodule Runic.Workflow.Condition do
   """
 
   alias Runic.Workflow.Components
+  alias Runic.Closure
 
   @type meta_ref :: %{
           kind: atom(),
@@ -25,13 +26,16 @@ defmodule Runic.Workflow.Condition do
         }
 
   @type t :: %__MODULE__{
+          name: String.t() | atom() | nil,
           hash: integer() | nil,
           work: function(),
+          work_hash: integer() | nil,
+          closure: Closure.t() | nil,
           arity: non_neg_integer(),
           meta_refs: list(meta_ref())
         }
 
-  defstruct [:hash, :work, :arity, meta_refs: []]
+  defstruct [:name, :hash, :work, :work_hash, :closure, :arity, meta_refs: []]
 
   require Logger
 

@@ -260,6 +260,19 @@ defimpl Runic.Transmutable, for: Any do
   end
 end
 
+defimpl Runic.Transmutable, for: Runic.Workflow.Condition do
+  alias Runic.Workflow
+
+  def transmute(condition), do: to_workflow(condition)
+
+  def to_workflow(condition) do
+    Workflow.new(to_string(condition.hash))
+    |> Workflow.add(condition)
+  end
+
+  def to_component(condition), do: condition
+end
+
 defimpl Runic.Transmutable, for: Runic.Workflow.StateMachine do
   def transmute(fsm), do: to_workflow(fsm)
 

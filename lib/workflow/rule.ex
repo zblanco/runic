@@ -10,10 +10,16 @@ defmodule Runic.Workflow.Rule do
             reaction_hash: nil,
             hash: nil,
             inputs: nil,
-            outputs: nil
+            outputs: nil,
+            condition_refs: []
 
   @typedoc """
   A rule.
+
+  The `condition_refs` field carries compile-time condition reference markers
+  that need to be resolved at connect-time. Each entry is a `{ref_name, target_hash}`
+  tuple where `target_hash` is the hash of the node (Conjunction or reaction Step)
+  that the resolved condition should wire to.
   """
   @type t() :: %__MODULE__{
           name: String.t(),
@@ -22,7 +28,8 @@ defmodule Runic.Workflow.Rule do
           hash: integer(),
           condition_hash: integer(),
           reaction_hash: integer(),
-          closure: Closure.t() | nil
+          closure: Closure.t() | nil,
+          condition_refs: [{atom(), integer()}]
         }
 
   def new(opts \\ []) do

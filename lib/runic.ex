@@ -15,6 +15,7 @@ defmodule Runic do
   alias Runic.Workflow.Condition
   alias Runic.Workflow.Rule
   alias Runic.Workflow.Components
+  alias Runic.Workflow.Conjunction
   alias Runic.Workflow.FanOut
   alias Runic.Workflow.FanIn
   alias Runic.Workflow.Join
@@ -377,6 +378,25 @@ defmodule Runic do
       iex> cond.work.(42)
       true
 
+  ## With Name Option
+
+      iex> require Runic
+      iex> cond = Runic.condition(fn x -> x > 10 end, name: :big_number)
+      iex> cond.name
+      :big_number
+
+  ## Captured Variables with `^`
+
+  Use the pin operator `^` to capture outer scope variables:
+
+      iex> require Runic
+      iex> threshold = 10
+      iex> cond = Runic.condition(fn x -> x > ^threshold end)
+      iex> cond.closure.bindings[:threshold]
+      10
+      iex> cond.work.(15)
+      true
+
   ## Use Cases
 
   - **Expensive checks**: When a condition involves costly operations (e.g., API calls,
@@ -387,12 +407,236 @@ defmodule Runic do
 
   Note: Conditions should be pure and deterministic - they should not execute side effects.
   """
-  def condition(fun) when is_function(fun) do
-    Condition.new(fun)
+  defmacro condition({:fn, _, _} = work) do
+    source =
+      quote do
+        Runic.condition(unquote(work))
+      end
+
+    {rewritten_work, work_bindings} = traverse_expression(work, __CALLER__)
+
+    variable_bindings =
+      work_bindings
+      |> Enum.uniq()
+
+    closure_source =
+      quote do
+        Runic.condition(unquote(rewritten_work))
+      end
+
+    closure = build_closure(closure_source, variable_bindings, __CALLER__)
+
+    arity = condition_arity_from_fn_ast(work)
+
+    if Enum.empty?(variable_bindings) do
+      condition_hash = Components.fact_hash(source)
+      work_hash = Components.fact_hash(work)
+
+      quote do
+        Condition.new(
+          work: unquote(rewritten_work),
+          closure: unquote(closure),
+          name: unquote(default_component_name("condition", condition_hash)),
+          hash: unquote(condition_hash),
+          work_hash: unquote(work_hash),
+          arity: unquote(arity)
+        )
+      end
+    else
+      normalized_work = normalize_ast(rewritten_work)
+
+      quote do
+        closure = unquote(closure)
+        condition_hash = closure.hash
+
+        work_hash =
+          Components.fact_hash({unquote(Macro.escape(normalized_work)), closure.bindings})
+
+        Condition.new(
+          work: unquote(rewritten_work),
+          closure: closure,
+          name: unquote(default_component_name("condition", "_")) <> "_#{condition_hash}",
+          hash: condition_hash,
+          work_hash: work_hash,
+          arity: unquote(arity)
+        )
+      end
+    end
   end
 
-  def condition({m, f, a}) when is_atom(m) and is_atom(f) and is_integer(a) do
-    Condition.new(Function.capture(m, f, a))
+  defmacro condition({:&, _, _} = work) do
+    source =
+      quote do
+        Runic.condition(unquote(work))
+      end
+
+    condition_hash = Components.fact_hash(source)
+    work_hash = Components.fact_hash(work)
+
+    closure_source = source
+    closure = build_closure(closure_source, [], __CALLER__)
+
+    quote do
+      work_fn = unquote(work)
+      arity = Function.info(work_fn, :arity) |> elem(1)
+
+      Condition.new(
+        work: work_fn,
+        closure: unquote(closure),
+        name: unquote(default_component_name("condition", condition_hash)),
+        hash: unquote(condition_hash),
+        work_hash: unquote(work_hash),
+        arity: arity
+      )
+    end
+  end
+
+  defmacro condition(name) when is_atom(name) do
+    quote do
+      %Runic.Workflow.ConditionRef{name: unquote(name)}
+    end
+  end
+
+  defmacro condition({:{}, _, [m, f, a]}) do
+    quote do
+      work_fn = Function.capture(unquote(m), unquote(f), unquote(a))
+
+      Condition.new(
+        work: work_fn,
+        hash: Components.work_hash(work_fn),
+        arity: unquote(a)
+      )
+    end
+  end
+
+  defmacro condition(work, opts) do
+    {rewritten_opts, opts_bindings} =
+      if is_list(opts), do: traverse_options(opts, __CALLER__), else: {opts, []}
+
+    case work do
+      {:fn, _, _} ->
+        source =
+          quote do
+            Runic.condition(unquote(work), unquote(opts))
+          end
+
+        {rewritten_work, work_bindings} = traverse_expression(work, __CALLER__)
+
+        variable_bindings =
+          (work_bindings ++ opts_bindings)
+          |> Enum.uniq()
+
+        closure_source =
+          quote do
+            Runic.condition(unquote(rewritten_work), unquote(opts))
+          end
+
+        closure = build_closure(closure_source, variable_bindings, __CALLER__)
+
+        arity = condition_arity_from_fn_ast(work)
+
+        if Enum.empty?(variable_bindings) do
+          condition_hash = Components.fact_hash(source)
+          work_hash = Components.fact_hash(work)
+
+          condition_name =
+            rewritten_opts[:name] || default_component_name("condition", condition_hash)
+
+          quote do
+            Condition.new(
+              work: unquote(rewritten_work),
+              closure: unquote(closure),
+              name: unquote(condition_name),
+              hash: unquote(condition_hash),
+              work_hash: unquote(work_hash),
+              arity: unquote(arity)
+            )
+          end
+        else
+          base_name = rewritten_opts[:name]
+          normalized_work = normalize_ast(rewritten_work)
+
+          quote do
+            closure = unquote(closure)
+            condition_hash = closure.hash
+
+            work_hash =
+              Components.fact_hash({unquote(Macro.escape(normalized_work)), closure.bindings})
+
+            condition_name =
+              if unquote(base_name) do
+                unquote(base_name)
+              else
+                unquote(default_component_name("condition", "_")) <> "_#{condition_hash}"
+              end
+
+            Condition.new(
+              work: unquote(rewritten_work),
+              closure: closure,
+              name: condition_name,
+              hash: condition_hash,
+              work_hash: work_hash,
+              arity: unquote(arity)
+            )
+          end
+        end
+
+      {:&, _, _} ->
+        source =
+          quote do
+            Runic.condition(unquote(work), unquote(opts))
+          end
+
+        condition_hash = Components.fact_hash(source)
+        work_hash = Components.fact_hash(work)
+        closure = build_closure(source, [], __CALLER__)
+
+        condition_name =
+          rewritten_opts[:name] || default_component_name("condition", condition_hash)
+
+        quote do
+          work_fn = unquote(work)
+          arity = Function.info(work_fn, :arity) |> elem(1)
+
+          Condition.new(
+            work: work_fn,
+            closure: unquote(closure),
+            name: unquote(condition_name),
+            hash: unquote(condition_hash),
+            work_hash: unquote(work_hash),
+            arity: arity
+          )
+        end
+
+      _ ->
+        quote do
+          Runic.__condition_runtime__(unquote(work), unquote(rewritten_opts))
+        end
+    end
+  end
+
+  @doc false
+  def __condition_runtime__(fun, opts \\ []) when is_function(fun) do
+    arity = Function.info(fun, :arity) |> elem(1)
+
+    Condition.new(
+      work: fun,
+      hash: Components.work_hash(fun),
+      arity: arity,
+      name: opts[:name]
+    )
+  end
+
+  defp condition_arity_from_fn_ast({:fn, _, clauses}) do
+    case clauses do
+      [{:->, _, [args, _]} | _] ->
+        args
+        |> List.flatten()
+        |> Enum.count()
+
+      _ ->
+        1
+    end
   end
 
   @doc """
@@ -2288,6 +2532,44 @@ defmodule Runic do
     # Extract bindings and pattern from given clause
     {pattern_ast, top_binding, binding_vars} = compile_given_clause(given_clause)
 
+    # Check for condition references in the where clause
+    has_condition_refs = contains_condition_refs?(where_clause)
+
+    if has_condition_refs do
+      compile_given_when_then_rule_with_condition_refs(
+        where_clause,
+        then_clause,
+        pattern_ast,
+        top_binding,
+        binding_vars,
+        block,
+        opts,
+        env
+      )
+    else
+      compile_given_when_then_rule_standard(
+        where_clause,
+        then_clause,
+        pattern_ast,
+        top_binding,
+        binding_vars,
+        block,
+        opts,
+        env
+      )
+    end
+  end
+
+  defp compile_given_when_then_rule_standard(
+         where_clause,
+         then_clause,
+         pattern_ast,
+         top_binding,
+         binding_vars,
+         block,
+         opts,
+         env
+       ) do
     # Detect meta expressions in the where clause
     condition_meta_refs = detect_meta_expressions(where_clause)
     has_condition_meta = condition_meta_refs != []
@@ -2411,6 +2693,127 @@ defmodule Runic do
           closure: closure,
           inputs: unquote(rewritten_opts[:inputs]),
           outputs: unquote(rewritten_opts[:outputs])
+        }
+      end
+    end
+  end
+
+  defp compile_given_when_then_rule_with_condition_refs(
+         where_clause,
+         then_clause,
+         pattern_ast,
+         top_binding,
+         binding_vars,
+         block,
+         opts,
+         env
+       ) do
+    # Build boolean IR from the where clause AST
+    bool_tree = flatten_boolean_tree(where_clause)
+
+    # Compile reaction
+    reaction_meta_refs = detect_meta_expressions(then_clause)
+    has_reaction_meta = reaction_meta_refs != []
+
+    {reaction_fn, reaction_meta_refs} =
+      if has_reaction_meta do
+        fn_ast =
+          compile_meta_then_clause(
+            then_clause,
+            pattern_ast,
+            top_binding,
+            binding_vars,
+            env,
+            reaction_meta_refs
+          )
+
+        {fn_ast, reaction_meta_refs}
+      else
+        fn_ast = compile_then_clause(then_clause, pattern_ast, top_binding, binding_vars, env)
+        {fn_ast, []}
+      end
+
+    # Get options
+    {rewritten_opts, opts_bindings} = traverse_options(opts, env)
+    name = rewritten_opts[:name]
+    arity = 1
+
+    # Build workflow from boolean IR
+    {workflow, condition_hash, reaction_hash, rule_condition_refs_ast} =
+      build_condition_ref_workflow_from_tree(
+        bool_tree,
+        reaction_fn,
+        pattern_ast,
+        top_binding,
+        binding_vars,
+        env,
+        reaction_meta_refs
+      )
+
+    source =
+      quote do
+        Runic.rule(unquote(opts), do: unquote(block))
+      end
+
+    closure_source =
+      quote do
+        Runic.rule(unquote(rewritten_opts), do: unquote(block))
+      end
+
+    # Collect bindings from inline where expressions (for pin operators)
+    where_bindings =
+      Enum.flat_map(collect_inline_exprs(bool_tree), fn expr ->
+        {_rewritten, bindings} = traverse_expression(expr, env)
+        bindings
+      end)
+
+    # Collect bindings from then clause
+    {_rewritten_then, then_bindings} = traverse_expression(then_clause, env)
+    variable_bindings = Enum.uniq(where_bindings ++ then_bindings ++ opts_bindings)
+
+    closure = build_closure(closure_source, variable_bindings, env)
+
+    if Enum.empty?(variable_bindings) do
+      rule_hash = Components.fact_hash(source)
+      rule_name = name || default_component_name("rule", rule_hash)
+
+      quote do
+        %Rule{
+          name: unquote(rule_name),
+          arity: unquote(arity),
+          workflow: unquote(workflow),
+          condition_hash: unquote(condition_hash),
+          reaction_hash: unquote(reaction_hash),
+          hash: unquote(rule_hash),
+          closure: unquote(closure),
+          inputs: unquote(rewritten_opts[:inputs]),
+          outputs: unquote(rewritten_opts[:outputs]),
+          condition_refs: unquote(rule_condition_refs_ast)
+        }
+      end
+    else
+      base_name = name
+
+      quote do
+        closure = unquote(closure)
+        rule_hash = closure.hash
+
+        rule_name =
+          if unquote(base_name),
+            do: unquote(base_name),
+            else: unquote(default_component_name("rule", "_")) <> "_#{rule_hash}"
+
+        %Rule{
+          name: rule_name,
+          arity: unquote(arity),
+          workflow: unquote(workflow),
+          condition_hash: unquote(condition_hash),
+          reaction_hash: unquote(reaction_hash),
+          hash: rule_hash,
+          closure: closure,
+          inputs: unquote(rewritten_opts[:inputs]),
+          outputs: unquote(rewritten_opts[:outputs]),
+          condition_refs: unquote(rule_condition_refs_ast)
         }
       end
     end
@@ -3270,4 +3673,509 @@ defmodule Runic do
       end
     end
   end
+
+  # =============================================================================
+  # Condition Reference Detection & Boolean Decomposition (Phase 4)
+  # =============================================================================
+
+  defp contains_condition_refs?(ast) do
+    {_, found} =
+      Macro.prewalk(ast, false, fn
+        {:condition, _, [name]} = node, _acc when is_atom(name) -> {node, true}
+        node, acc -> {node, acc}
+      end)
+
+    found
+  end
+
+  # Flatten a boolean expression AST into an IR tree of :and/:or/:inline/:ref nodes.
+  # This supports arbitrary nesting like (a and b) or (c and d).
+  defp flatten_boolean_tree({:or, _, [lhs, rhs]}) do
+    {:or, flatten_or_branches(lhs) ++ flatten_or_branches(rhs)}
+  end
+
+  defp flatten_boolean_tree({:||, _, [lhs, rhs]}) do
+    {:or, flatten_or_branches(lhs) ++ flatten_or_branches(rhs)}
+  end
+
+  defp flatten_boolean_tree({:and, _, [_lhs, _rhs]} = ast) do
+    {:and, flatten_and_parts(ast)}
+  end
+
+  defp flatten_boolean_tree({:&&, _, [_lhs, _rhs]} = ast) do
+    {:and, flatten_and_parts(ast)}
+  end
+
+  defp flatten_boolean_tree({:condition, _, [name]} = _ast) when is_atom(name) do
+    {:ref, name}
+  end
+
+  defp flatten_boolean_tree(expr) do
+    {:inline, expr}
+  end
+
+  defp flatten_or_branches({:or, _, [lhs, rhs]}),
+    do: flatten_or_branches(lhs) ++ flatten_or_branches(rhs)
+
+  defp flatten_or_branches({:||, _, [lhs, rhs]}),
+    do: flatten_or_branches(lhs) ++ flatten_or_branches(rhs)
+
+  defp flatten_or_branches(expr), do: [flatten_boolean_tree(expr)]
+
+  defp flatten_and_parts({:and, _, [lhs, rhs]}),
+    do: flatten_and_parts(lhs) ++ flatten_and_parts(rhs)
+
+  defp flatten_and_parts({:&&, _, [lhs, rhs]}),
+    do: flatten_and_parts(lhs) ++ flatten_and_parts(rhs)
+
+  defp flatten_and_parts({:condition, _, [name]}) when is_atom(name) do
+    [{:ref, name}]
+  end
+
+  defp flatten_and_parts(expr), do: [{:inline, expr}]
+
+  defp compile_inline_condition_expr(expr, pattern_ast, top_binding, binding_vars, env) do
+    compile_when_clause(expr, pattern_ast, top_binding, binding_vars, env)
+  end
+
+  # Build workflow from boolean IR tree.
+  # NOTE: Consider introducing a %Disjunction{} struct in the future if boolean
+  # logic becomes more elaborate (e.g., negation, nested mixed expressions).
+  # For now, `or` is modeled as multiple independent flow paths to the reaction —
+  # the runtime deduplicates via mark_runnable_as_ran.
+  defp build_condition_ref_workflow_from_tree(
+         bool_tree,
+         reaction_fn,
+         pattern_ast,
+         top_binding,
+         binding_vars,
+         env,
+         reaction_meta_refs
+       ) do
+    reaction_ast_hash = Components.fact_hash(reaction_fn)
+    escaped_reaction_meta_refs = Macro.escape(reaction_meta_refs)
+
+    reaction_step =
+      quote do
+        Step.new(
+          work: unquote(reaction_fn),
+          hash: unquote(reaction_ast_hash),
+          meta_refs: unquote(escaped_reaction_meta_refs)
+        )
+      end
+
+    case bool_tree do
+      {:and, parts} ->
+        build_and_branch_workflow(
+          parts,
+          reaction_step,
+          reaction_ast_hash,
+          pattern_ast,
+          top_binding,
+          binding_vars,
+          env
+        )
+
+      {:or, branches} ->
+        build_or_branches_workflow(
+          branches,
+          reaction_step,
+          reaction_ast_hash,
+          pattern_ast,
+          top_binding,
+          binding_vars,
+          env
+        )
+
+      {:ref, name} ->
+        build_single_ref_workflow(name, reaction_step, reaction_ast_hash)
+
+      {:inline, expr} ->
+        build_single_inline_workflow(
+          expr,
+          reaction_step,
+          reaction_ast_hash,
+          pattern_ast,
+          top_binding,
+          binding_vars,
+          env
+        )
+    end
+  end
+
+  # Build workflow for a single and-group: inline conditions + refs → Conjunction → reaction
+  defp build_and_branch_workflow(
+         parts,
+         reaction_step,
+         reaction_ast_hash,
+         pattern_ast,
+         top_binding,
+         binding_vars,
+         env
+       ) do
+    {condition_refs, inline_exprs} = partition_and_parts(parts)
+
+    inline_conditions =
+      Enum.map(inline_exprs, fn expr ->
+        condition_fn =
+          compile_inline_condition_expr(expr, pattern_ast, top_binding, binding_vars, env)
+
+        condition_ast_hash = Components.fact_hash(condition_fn)
+
+        condition_node =
+          quote do
+            Condition.new(
+              work: unquote(condition_fn),
+              hash: unquote(condition_ast_hash),
+              arity: 1
+            )
+          end
+
+        {condition_node, condition_ast_hash}
+      end)
+
+    inline_hashes = Enum.map(inline_conditions, &elem(&1, 1))
+    escaped_refs = Macro.escape(condition_refs)
+
+    conjunction =
+      quote do
+        Conjunction.new(unquote(inline_hashes), unquote(escaped_refs))
+      end
+
+    workflow =
+      quote do
+        import Runic
+
+        wrk = Workflow.new()
+
+        wrk =
+          Enum.reduce(
+            unquote(Enum.map(inline_conditions, &elem(&1, 0))),
+            wrk,
+            fn cond_node, w -> Workflow.add_step(w, cond_node) end
+          )
+
+        conj = unquote(conjunction)
+        inline_conds = Workflow.conditions(wrk)
+
+        wrk =
+          Enum.reduce(inline_conds, wrk, fn cond_node, w ->
+            Workflow.add_step(w, cond_node, conj)
+          end)
+
+        Workflow.add_step(wrk, conj, unquote(reaction_step))
+      end
+
+    conjunction_hash =
+      quote do
+        Conjunction.new(unquote(inline_hashes), unquote(escaped_refs)).hash
+      end
+
+    rule_condition_refs =
+      quote do
+        conj_hash = unquote(conjunction_hash)
+        Enum.map(unquote(escaped_refs), fn ref_name -> {ref_name, conj_hash} end)
+      end
+
+    {workflow, conjunction_hash, reaction_ast_hash, rule_condition_refs}
+  end
+
+  # Build workflow for or-branches: each branch independently flows to the reaction step.
+  defp build_or_branches_workflow(
+         branches,
+         reaction_step,
+         reaction_ast_hash,
+         pattern_ast,
+         top_binding,
+         binding_vars,
+         env
+       ) do
+    compiled_branches =
+      Enum.map(branches, fn branch ->
+        compile_or_branch(branch, pattern_ast, top_binding, binding_vars, env)
+      end)
+
+    # Compute a synthetic condition hash from all branches
+    branch_hash_basis =
+      Enum.map(compiled_branches, fn
+        {:ref_branch, name} -> {:ref, name}
+        {:inline_branch, _node, hash} -> {:hash, hash}
+        {:and_branch, _inline_conds, _refs, conj_hash_ast} -> {:conj, conj_hash_ast}
+      end)
+
+    # Separate compile-time-resolvable and runtime hash components
+    {static_parts, dynamic_parts} =
+      Enum.split_with(branch_hash_basis, fn
+        {:ref, _} -> true
+        {:hash, _} -> true
+        {:conj, _} -> false
+      end)
+
+    static_basis = Enum.sort(static_parts)
+
+    workflow =
+      quote do
+        import Runic
+
+        reaction = unquote(reaction_step)
+        wrk = Workflow.new()
+        wrk = %Workflow{wrk | graph: Graph.add_vertex(wrk.graph, reaction, reaction.hash)}
+
+        unquote(build_or_branch_wiring(compiled_branches))
+      end
+
+    condition_hash =
+      if Enum.empty?(dynamic_parts) do
+        Components.fact_hash({:or, static_basis})
+      else
+        quote do
+          dynamic_hashes =
+            Enum.map(unquote(Macro.escape(dynamic_parts)), fn
+              {:conj, hash} -> {:conj_hash, hash}
+            end)
+
+          Components.fact_hash({:or, unquote(Macro.escape(static_basis)) ++ dynamic_hashes})
+        end
+      end
+
+    # Collect condition_refs: direct ref branches wire to reaction,
+    # and-branch refs wire to their conjunction
+    rule_condition_refs =
+      Enum.reduce(compiled_branches, [], fn
+        {:ref_branch, name}, acc ->
+          [{name, reaction_ast_hash} | acc]
+
+        {:and_branch, _inline_conds, refs, conj_hash_ast}, acc ->
+          and_refs = Enum.map(refs, fn ref_name -> {ref_name, conj_hash_ast} end)
+          and_refs ++ acc
+
+        {:inline_branch, _node, _hash}, acc ->
+          acc
+      end)
+      |> Enum.reverse()
+
+    # Separate static and dynamic refs
+    {static_refs, dynamic_refs} =
+      Enum.split_with(rule_condition_refs, fn {_name, target} -> is_integer(target) end)
+
+    rule_condition_refs_ast =
+      if Enum.empty?(dynamic_refs) do
+        Macro.escape(static_refs)
+      else
+        quote do
+          unquote(Macro.escape(static_refs)) ++
+            unquote(
+              Enum.map(dynamic_refs, fn {name, hash_ast} ->
+                quote do
+                  {unquote(name), unquote(hash_ast)}
+                end
+              end)
+            )
+        end
+      end
+
+    {workflow, condition_hash, reaction_ast_hash, rule_condition_refs_ast}
+  end
+
+  # Compile a single or-branch into a tagged tuple for workflow wiring
+  defp compile_or_branch({:ref, name}, _pattern_ast, _top_binding, _binding_vars, _env) do
+    {:ref_branch, name}
+  end
+
+  defp compile_or_branch({:inline, expr}, pattern_ast, top_binding, binding_vars, env) do
+    condition_fn =
+      compile_inline_condition_expr(expr, pattern_ast, top_binding, binding_vars, env)
+
+    condition_ast_hash = Components.fact_hash(condition_fn)
+
+    condition_node =
+      quote do
+        Condition.new(
+          work: unquote(condition_fn),
+          hash: unquote(condition_ast_hash),
+          arity: 1
+        )
+      end
+
+    {:inline_branch, condition_node, condition_ast_hash}
+  end
+
+  defp compile_or_branch({:and, parts}, pattern_ast, top_binding, binding_vars, env) do
+    {condition_refs, inline_exprs} = partition_and_parts(parts)
+
+    inline_conditions =
+      Enum.map(inline_exprs, fn expr ->
+        condition_fn =
+          compile_inline_condition_expr(expr, pattern_ast, top_binding, binding_vars, env)
+
+        condition_ast_hash = Components.fact_hash(condition_fn)
+
+        condition_node =
+          quote do
+            Condition.new(
+              work: unquote(condition_fn),
+              hash: unquote(condition_ast_hash),
+              arity: 1
+            )
+          end
+
+        {condition_node, condition_ast_hash}
+      end)
+
+    inline_hashes = Enum.map(inline_conditions, &elem(&1, 1))
+    escaped_refs = Macro.escape(condition_refs)
+
+    conj_hash_ast =
+      quote do
+        Conjunction.new(unquote(inline_hashes), unquote(escaped_refs)).hash
+      end
+
+    {:and_branch, inline_conditions, condition_refs, conj_hash_ast}
+  end
+
+  # Generate AST that wires each compiled branch to the reaction step in the workflow
+  defp build_or_branch_wiring(compiled_branches) do
+    Enum.reduce(compiled_branches, nil, fn branch, acc ->
+      branch_ast =
+        case branch do
+          {:ref_branch, _name} ->
+            # Condition ref branches have no inline nodes to add — they're wired at connect-time.
+            # The reaction step is already in the workflow; the ref's condition will be wired
+            # to the reaction by Component.connect/3 when the rule is added to a workflow.
+            nil
+
+          {:inline_branch, condition_node, _hash} ->
+            quote do
+              cond_node = unquote(condition_node)
+              wrk = Workflow.add_step(wrk, cond_node)
+              wrk = Workflow.add_step(wrk, cond_node, reaction)
+            end
+
+          {:and_branch, inline_conditions, condition_refs, _conj_hash_ast} ->
+            inline_nodes_ast = Enum.map(inline_conditions, &elem(&1, 0))
+            inline_hashes = Enum.map(inline_conditions, &elem(&1, 1))
+            escaped_refs = Macro.escape(condition_refs)
+
+            quote do
+              conj = Conjunction.new(unquote(inline_hashes), unquote(escaped_refs))
+
+              wrk =
+                Enum.reduce(
+                  unquote(inline_nodes_ast),
+                  wrk,
+                  fn cond_node, w -> Workflow.add_step(w, cond_node) end
+                )
+
+              branch_inline_conds =
+                Enum.filter(Graph.vertices(wrk.graph), fn
+                  %Condition{hash: h} -> h in unquote(inline_hashes)
+                  _ -> false
+                end)
+
+              wrk =
+                Enum.reduce(branch_inline_conds, wrk, fn cond_node, w ->
+                  Workflow.add_step(w, cond_node, conj)
+                end)
+
+              wrk = Workflow.add_step(wrk, conj, reaction)
+            end
+        end
+
+      case {acc, branch_ast} do
+        {nil, nil} ->
+          nil
+
+        {nil, ast} ->
+          ast
+
+        {acc, nil} ->
+          acc
+
+        {acc, ast} ->
+          quote do
+            unquote(acc)
+            unquote(ast)
+          end
+      end
+    end)
+    |> case do
+      nil ->
+        quote do
+          wrk
+        end
+
+      ast ->
+        quote do
+          unquote(ast)
+          wrk
+        end
+    end
+  end
+
+  # Build workflow for a single condition ref flowing directly to reaction
+  defp build_single_ref_workflow(name, reaction_step, reaction_ast_hash) do
+    workflow =
+      quote do
+        import Runic
+        wrk = Workflow.new()
+        reaction = unquote(reaction_step)
+        %Workflow{wrk | graph: Graph.add_vertex(wrk.graph, reaction, reaction.hash)}
+      end
+
+    condition_hash = Components.fact_hash({:or, [{:ref, name}]})
+    rule_condition_refs = Macro.escape([{name, reaction_ast_hash}])
+    {workflow, condition_hash, reaction_ast_hash, rule_condition_refs}
+  end
+
+  # Build workflow for a single inline condition flowing directly to reaction
+  defp build_single_inline_workflow(
+         expr,
+         reaction_step,
+         reaction_ast_hash,
+         pattern_ast,
+         top_binding,
+         binding_vars,
+         env
+       ) do
+    condition_fn =
+      compile_inline_condition_expr(expr, pattern_ast, top_binding, binding_vars, env)
+
+    condition_ast_hash = Components.fact_hash(condition_fn)
+
+    condition_node =
+      quote do
+        Condition.new(
+          work: unquote(condition_fn),
+          hash: unquote(condition_ast_hash),
+          arity: 1
+        )
+      end
+
+    workflow =
+      quote do
+        import Runic
+        wrk = Workflow.new()
+        cond_node = unquote(condition_node)
+        wrk = Workflow.add_step(wrk, cond_node)
+        Workflow.add_step(wrk, cond_node, unquote(reaction_step))
+      end
+
+    condition_hash = condition_ast_hash
+    {workflow, condition_hash, reaction_ast_hash, Macro.escape([])}
+  end
+
+  # Extract refs and inline expressions from and-group parts
+  defp partition_and_parts(parts) do
+    Enum.reduce(parts, {[], []}, fn
+      {:ref, name}, {refs, inlines} -> {[name | refs], inlines}
+      {:inline, expr}, {refs, inlines} -> {refs, [expr | inlines]}
+    end)
+    |> then(fn {refs, inlines} -> {Enum.reverse(refs), Enum.reverse(inlines)} end)
+  end
+
+  # Recursively collect all inline expressions from a boolean IR tree
+  defp collect_inline_exprs({:inline, expr}), do: [expr]
+  defp collect_inline_exprs({:ref, _}), do: []
+  defp collect_inline_exprs({:and, parts}), do: Enum.flat_map(parts, &collect_inline_exprs/1)
+  defp collect_inline_exprs({:or, branches}), do: Enum.flat_map(branches, &collect_inline_exprs/1)
 end

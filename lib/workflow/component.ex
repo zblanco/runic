@@ -11,8 +11,6 @@ defprotocol Runic.Component do
 
   | Function | Purpose |
   |----------|---------|
-  | `components/1` | List all connectable sub-components of a component |
-  | `connectables/2` | List compatible sub-components with another component |
   | `connectable?/2` | Check if a component can be connected to another |
   | `connect/3` | Connect this component to a parent in a workflow |
   | `source/1` | Returns the source AST for building/serializing the component |
@@ -58,7 +56,6 @@ defprotocol Runic.Component do
       # Introspection
       Runic.Component.hash(step)  # => content-addressable hash
       Runic.Component.source(step)  # => AST representation
-      Runic.Component.components(step)  # => [step: step]
 
       # Compatibility checking
       Runic.Component.connectable?(step, rule)  # => true
@@ -76,10 +73,6 @@ defprotocol Runic.Component do
 
       defimpl Runic.Component, for: MyApp.CustomComponent do
         alias Runic.Workflow
-
-        def components(component), do: [{component.name, component}]
-
-        def connectables(component, _other), do: components(component)
 
         def connectable?(_component, _other), do: true
 
@@ -115,15 +108,15 @@ defprotocol Runic.Component do
   # """
   # def get_component(component, workflow, sub_component_name)
 
-  @doc """
-  List all connectable sub-components of a component.
-  """
-  def components(component)
+  # @doc """
+  # List all connectable sub-components of a component.
+  # """
+  # def components(component)
 
-  @doc """
-  List compatible sub-components with the other component.
-  """
-  def connectables(component, other_component)
+  # @doc """
+  # List compatible sub-components with the other component.
+  # """
+  # def connectables(component, other_component)
 
   @doc """
   Check if a component can be connected to another component.
@@ -702,6 +695,7 @@ defimpl Runic.Component, for: Runic.Workflow.Rule do
   alias Runic.Workflow
   alias Runic.Workflow.Step
   alias Runic.Workflow.Reduce
+  alias Runic.Workflow.Conjunction
 
   def connect(rule, to, workflow) when to in [nil, %Runic.Workflow.Root{}] do
     wrk = Workflow.merge(workflow, rule.workflow)
@@ -715,6 +709,7 @@ defimpl Runic.Component, for: Runic.Workflow.Rule do
     |> Workflow.draw_connection(rule, condition, :component_of, properties: %{kind: :condition})
     |> create_meta_ref_edges_for_node(rule.name, condition)
     |> create_meta_ref_edges_for_node(rule.name, reaction)
+    |> resolve_condition_refs(rule)
   end
 
   def connect(rule, to, workflow) do
@@ -729,6 +724,7 @@ defimpl Runic.Component, for: Runic.Workflow.Rule do
     |> Workflow.draw_connection(rule, condition, :component_of, properties: %{kind: :condition})
     |> create_meta_ref_edges_for_node(rule.name, condition)
     |> create_meta_ref_edges_for_node(rule.name, reaction)
+    |> resolve_condition_refs(rule)
   end
 
   defp create_meta_ref_edges_for_node(workflow, component_name, %{
@@ -771,6 +767,52 @@ defimpl Runic.Component, for: Runic.Workflow.Rule do
   end
 
   defp create_meta_ref_edges_for_node(workflow, _component_name, _node), do: workflow
+
+  defp resolve_condition_refs(workflow, %{condition_refs: []}), do: workflow
+
+  defp resolve_condition_refs(workflow, %{condition_refs: refs, name: rule_name})
+       when is_list(refs) do
+    Enum.reduce(refs, workflow, fn {ref_name, target_hash}, wrk ->
+      referenced_condition = Workflow.get_component(wrk, ref_name)
+
+      if is_nil(referenced_condition) do
+        raise Runic.UnresolvedReferenceError,
+          component_name: rule_name,
+          reference_kind: :condition,
+          target: ref_name,
+          hint:
+            "Add condition(name: #{inspect(ref_name)}) to the workflow before adding this rule."
+      end
+
+      target_node = Map.get(wrk.graph.vertices, target_hash)
+
+      case target_node do
+        %Conjunction{} = conj ->
+          updated_conj = %Conjunction{
+            conj
+            | condition_hashes: MapSet.put(conj.condition_hashes, referenced_condition.hash),
+              condition_refs: List.delete(conj.condition_refs, ref_name)
+          }
+
+          %Workflow{
+            wrk
+            | graph:
+                wrk.graph
+                |> Graph.replace_vertex(conj, updated_conj)
+                |> Graph.add_edge(referenced_condition, updated_conj, label: :flow)
+          }
+
+        %Step{} ->
+          %Workflow{
+            wrk
+            | graph: Graph.add_edge(wrk.graph, referenced_condition, target_node, label: :flow)
+          }
+
+        _ ->
+          wrk
+      end
+    end)
+  end
 
   def get_component(rule, :reaction) do
     Map.get(rule.workflow.graph.vertices, rule.reaction_hash)
@@ -909,76 +951,6 @@ defimpl Runic.Component, for: Runic.Workflow.StateMachine do
       properties: %{kind: :accumulator}
     )
   end
-
-  # def connect(state_machine, to, workflow) do
-  #   wrk = Runic.transmute(state_machine)
-
-  #   # create a memory assertion to ensure that the state machine only reacts to facts producted by `to` parent step
-
-  #   # put memory assertion in conjunction with state conditions
-
-  #   # attach rewritten tree to root of into workflow
-
-  #   memory_assertion_fun_ast =
-  #     quote do
-  #       fn
-  #         _workflow, %Fact{ancestry: {parent_step_hash, _pfh}} ->
-  #           parent_step_hash == unquote(to.hash)
-
-  #         _workflow, _ ->
-  #           false
-  #       end
-  #     end
-
-  #   memory_assertion =
-  #     MemoryAssertion.new(
-  #       memory_assertion: fn
-  #         _workflow, %Fact{ancestry: {parent_step_hash, _pfh}} ->
-  #           parent_step_hash == to.hash
-
-  #         _workflow, _ ->
-  #           false
-  #       end,
-  #       hash: Runic.Workflow.Components.fact_hash(memory_assertion_fun_ast)
-  #     )
-
-  #   wrk =
-  #     wrk
-  #     |> Workflow.add_step(memory_assertion)
-
-  #   wrk.graph
-  #   |> Graph.edges(by: :flow)
-  #   |> Enum.reduce(workflow, fn
-  #     %Graph.Edge{v1: %Root{}, v2: %StateCondition{} = v2}, acc ->
-  #       conjunction =
-  #         Workflow.Conjunction.new([
-  #           v2,
-  #           memory_assertion
-  #         ])
-
-  #       next_accumulators =
-  #         Workflow.next_steps(wrk, v2)
-
-  #       acc =
-  #         acc
-  #         |> Workflow.add_step(v2)
-  #         |> Workflow.add_step(v2, conjunction)
-  #         |> Workflow.add_step(memory_assertion, conjunction)
-
-  #       Enum.reduce(next_accumulators, acc, fn
-  #         next_acc, acc ->
-  #           Workflow.add_step(acc, conjunction, next_acc)
-  #       end)
-
-  #     %Graph.Edge{v1: %StateCondition{}, v2: %Accumulator{}}, acc ->
-  #       acc
-
-  #     %Graph.Edge{} = edge, acc ->
-  #       g = Graph.add_edge(acc.graph, edge)
-  #       %Workflow{acc | graph: g}
-  #   end)
-  #   |> Map.put(:components, Map.merge(wrk.components, workflow.components))
-  # end
 
   def get_component(state_machine, :reducer) do
     state_machine.workflow.graph
@@ -1139,6 +1111,107 @@ defimpl Runic.Component, for: Runic.Workflow.Accumulator do
 
   def outputs(%Runic.Workflow.Accumulator{outputs: user_outputs}) do
     user_outputs
+  end
+end
+
+defimpl Runic.Component, for: Runic.Workflow.Condition do
+  alias Runic.Workflow
+
+  def connect(condition, to, workflow) when is_list(to) do
+    join =
+      to
+      |> Enum.map(& &1.hash)
+      |> Workflow.Join.new()
+
+    wrk =
+      Enum.reduce(to, workflow, fn parent, wrk ->
+        Workflow.add_step(wrk, parent, join)
+      end)
+
+    wrk
+    |> Workflow.add_step(join, condition)
+    |> Workflow.draw_connection(condition, condition, :component_of,
+      properties: %{kind: :condition}
+    )
+    |> Workflow.register_component(condition)
+    |> create_meta_ref_edges(condition)
+  end
+
+  def connect(condition, to, workflow) do
+    workflow
+    |> Workflow.add_step(to, condition)
+    |> Workflow.draw_connection(condition, condition, :component_of,
+      properties: %{kind: :condition}
+    )
+    |> Workflow.register_component(condition)
+    |> create_meta_ref_edges(condition)
+  end
+
+  defp create_meta_ref_edges(workflow, %{meta_refs: meta_refs, hash: node_hash, name: name})
+       when is_list(meta_refs) and meta_refs != [] do
+    Enum.reduce(meta_refs, workflow, fn meta_ref, wrk ->
+      target = meta_ref.target
+
+      target_component =
+        case target do
+          name when is_atom(name) ->
+            Workflow.get_component(wrk, name)
+
+          hash when is_integer(hash) ->
+            Map.get(wrk.graph.vertices, hash)
+
+          {_parent, _subcomponent} = tuple_ref ->
+            case Workflow.get_component(wrk, tuple_ref) do
+              [component | _] -> component
+              [] -> nil
+              component -> component
+            end
+
+          _ ->
+            nil
+        end
+
+      if target_component do
+        Workflow.draw_meta_ref_edge(wrk, node_hash, target_component.hash, meta_ref)
+      else
+        raise Runic.UnresolvedReferenceError,
+          component_name: name,
+          reference_kind: meta_ref.kind,
+          target: target
+      end
+    end)
+  end
+
+  defp create_meta_ref_edges(workflow, _condition), do: workflow
+
+  def connectable?(_condition, _other_component), do: true
+
+  def source(%Runic.Workflow.Condition{closure: %Runic.Closure{} = closure}) do
+    closure.source
+  end
+
+  def source(%Runic.Workflow.Condition{closure: nil}) do
+    nil
+  end
+
+  def hash(condition), do: condition.hash
+
+  def inputs(_condition) do
+    [
+      condition: [
+        type: :any,
+        doc: "Input value to evaluate"
+      ]
+    ]
+  end
+
+  def outputs(_condition) do
+    [
+      condition: [
+        type: :any,
+        doc: "Passthrough value when satisfied"
+      ]
+    ]
   end
 end
 
