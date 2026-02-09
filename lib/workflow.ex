@@ -328,16 +328,6 @@ defmodule Runic.Workflow do
         parent_steps = Enum.map(parent_steps, &get_component!(workflow, &1))
 
         do_add_component(workflow, component, parent_steps, opts)
-
-        # join =
-        #   parent_steps
-        #   |> Enum.map(& &1.hash)
-        #   |> Join.new()
-
-        # Enum.reduce(parent_steps, workflow, fn parent_step, acc ->
-        #   acc = add_step(acc, parent_step, join)
-        #   do_add_component(acc, component, join, opts)
-        # end)
     end
   end
 
@@ -347,13 +337,8 @@ defmodule Runic.Workflow do
     case {component, parent} do
       {%{__struct__: struct}, %Root{}} ->
         if struct not in Components.component_impls() do
-          workflow = add_step(workflow, parent, component)
-
-          if should_log do
-            append_build_log(workflow, component, parent)
-          else
-            workflow
-          end
+          transmuted = Transmutable.to_component(component)
+          do_add_component(workflow, transmuted, parent, opts)
         else
           workflow = Component.connect(component, parent, workflow)
 
@@ -364,18 +349,23 @@ defmodule Runic.Workflow do
           end
         end
 
-      {%{__struct__: _struct} = component, _parent} ->
-        workflow = Component.connect(component, parent, workflow)
-
-        if should_log do
-          append_build_log(workflow, component, parent)
+      {%{__struct__: struct} = component, _parent} ->
+        if struct not in Components.component_impls() do
+          transmuted = Transmutable.to_component(component)
+          do_add_component(workflow, transmuted, parent, opts)
         else
-          workflow
+          workflow = Component.connect(component, parent, workflow)
+
+          if should_log do
+            append_build_log(workflow, component, parent)
+          else
+            workflow
+          end
         end
 
       _otherwise ->
-        raise ArgumentError,
-              "Cannot add component #{inspect(component)} to #{inspect(parent)} in workflow, it does not implement Runic.Component protocol."
+        transmuted = Transmutable.to_component(component)
+        do_add_component(workflow, transmuted, parent, opts)
     end
   end
 

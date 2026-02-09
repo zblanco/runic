@@ -132,7 +132,6 @@ defimpl Runic.Transmutable, for: List do
         Runic.Transmutable.to_component(single_item)
 
       multiple_items ->
-        # Create a list processor step
         Runic.Workflow.Step.new(
           work: fn _input -> Enum.map(multiple_items, &Runic.Transmutable.to_component/1) end,
           name: "list_processor"
@@ -220,28 +219,6 @@ defimpl Runic.Transmutable, for: Any do
     |> to_string()
     |> Workflow.new()
     |> Workflow.add_step(work)
-  end
-
-  def to_component(%{type: :map_reduce, mapper: mapper} = spec) do
-    # Handle map-reduce component specification - create a Map struct
-    name = Map.get(spec, :name, "map_reduce_component")
-
-    # Create a simple pipeline workflow with just the mapper step
-    pipeline_step = Runic.Workflow.Step.new(work: mapper)
-
-    pipeline =
-      Runic.Workflow.new()
-      |> Runic.Workflow.add_step(pipeline_step)
-
-    %Runic.Workflow.Map{
-      name: name,
-      hash: name |> to_string() |> :erlang.phash2(),
-      pipeline: pipeline,
-      components: %{},
-      closure: nil,
-      inputs: nil,
-      outputs: nil
-    }
   end
 
   def to_component(%{type: :custom_processor, function: fun, metadata: %{name: name}} = _spec) do

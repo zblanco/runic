@@ -102,22 +102,6 @@ defmodule Runic.TransmutableProtocolTest do
       assert Runic.Transmutable.to_component(step) == step
       assert Runic.Transmutable.to_component(rule) == rule
     end
-
-    test "converts map/keyword list to structured component" do
-      component_spec = %{
-        type: :map_reduce,
-        mapper: fn x -> x * 2 end,
-        reducer: fn acc, x -> acc + x end,
-        init: 0,
-        name: "map_reduce_component"
-      }
-
-      component = Runic.Transmutable.to_component(component_spec)
-
-      # Should create a composite component with map and reduce sub-components
-      assert %Runic.Workflow.Map{} = component
-      assert component.name == "map_reduce_component"
-    end
   end
 
   describe "compatibility between to_workflow and to_component" do
@@ -156,6 +140,112 @@ defmodule Runic.TransmutableProtocolTest do
       # Should be equivalent to to_workflow
       workflow2 = Runic.Transmutable.to_workflow(step)
       assert workflow == workflow2
+    end
+  end
+
+  describe "Workflow.add/3 auto-transmutation" do
+    alias Runic.Test.ScoringRule
+    alias Runic.Workflow
+
+    test "adding a transmutable struct to a workflow converts it to a component" do
+      scoring_rule = ScoringRule.new(name: :high_score, threshold: 10, score: 5, comparator: :gt)
+
+      workflow = Workflow.new() |> Workflow.add(scoring_rule)
+
+      component = Workflow.get_component(workflow, :high_score)
+      assert %Runic.Workflow.Step{} = component
+      assert component.name == :high_score
+    end
+
+    test "transmuted component is executable in the workflow" do
+      scoring_rule = ScoringRule.new(name: :high_score, threshold: 10, score: 5, comparator: :gt)
+
+      workflow = Workflow.new() |> Workflow.add(scoring_rule)
+
+      results =
+        workflow
+        |> Workflow.react_until_satisfied(15)
+        |> Workflow.raw_productions()
+
+      assert 5 in results
+
+      zero_results =
+        workflow
+        |> Workflow.react_until_satisfied(3)
+        |> Workflow.raw_productions()
+
+      assert 0 in zero_results
+    end
+
+    test "adding a transmutable struct as a child of another component" do
+      parent = Runic.step(fn x -> x end, name: :passthrough)
+
+      scoring_rule =
+        ScoringRule.new(name: :child_scorer, threshold: 0, score: 10, comparator: :gt)
+
+      workflow =
+        Workflow.new()
+        |> Workflow.add(parent)
+        |> Workflow.add(scoring_rule, to: :passthrough)
+
+      assert Workflow.get_component(workflow, :child_scorer)
+
+      results =
+        workflow
+        |> Workflow.react_until_satisfied(5)
+        |> Workflow.raw_productions()
+
+      assert 10 in results
+    end
+
+    test "adding multiple transmutable structs with different comparators" do
+      gt_rule = ScoringRule.new(name: :above_ten, threshold: 10, score: 1, comparator: :gt)
+      lt_rule = ScoringRule.new(name: :below_five, threshold: 5, score: 2, comparator: :lt)
+
+      workflow =
+        Workflow.new()
+        |> Workflow.add(gt_rule)
+        |> Workflow.add(lt_rule)
+
+      above_results =
+        workflow
+        |> Workflow.react_until_satisfied(15)
+        |> Workflow.raw_productions()
+
+      assert 1 in above_results
+      assert 0 in above_results
+
+      below_results =
+        workflow
+        |> Workflow.react_until_satisfied(3)
+        |> Workflow.raw_productions()
+
+      assert 0 in below_results
+      assert 2 in below_results
+    end
+
+    test "to_component protocol dispatch for domain struct" do
+      scoring_rule = ScoringRule.new(name: :scorer, threshold: 50, score: 100, comparator: :gte)
+      component = Runic.Transmutable.to_component(scoring_rule)
+
+      assert %Runic.Workflow.Step{} = component
+      assert component.name == :scorer
+      assert component.work.(50) == 100
+      assert component.work.(49) == 0
+    end
+
+    test "to_workflow protocol dispatch for domain struct" do
+      scoring_rule = ScoringRule.new(name: :scorer, threshold: 5, score: 3, comparator: :lt)
+      workflow = Runic.Transmutable.to_workflow(scoring_rule)
+
+      assert %Runic.Workflow{} = workflow
+
+      results =
+        workflow
+        |> Workflow.react_until_satisfied(2)
+        |> Workflow.raw_productions()
+
+      assert 3 in results
     end
   end
 end
