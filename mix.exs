@@ -21,11 +21,13 @@ defmodule Runic.MixProject do
   defp docs do
     [
       main: "readme",
+      logo: "logo.png",
       extras: [
         "README.md",
         "guides/cheatsheet.md",
         "guides/usage-rules.md",
-        "guides/protocols.md"
+        "guides/protocols.md",
+        "guides/scheduling.md"
       ],
       groups_for_extras: [
         Guides: ~r/guides\/.*/
@@ -73,7 +75,7 @@ defmodule Runic.MixProject do
       {:uniq, "~> 0.6.1"},
       {:libgraph,
        git: "https://github.com/zblanco/libgraph.git", branch: "zw/multigraph-indexes"},
-      {:ex_doc, "~> 0.34", only: :dev, runtime: false},
+      {:ex_doc, "~> 0.34", only: :dev, runtime: false, warn_if_outdated: true},
       {:tidewave, "~> 0.4", only: :dev},
       {:bandit, "~> 1.0", only: :dev},
       {:benchee, "~> 1.3", only: :dev}
