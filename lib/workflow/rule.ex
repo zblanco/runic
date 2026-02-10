@@ -1,32 +1,36 @@
 defmodule Runic.Workflow.Rule do
   alias Runic.Workflow
+  alias Runic.Closure
 
   defstruct name: nil,
             arity: nil,
             workflow: nil,
-            bindings: %{},
-            source: nil
+            closure: nil,
+            condition_hash: nil,
+            reaction_hash: nil,
+            hash: nil,
+            inputs: nil,
+            outputs: nil,
+            condition_refs: []
 
   @typedoc """
   A rule.
+
+  The `condition_refs` field carries compile-time condition reference markers
+  that need to be resolved at connect-time. Each entry is a `{ref_name, target_hash}`
+  tuple where `target_hash` is the hash of the node (Conjunction or reaction Step)
+  that the resolved condition should wire to.
   """
   @type t() :: %__MODULE__{
           name: String.t(),
           arity: arity(),
           workflow: Workflow.t(),
-          bindings: map(),
-          source: tuple()
+          hash: integer(),
+          condition_hash: integer(),
+          reaction_hash: integer(),
+          closure: Closure.t() | nil,
+          condition_refs: [{atom(), integer()}]
         }
-
-  @typedoc """
-  The left hand side of a clause correlating with the pattern or condition of a function.
-  """
-  @type lhs() :: any()
-
-  @typedoc """
-  The right hand side of a clause correlating with the block or reaction of a function.
-  """
-  @type rhs() :: any()
 
   def new(opts \\ []) do
     __MODULE__

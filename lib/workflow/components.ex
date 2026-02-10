@@ -49,15 +49,15 @@ defmodule Runic.Workflow.Components do
 
   def arity_of(_term), do: 1
 
-  def is_of_arity?(arity) do
-    fn
-      args when is_list(args) ->
-        if(arity == 1, do: true, else: length(args) == arity)
+  # def is_of_arity?(arity) do
+  #   fn
+  #     args when is_list(args) ->
+  #       if(arity == 1, do: true, else: length(args) == arity)
 
-      args ->
-        arity_of(args) == arity
-    end
-  end
+  #     args ->
+  #       arity_of(args) == arity
+  #   end
+  # end
 
   def run({m, f}, fact_value) when is_list(fact_value), do: run({m, f}, fact_value, 1)
 
@@ -77,4 +77,31 @@ defmodule Runic.Workflow.Components do
     do: apply(work, fact_value)
 
   def run(work, fact_value, _arity) when is_function(work), do: apply(work, [fact_value])
+
+  @doc """
+  Validates enumerable protocol implementation of values as a NimbleOptions custom type.
+  """
+  def enumerable_type(values, _args) do
+    case Enumerable.impl_for(values) do
+      nil ->
+        {:error, "#{inspect(values)} is not Enumerable"}
+
+      _impl ->
+        {:ok, values}
+    end
+  end
+
+  def component_impls do
+    case Runic.Component.__protocol__(:impls) do
+      :not_consolidated -> []
+      {:consolidated, impls} -> impls
+    end
+  end
+
+  def invokable_impls do
+    case Runic.Workflow.Invokable.__protocol__(:impls) do
+      :not_consolidated -> []
+      {:consolidated, impls} -> impls
+    end
+  end
 end

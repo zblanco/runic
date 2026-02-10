@@ -1,22 +1,122 @@
 defprotocol Runic.Component do
   @moduledoc """
-  Protocol defining common behaviour of Runic components such as reflection, sub components or how the can be composed with others.
+  Protocol defining how Runic components compose together and connect within workflows.
+
+  The `Component` protocol supports extension of modeling new component types that can be
+  added and connected with other components in Runic workflows. It provides introspection
+  capabilities for components (sub-components, inputs, outputs) and connection semantics
+  for workflow composition.
+
+  ## Protocol Functions
+
+  | Function | Purpose |
+  |----------|---------|
+  | `connectable?/2` | Check if a component can be connected to another |
+  | `connect/3` | Connect this component to a parent in a workflow |
+  | `source/1` | Returns the source AST for building/serializing the component |
+  | `hash/1` | Returns the content-addressable hash of the component |
+  | `inputs/1` | Returns the nimble_options schema for component inputs |
+  | `outputs/1` | Returns the nimble_options schema for component outputs |
+
+  ## Built-in Implementations
+
+  | Component Type | Description |
+  |----------------|-------------|
+  | `Runic.Workflow.Step` | Single transformation function |
+  | `Runic.Workflow.Rule` | Conditional logic with condition and reaction |
+  | `Runic.Workflow.Map` | Fan-out transformation over enumerables |
+  | `Runic.Workflow.Reduce` | Fan-in aggregation |
+  | `Runic.Workflow.Accumulator` | Stateful reducer across invocations |
+  | `Runic.Workflow.StateMachine` | Stateful reducer with reactive conditions |
+  | `Runic.Workflow` | Workflows themselves are components |
+  | `Tuple` | Pipeline syntax `{parent, [children]}` |
+
+  ## Type Compatibility
+
+  The `Component` protocol includes type compatibility checking via an internal
+  `TypeCompatibility` helper module. This enables schema-based
+  validation when connecting components:
+
+      # Type compatibility checks
+      TypeCompatibility.types_compatible?(:any, :integer)  # => true
+      TypeCompatibility.types_compatible?(:string, :integer)  # => false
+
+      # Schema compatibility for connecting components
+      producer_outputs = [step: [type: {:list, :integer}]]
+      consumer_inputs = [step: [type: {:list, :any}]]
+      TypeCompatibility.schemas_compatible?(producer_outputs, consumer_inputs)  # => true
+
+  ## Usage
+
+      require Runic
+
+      step = Runic.step(fn x -> x * 2 end, name: :double)
+      rule = Runic.rule(fn x when x > 10 -> :large end, name: :classify)
+
+      # Introspection
+      Runic.Component.hash(step)  # => content-addressable hash
+      Runic.Component.source(step)  # => AST representation
+
+      # Compatibility checking
+      Runic.Component.connectable?(step, rule)  # => true
+
+      # Connection (typically done via Workflow.add/3)
+      workflow = Runic.Workflow.new()
+        |> Runic.Workflow.add(step)
+        |> Runic.Workflow.add(rule, to: :double)
+
+  ## Implementing Custom Component
+
+      defmodule MyApp.CustomComponent do
+        defstruct [:hash, :name, :config]
+      end
+
+      defimpl Runic.Component, for: MyApp.CustomComponent do
+        alias Runic.Workflow
+
+        def connectable?(_component, _other), do: true
+
+        def connect(component, to, workflow) do
+          workflow
+          |> Workflow.add_step(to, some_internal_step(component))
+          |> Workflow.register_component(component)
+        end
+
+        def source(component) do
+          quote do
+            MyApp.CustomComponent.new(name: unquote(component.name))
+          end
+        end
+
+        def hash(component), do: component.hash
+
+        def inputs(_component), do: [custom: [type: :any, doc: "Input value"]]
+
+        def outputs(_component), do: [custom: [type: :any, doc: "Output value"]]
+      end
+
+  See the [Protocols Guide](protocols.html) for more details and examples.
   """
 
-  @doc """
-  Get a sub component of a component by name.
-  """
-  def get_component(component, sub_component_name)
+  # @doc """
+  # Get a sub component of a component by name.
+  # """
+  # def get_component(component, sub_component_name)
 
-  @doc """
-  List all connectable sub-components of a component.
-  """
-  def components(component)
+  # @doc """
+  # Get the sub component from the workflow by name.
+  # """
+  # def get_component(component, workflow, sub_component_name)
 
-  @doc """
-  List compatible sub-components with the other component.
-  """
-  def connectables(component, other_component)
+  # @doc """
+  # List all connectable sub-components of a component.
+  # """
+  # def components(component)
+
+  # @doc """
+  # List compatible sub-components with the other component.
+  # """
+  # def connectables(component, other_component)
 
   @doc """
   Check if a component can be connected to another component.
@@ -32,25 +132,132 @@ defprotocol Runic.Component do
 
   def hash(component)
 
+  @doc """
+  Returns the nimble_options schema for component inputs.
+  Schema is nested within subcomponent keys (e.g., :step, :condition, :fan_out).
+  """
+  def inputs(component)
+
+  @doc """
+  Returns the nimble_options schema for component outputs.
+  Schema is nested within subcomponent keys (e.g., :step, :reaction, :leaf).
+  """
+  def outputs(component)
+
   # def remove(component, workflow)
+end
+
+# Helper for computing dataflow paths (flow edges only)
+defmodule Runic.Component.FlowPath do
+  @moduledoc false
+
+  @doc """
+  Returns the shortest path between two nodes following only :flow edges.
+  This is used to track all steps in the map-reduce dataflow path.
+  """
+  def flow_path(graph, from, to) do
+    graph
+    |> Graph.edges(by: :flow)
+    |> Enum.reduce(Graph.new(type: :directed), fn edge, g ->
+      Graph.add_edge(g, edge.v1, edge.v2)
+    end)
+    |> Graph.get_shortest_path(from, to) || []
+  end
+end
+
+# Type compatibility helper functions for Component protocol
+defmodule Runic.Component.TypeCompatibility do
+  @moduledoc false
+
+  def types_compatible?(producer_type, consumer_type) do
+    case {producer_type, consumer_type} do
+      # Any type is compatible with anything
+      {:any, _} ->
+        true
+
+      {_, :any} ->
+        true
+
+      # Exact type match
+      {same, same} ->
+        true
+
+      # Lists are compatible if their element types are compatible
+      {{:list, producer_elem}, {:list, consumer_elem}} ->
+        types_compatible?(producer_elem, consumer_elem)
+
+      # One_of types - check if there's overlap or compatibility
+      {{:one_of, producer_opts}, {:one_of, consumer_opts}} ->
+        # If any option in producer matches any option in consumer
+        Enum.any?(producer_opts, fn p_opt ->
+          Enum.any?(consumer_opts, fn c_opt -> types_compatible?(p_opt, c_opt) end)
+        end)
+
+      # One_of producer can match a specific consumer type
+      {{:one_of, producer_opts}, consumer_type} ->
+        Enum.any?(producer_opts, fn opt -> types_compatible?(opt, consumer_type) end)
+
+      # Specific producer type can match one_of consumer
+      {producer_type, {:one_of, consumer_opts}} ->
+        Enum.any?(consumer_opts, fn opt -> types_compatible?(producer_type, opt) end)
+
+      # Custom types - be optimistic and assume compatibility
+      {{:custom, _, _, _}, _} ->
+        true
+
+      {_, {:custom, _, _, _}} ->
+        true
+
+      # Default to false for unhandled cases
+      _ ->
+        false
+    end
+  end
+
+  def schemas_compatible?(producer_outputs, consumer_inputs) do
+    # Find matching subcomponent keys and check type compatibility
+    producer_keys = Keyword.keys(producer_outputs)
+    consumer_keys = Keyword.keys(consumer_inputs)
+
+    # Look for any matching keys with compatible types
+    Enum.any?(producer_keys, fn p_key ->
+      Enum.any?(consumer_keys, fn c_key ->
+        # For now, keys don't need to match exactly - be lenient
+        p_schema = Keyword.get(producer_outputs, p_key, [])
+        c_schema = Keyword.get(consumer_inputs, c_key, [])
+
+        p_type = Keyword.get(p_schema, :type, :any)
+        c_type = Keyword.get(c_schema, :type, :any)
+
+        types_compatible?(p_type, c_type)
+      end)
+    end)
+  end
 end
 
 defimpl Runic.Component, for: Runic.Workflow.Map do
   alias Runic.Workflow
   alias Runic.Workflow.Root
+  alias Runic.Workflow.Step
+  # alias Runic.Workflow.Join
 
   def connect(
         %Runic.Workflow.Map{
-          pipeline: pipeline_workflow,
-          components: %{fan_out: fan_out} = components
-        },
+          pipeline: pipeline_workflow
+        } = map,
         to,
         workflow
       ) do
+    fan_out_step =
+      pipeline_workflow.graph
+      |> Graph.out_neighbors(Workflow.root())
+      |> List.first()
+
     wrk =
       workflow
-      # only add top level fanout in cases with nested map expressions
-      |> Workflow.add_step(to, fan_out)
+      |> Workflow.add_step(to, fan_out_step)
+      |> Workflow.register_component(map)
+      |> Workflow.draw_connection(map, fan_out_step, :component_of, properties: %{kind: :fan_out})
 
     wrk =
       pipeline_workflow.graph
@@ -59,37 +266,136 @@ defimpl Runic.Component, for: Runic.Workflow.Map do
         %{v1: %Root{}, v2: _fan_out}, wrk ->
           wrk
 
-        %{v1: v1, v2: v2}, wrk ->
-          Workflow.add_step(wrk, v1, v2)
+        %{v1: v1, v2: %Step{} = step, label: :flow}, wrk ->
+          wrk =
+            wrk
+            |> Workflow.add_step(v1, step)
+            |> Workflow.register_component(step)
+            |> Workflow.draw_connection(step, step, :component_of, properties: %{kind: :step})
+
+          if is_leaf?(wrk.graph, step) do
+            Workflow.draw_connection(wrk, map, step, :component_of, properties: %{kind: :leaf})
+          else
+            wrk
+          end
+
+        # %{v1: %Runic.Workflow.FanOut{} = fan_out, v2: %Runic.Workflow.Map{} = nested_map} = edge, wrk ->
+
+        #   Workflow.add(wrk, nested_map, to: fan_out.hash)
+
+        %{v1: _v1, v2: %Runic.Workflow.Map{} = nested_map} = edge, wrk ->
+          wrk = Map.put(wrk, :graph, Graph.add_edge(wrk.graph, edge))
+
+          # Get the nested map's fan_out step
+          nested_fan_out_step =
+            nested_map.pipeline.graph
+            |> Graph.out_neighbors(Workflow.root())
+            |> List.first()
+
+          wrk
+          |> Workflow.register_component(nested_map)
+          |> Workflow.draw_connection(nested_map, nested_fan_out_step, :component_of,
+            properties: %{kind: :fan_out}
+          )
+
+        %{v1: _, v2: _} = edge, wrk ->
+          # for non-components such as joins, just add the edge
+          %Workflow{wrk | graph: Graph.add_edge(wrk.graph, edge)}
       end)
 
-    Enum.reduce(components, wrk, fn {name, component}, wrk ->
-      Map.put(wrk, :components, Map.put(wrk.components, name, component))
-    end)
+    %Workflow{
+      wrk
+      | mapped: %{
+          workflow.mapped
+          | mapped_paths:
+              MapSet.union(workflow.mapped.mapped_paths, map.pipeline.mapped.mapped_paths)
+        },
+        components: Map.merge(wrk.components, map.pipeline.components),
+        build_log: wrk.build_log ++ map.pipeline.build_log
+    }
   end
+
+  defp is_leaf?(g, v), do: g |> Graph.out_edges(v, by: :flow) |> Enum.count() == 0
 
   def get_component(%Runic.Workflow.Map{components: components}, sub_component_name) do
     Map.get(components, sub_component_name)
   end
 
-  def connectables(%Runic.Workflow.Map{} = map, _other_component) do
-    components(map)
+  def get_component(
+        %Runic.Workflow.Map{} = map,
+        %Workflow{} = workflow,
+        kind
+      ) do
+    case Graph.out_edges(workflow.graph, Map.get(workflow.graph.vertices, map.hash),
+           by: :component_of,
+           where: fn edge ->
+             edge.properties[:kind] == kind
+           end
+         )
+         |> List.first() do
+      %{v2: component} -> component
+      nil -> nil
+    end
+  end
+
+  def connectables(%Runic.Workflow.Map{} = map, other_component) do
+    # Filter components based on compatibility
+    map
+    |> components()
+    |> Enum.filter(fn {_name, component} ->
+      connectable?(component, other_component)
+    end)
   end
 
   def components(%Runic.Workflow.Map{components: components}) do
     Keyword.new(components)
   end
 
-  def connectable?(_component, _other_component) do
-    true
+  def connectable?(component, other_component) do
+    # Use schema-based compatibility checking
+    producer_outputs = outputs(component)
+    consumer_inputs = Runic.Component.inputs(other_component)
+
+    Runic.Component.TypeCompatibility.schemas_compatible?(producer_outputs, consumer_inputs)
   end
 
-  def source(%Runic.Workflow.Map{source: source}) do
-    source
+  def source(%Runic.Workflow.Map{closure: %Runic.Closure{} = closure}) do
+    closure.source
+  end
+
+  def source(%Runic.Workflow.Map{closure: nil}) do
+    nil
   end
 
   def hash(map) do
     map.hash
+  end
+
+  def inputs(%Runic.Workflow.Map{inputs: nil}) do
+    # Default schema for maps without user-defined inputs
+    [
+      fan_out: [
+        type: :any,
+        doc: "Input data to be distributed across the map pipeline"
+      ]
+    ]
+  end
+
+  def inputs(%Runic.Workflow.Map{inputs: user_inputs}) do
+    user_inputs
+  end
+
+  def outputs(%Runic.Workflow.Map{outputs: nil}) do
+    [
+      leaf: [
+        type: {:custom, Runic.Components, :enumerable_type, []},
+        doc: "Output result from a Runic map operation, typically a list of processed items"
+      ]
+    ]
+  end
+
+  def outputs(%Runic.Workflow.Map{outputs: user_outputs}) do
+    user_outputs
   end
 
   # def remove(%Runic.Workflow.Map{pipeline: map_wrk} = map, workflow) do
@@ -107,16 +413,29 @@ end
 
 defimpl Runic.Component, for: Runic.Workflow.Reduce do
   alias Runic.Workflow
+  alias Runic.Component.FlowPath
 
-  def connect(reduce, %Runic.Workflow.Map{components: components}, workflow) do
+  def connect(reduce, %Runic.Workflow.Map{} = map, workflow) do
+    map_leaf = Workflow.get_component!(workflow, {map.name, :leaf}) |> List.first()
+
+    if is_nil(map_leaf) do
+      raise ArgumentError,
+            "Cannot connect reduce to map #{map.name} because it has no leaf component. Ensure the map has a leaf component defined."
+    end
+
+    map_fan_out = Workflow.get_component!(workflow, {map.name, :fan_out}) |> List.first()
+
     wrk =
       workflow
-      |> Workflow.add_step(components.leaf, reduce.fan_in)
-      |> Workflow.draw_connection(components.fan_out, reduce.fan_in, :fan_in)
+      |> Workflow.draw_connection(map_leaf, reduce.fan_in, :flow)
+      |> Workflow.register_component(reduce)
+      |> Workflow.draw_connection(reduce, reduce.fan_in, :component_of,
+        properties: %{kind: :fan_in}
+      )
+      |> Workflow.draw_connection(map_fan_out, reduce.fan_in, :fan_in)
 
-    path_to_fan_out =
-      wrk.graph
-      |> Graph.get_shortest_path(components.fan_out, reduce.fan_in)
+    # Use flow-only path to ensure all steps in the dataflow are tracked
+    path_to_fan_out = FlowPath.flow_path(wrk.graph, map_fan_out, reduce.fan_in)
 
     wrk
     |> Map.put(
@@ -133,16 +452,19 @@ defimpl Runic.Component, for: Runic.Workflow.Reduce do
 
   def connect(%{fan_in: %{map: mapped}} = reduce, %Workflow.Step{} = step, workflow)
       when not is_nil(mapped) do
-    map = Workflow.get_component!(workflow, mapped)
+    map_fanout = Workflow.get_component!(workflow, {mapped, :fan_out}) |> List.first()
 
     wrk =
       workflow
       |> Workflow.add_step(step, reduce.fan_in)
-      |> Workflow.draw_connection(map.components.fan_out, reduce.fan_in, :fan_in)
+      |> Workflow.register_component(reduce)
+      |> Workflow.draw_connection(map_fanout, reduce.fan_in, :fan_in)
+      |> Workflow.draw_connection(reduce, reduce.fan_in, :component_of,
+        properties: %{kind: :fan_in}
+      )
 
-    path_to_fan_out =
-      wrk.graph
-      |> Graph.get_shortest_path(map.components.fan_out, reduce.fan_in)
+    # Use flow-only path to ensure all steps in the dataflow are tracked
+    path_to_fan_out = FlowPath.flow_path(wrk.graph, map_fanout, reduce.fan_in)
 
     wrk
     |> Map.put(
@@ -157,41 +479,114 @@ defimpl Runic.Component, for: Runic.Workflow.Reduce do
     )
   end
 
+  def connect(reduce, to, workflow) when is_list(to) do
+    # Include the fan_in hash in the join's joins list so the Join knows to wait for it
+    join_hashes = Enum.map(to, & &1.hash) ++ [reduce.fan_in.hash]
+
+    join = Workflow.Join.new(join_hashes)
+
+    workflow
+    |> Workflow.add_step(to, join)
+    |> Workflow.add_step(reduce.fan_in, join)
+    |> Workflow.register_component(reduce)
+    |> Workflow.draw_connection(reduce, reduce.fan_in, :component_of,
+      properties: %{kind: :fan_in}
+    )
+  end
+
   def connect(reduce, to, workflow) do
-    Workflow.add_step(workflow, to, reduce.fan_in)
+    workflow
+    |> Workflow.add_step(to, reduce.fan_in)
+    |> Workflow.register_component(reduce)
+    |> Workflow.draw_connection(reduce, reduce.fan_in, :component_of,
+      properties: %{kind: :fan_in}
+    )
   end
 
   def get_component(%Runic.Workflow.Reduce{fan_in: fan_in}, _kind) do
     fan_in
   end
 
+  def get_component(%Runic.Workflow.Reduce{fan_in: fan_in}, _workflow, _kind) do
+    fan_in
+  end
+
   def components(reduce) do
-    [fan_in: reduce]
+    [fan_in: reduce.fan_in]
   end
 
-  def connectables(reduce, _other_component) do
-    components(reduce)
+  def connectables(reduce, other_component) do
+    # Filter components based on compatibility
+    reduce
+    |> components()
+    |> Enum.filter(fn {_name, component} ->
+      connectable?(component, other_component)
+    end)
   end
 
-  def connectable?(_reduce, other_component) do
-    case other_component do
-      %Workflow.Map{} -> true
-      %Workflow.Step{} -> true
-      _otherwise -> false
-    end
+  def connectable?(reduce, other_component) do
+    # Use schema-based compatibility checking with structural fallback
+    producer_outputs = outputs(reduce)
+    consumer_inputs = Runic.Component.inputs(other_component)
+
+    schema_compatible =
+      Runic.Component.TypeCompatibility.schemas_compatible?(producer_outputs, consumer_inputs)
+
+    # Fallback to structural compatibility for known component types
+    structural_compatible =
+      case other_component do
+        %Workflow.Map{} -> true
+        %Workflow.Step{} -> true
+        _otherwise -> false
+      end
+
+    schema_compatible or structural_compatible
   end
 
-  def source(reduce) do
-    reduce.source
+  def source(%Runic.Workflow.Reduce{closure: %Runic.Closure{} = closure}) do
+    closure.source
+  end
+
+  def source(%Runic.Workflow.Reduce{closure: nil}) do
+    nil
   end
 
   def hash(reduce) do
     reduce.hash
   end
+
+  def inputs(%Runic.Workflow.Reduce{inputs: nil}) do
+    # Default schema for reduces without user-defined inputs
+    [
+      fan_in: [
+        type: {:custom, Runic.Components, :enumerable_type, []},
+        doc: "Enumerable of values to be reduced"
+      ]
+    ]
+  end
+
+  def inputs(%Runic.Workflow.Reduce{inputs: user_inputs}) do
+    user_inputs
+  end
+
+  def outputs(%Runic.Workflow.Reduce{outputs: nil}) do
+    # Default schema for reduces without user-defined outputs
+    [
+      fan_in: [
+        type: :any,
+        doc: "Reduced value produced by the Runic.reduce operation"
+      ]
+    ]
+  end
+
+  def outputs(%Runic.Workflow.Reduce{outputs: user_outputs}) do
+    user_outputs
+  end
 end
 
 defimpl Runic.Component, for: Runic.Workflow.Step do
   alias Runic.Workflow
+  alias Runic.Workflow.Reduce
 
   def components(step) do
     [step: step]
@@ -200,77 +595,308 @@ defimpl Runic.Component, for: Runic.Workflow.Step do
   def connect(step, to, workflow) when is_list(to) do
     join =
       to
-      |> Enum.map(& &1.hash)
+      |> Enum.map(fn
+        %Reduce{fan_in: fan_in} -> fan_in.hash
+        other -> other.hash
+      end)
       |> Workflow.Join.new()
 
-    workflow
-    |> Workflow.add_step(to, join)
+    wrk =
+      Enum.reduce(to, workflow, fn
+        %Reduce{fan_in: fan_in}, wrk -> Workflow.add_step(wrk, fan_in, join)
+        other, wrk -> Workflow.add_step(wrk, other, join)
+      end)
+
+    wrk
     |> Workflow.add_step(join, step)
+    |> Workflow.draw_connection(step, step, :component_of, properties: %{kind: :step})
+    |> Workflow.register_component(step)
+  end
+
+  def connect(step, %Runic.Workflow.Rule{} = rule, workflow) do
+    reaction = Map.get(workflow.graph.vertices, rule.reaction_hash)
+
+    workflow
+    |> Workflow.add_step(reaction, step)
+    |> Workflow.draw_connection(step, step, :component_of, properties: %{kind: :step})
+    |> Workflow.register_component(step)
   end
 
   def connect(step, to, workflow) do
-    Workflow.add_step(workflow, to, step)
+    workflow
+    |> Workflow.add_step(to, step)
+    |> Workflow.draw_connection(step, step, :component_of, properties: %{kind: :step})
+    |> Workflow.register_component(step)
   end
 
   def get_component(step, _kind) do
     step
   end
 
-  def connectables(step, _other_component) do
-    components(step)
+  def connectables(step, other_component) do
+    # Filter components based on compatibility
+    step
+    |> components()
+    |> Enum.filter(fn {_name, component} ->
+      connectable?(component, other_component)
+    end)
   end
 
-  def connectable?(_step, _other_component) do
-    true
+  def connectable?(step, other_component) do
+    # Use schema-based compatibility checking
+    producer_outputs = outputs(step)
+    consumer_inputs = Runic.Component.inputs(other_component)
+
+    Runic.Component.TypeCompatibility.schemas_compatible?(producer_outputs, consumer_inputs)
   end
 
-  def source(step) do
-    step.source
+  def source(%Runic.Workflow.Step{closure: %Runic.Closure{} = closure}) do
+    closure.source
+  end
+
+  def source(%Runic.Workflow.Step{closure: nil}) do
+    nil
   end
 
   def hash(step) do
     step.hash
+  end
+
+  def inputs(%Runic.Workflow.Step{inputs: nil}) do
+    # Default schema for steps without user-defined inputs
+    [
+      step: [
+        type: :any,
+        doc: "Input value to be processed by the step function"
+      ]
+    ]
+  end
+
+  def inputs(%Runic.Workflow.Step{inputs: user_inputs}) do
+    user_inputs
+  end
+
+  def outputs(%Runic.Workflow.Step{outputs: nil}) do
+    # Default schema for steps without user-defined outputs
+    [
+      step: [
+        type: :any,
+        doc: "Output value produced by the step function"
+      ]
+    ]
+  end
+
+  def outputs(%Runic.Workflow.Step{outputs: user_outputs}) do
+    user_outputs
   end
 end
 
 defimpl Runic.Component, for: Runic.Workflow.Rule do
   alias Runic.Workflow
   alias Runic.Workflow.Step
-  alias Runic.Workflow.Map
   alias Runic.Workflow.Reduce
+  alias Runic.Workflow.Conjunction
 
-  def connect(rule, _to, workflow) do
-    Workflow.merge(workflow, rule.workflow)
+  def connect(rule, to, workflow) when to in [nil, %Runic.Workflow.Root{}] do
+    wrk = Workflow.merge(workflow, rule.workflow)
+
+    condition = Map.get(rule.workflow.graph.vertices, rule.condition_hash)
+    reaction = Map.get(rule.workflow.graph.vertices, rule.reaction_hash)
+
+    wrk
+    |> Workflow.register_component(rule)
+    |> Workflow.draw_connection(rule, reaction, :component_of, properties: %{kind: :reaction})
+    |> Workflow.draw_connection(rule, condition, :component_of, properties: %{kind: :condition})
+    |> create_meta_ref_edges_for_node(rule.name, condition)
+    |> create_meta_ref_edges_for_node(rule.name, reaction)
+    |> resolve_condition_refs(rule)
+  end
+
+  def connect(rule, to, workflow) do
+    condition = Map.get(rule.workflow.graph.vertices, rule.condition_hash)
+    reaction = Map.get(rule.workflow.graph.vertices, rule.reaction_hash)
+
+    workflow
+    |> Workflow.add_step(to, condition)
+    |> Workflow.add_step(condition, reaction)
+    |> Workflow.register_component(rule)
+    |> Workflow.draw_connection(rule, reaction, :component_of, properties: %{kind: :reaction})
+    |> Workflow.draw_connection(rule, condition, :component_of, properties: %{kind: :condition})
+    |> create_meta_ref_edges_for_node(rule.name, condition)
+    |> create_meta_ref_edges_for_node(rule.name, reaction)
+    |> resolve_condition_refs(rule)
+  end
+
+  defp create_meta_ref_edges_for_node(workflow, component_name, %{
+         meta_refs: meta_refs,
+         hash: node_hash
+       })
+       when is_list(meta_refs) and meta_refs != [] do
+    Enum.reduce(meta_refs, workflow, fn meta_ref, wrk ->
+      target = meta_ref.target
+
+      target_component =
+        case target do
+          name when is_atom(name) ->
+            Workflow.get_component(wrk, name)
+
+          hash when is_integer(hash) ->
+            Map.get(wrk.graph.vertices, hash)
+
+          {_parent, _subcomponent} = tuple_ref ->
+            # get_component/2 already handles tuple refs
+            case Workflow.get_component(wrk, tuple_ref) do
+              [component | _] -> component
+              [] -> nil
+              component -> component
+            end
+
+          _ ->
+            nil
+        end
+
+      if target_component do
+        Workflow.draw_meta_ref_edge(wrk, node_hash, target_component.hash, meta_ref)
+      else
+        raise Runic.UnresolvedReferenceError,
+          component_name: component_name,
+          reference_kind: meta_ref.kind,
+          target: target
+      end
+    end)
+  end
+
+  defp create_meta_ref_edges_for_node(workflow, _component_name, _node), do: workflow
+
+  defp resolve_condition_refs(workflow, %{condition_refs: []}), do: workflow
+
+  defp resolve_condition_refs(workflow, %{condition_refs: refs, name: rule_name})
+       when is_list(refs) do
+    Enum.reduce(refs, workflow, fn {ref_name, target_hash}, wrk ->
+      referenced_condition = Workflow.get_component(wrk, ref_name)
+
+      if is_nil(referenced_condition) do
+        raise Runic.UnresolvedReferenceError,
+          component_name: rule_name,
+          reference_kind: :condition,
+          target: ref_name,
+          hint:
+            "Add condition(name: #{inspect(ref_name)}) to the workflow before adding this rule."
+      end
+
+      target_node = Map.get(wrk.graph.vertices, target_hash)
+
+      case target_node do
+        %Conjunction{} = conj ->
+          updated_conj = %Conjunction{
+            conj
+            | condition_hashes: MapSet.put(conj.condition_hashes, referenced_condition.hash),
+              condition_refs: List.delete(conj.condition_refs, ref_name)
+          }
+
+          %Workflow{
+            wrk
+            | graph:
+                wrk.graph
+                |> Graph.replace_vertex(conj, updated_conj)
+                |> Graph.add_edge(referenced_condition, updated_conj, label: :flow)
+          }
+
+        %Step{} ->
+          %Workflow{
+            wrk
+            | graph: Graph.add_edge(wrk.graph, referenced_condition, target_node, label: :flow)
+          }
+
+        _ ->
+          wrk
+      end
+    end)
   end
 
   def get_component(rule, :reaction) do
-    rule.workflow.components |> Elixir.Map.values() |> List.first()
+    Map.get(rule.workflow.graph.vertices, rule.reaction_hash)
+  end
+
+  def get_component(rule, :condition) do
+    Map.get(rule.workflow.graph.vertices, rule.condition_hash)
   end
 
   def components(rule) do
-    [reaction: rule]
+    condition = Map.get(rule.workflow.graph.vertices, rule.condition_hash)
+    reaction = Map.get(rule.workflow.graph.vertices, rule.reaction_hash)
+
+    [condition: condition, reaction: reaction]
   end
 
-  def connectables(rule, _other_component) do
-    components(rule)
+  def connectables(rule, other_component) do
+    # Filter components based on compatibility
+    rule
+    |> components()
+    |> Enum.filter(fn {_name, component} ->
+      connectable?(component, other_component)
+    end)
   end
 
-  def connectable?(_rule, component) do
-    case component do
-      %Step{} -> true
-      %Map{} -> true
-      %Reduce{} -> true
-      %Workflow{} -> true
-      _otherwise -> false
-    end
+  def connectable?(rule, other_component) do
+    # Use schema-based compatibility checking with structural fallback
+    producer_outputs = outputs(rule)
+    consumer_inputs = Runic.Component.inputs(other_component)
+
+    schema_compatible =
+      Runic.Component.TypeCompatibility.schemas_compatible?(producer_outputs, consumer_inputs)
+
+    # Fallback to structural compatibility for known component types
+    structural_compatible =
+      case other_component do
+        %Step{} -> true
+        %Runic.Workflow.Map{} -> true
+        %Reduce{} -> true
+        %Workflow{} -> true
+        _otherwise -> false
+      end
+
+    schema_compatible or structural_compatible
   end
 
-  def source(rule) do
-    rule.source
+  def source(%Runic.Workflow.Rule{closure: %Runic.Closure{} = closure}) do
+    closure.source
+  end
+
+  def source(%Runic.Workflow.Rule{closure: nil}) do
+    nil
   end
 
   def hash(rule) do
-    Runic.Workflow.Components.fact_hash(rule.source)
+    rule.hash
+  end
+
+  def inputs(%Runic.Workflow.Rule{inputs: nil}) do
+    # Default schema for rules without user-defined inputs
+    [
+      condition: [
+        type: :any,
+        doc: "Input value to be evaluated by the rule condition"
+      ]
+    ]
+  end
+
+  def inputs(%Runic.Workflow.Rule{inputs: user_inputs}) do
+    user_inputs
+  end
+
+  def outputs(%Runic.Workflow.Rule{outputs: nil}) do
+    # Default schema for rules without user-defined outputs
+    [
+      reaction: [
+        type: :any,
+        doc: "Output value produced by the rule reaction when condition matches"
+      ]
+    ]
+  end
+
+  def outputs(%Runic.Workflow.Rule{outputs: user_outputs}) do
+    user_outputs
   end
 end
 
@@ -282,12 +908,21 @@ defimpl Runic.Component, for: Runic.Workflow.StateMachine do
   alias Runic.Workflow.Root
 
   def connect(state_machine, %Root{}, workflow) do
+    accumulator =
+      state_machine.workflow.graph
+      |> Graph.vertices()
+      |> Enum.find(&match?(%Accumulator{}, &1))
+
     state_machine.workflow.graph
     |> Graph.edges(by: :flow)
     |> Enum.reduce(workflow, fn edge, wrk ->
       %Workflow{wrk | graph: Graph.add_edge(wrk.graph, edge)}
     end)
     |> Map.put(:components, Map.merge(state_machine.workflow.components, workflow.components))
+    |> Workflow.register_component(state_machine)
+    |> Workflow.draw_connection(state_machine, accumulator, :component_of,
+      properties: %{kind: :accumulator}
+    )
   end
 
   def connect(state_machine, to, workflow) do
@@ -311,77 +946,11 @@ defimpl Runic.Component, for: Runic.Workflow.StateMachine do
           wrk
       end
     end)
+    |> Workflow.register_component(state_machine)
+    |> Workflow.draw_connection(state_machine, accumulator, :component_of,
+      properties: %{kind: :accumulator}
+    )
   end
-
-  # def connect(state_machine, to, workflow) do
-  #   wrk = Runic.transmute(state_machine)
-
-  #   # create a memory assertion to ensure that the state machine only reacts to facts producted by `to` parent step
-
-  #   # put memory assertion in conjunction with state conditions
-
-  #   # attach rewritten tree to root of into workflow
-
-  #   memory_assertion_fun_ast =
-  #     quote do
-  #       fn
-  #         _workflow, %Fact{ancestry: {parent_step_hash, _pfh}} ->
-  #           parent_step_hash == unquote(to.hash)
-
-  #         _workflow, _ ->
-  #           false
-  #       end
-  #     end
-
-  #   memory_assertion =
-  #     MemoryAssertion.new(
-  #       memory_assertion: fn
-  #         _workflow, %Fact{ancestry: {parent_step_hash, _pfh}} ->
-  #           parent_step_hash == to.hash
-
-  #         _workflow, _ ->
-  #           false
-  #       end,
-  #       hash: Runic.Workflow.Components.fact_hash(memory_assertion_fun_ast)
-  #     )
-
-  #   wrk =
-  #     wrk
-  #     |> Workflow.add_step(memory_assertion)
-
-  #   wrk.graph
-  #   |> Graph.edges(by: :flow)
-  #   |> Enum.reduce(workflow, fn
-  #     %Graph.Edge{v1: %Root{}, v2: %StateCondition{} = v2}, acc ->
-  #       conjunction =
-  #         Workflow.Conjunction.new([
-  #           v2,
-  #           memory_assertion
-  #         ])
-
-  #       next_accumulators =
-  #         Workflow.next_steps(wrk, v2)
-
-  #       acc =
-  #         acc
-  #         |> Workflow.add_step(v2)
-  #         |> Workflow.add_step(v2, conjunction)
-  #         |> Workflow.add_step(memory_assertion, conjunction)
-
-  #       Enum.reduce(next_accumulators, acc, fn
-  #         next_acc, acc ->
-  #           Workflow.add_step(acc, conjunction, next_acc)
-  #       end)
-
-  #     %Graph.Edge{v1: %StateCondition{}, v2: %Accumulator{}}, acc ->
-  #       acc
-
-  #     %Graph.Edge{} = edge, acc ->
-  #       g = Graph.add_edge(acc.graph, edge)
-  #       %Workflow{acc | graph: g}
-  #   end)
-  #   |> Map.put(:components, Map.merge(wrk.components, workflow.components))
-  # end
 
   def get_component(state_machine, :reducer) do
     state_machine.workflow.graph
@@ -399,12 +968,21 @@ defimpl Runic.Component, for: Runic.Workflow.StateMachine do
     ]
   end
 
-  def connectables(state_machine, _other_component) do
-    components(state_machine)
+  def connectables(state_machine, other_component) do
+    # Filter components based on compatibility
+    state_machine
+    |> components()
+    |> Enum.filter(fn {_name, component} ->
+      connectable?(component, other_component)
+    end)
   end
 
-  def connectable?(_state_machine, _other_component) do
-    true
+  def connectable?(state_machine, other_component) do
+    # Use schema-based compatibility checking
+    producer_outputs = outputs(state_machine)
+    consumer_inputs = Runic.Component.inputs(other_component)
+
+    Runic.Component.TypeCompatibility.schemas_compatible?(producer_outputs, consumer_inputs)
   end
 
   def source(state_machine) do
@@ -413,5 +991,350 @@ defimpl Runic.Component, for: Runic.Workflow.StateMachine do
 
   def hash(state_machine) do
     state_machine.hash
+  end
+
+  def inputs(%Runic.Workflow.StateMachine{inputs: nil}) do
+    # Default schema for state machines without user-defined inputs
+    [
+      reactors: [
+        type: {:list, :any},
+        doc: "Input events or data to trigger state transitions"
+      ]
+    ]
+  end
+
+  def inputs(%Runic.Workflow.StateMachine{inputs: user_inputs}) do
+    user_inputs
+  end
+
+  def outputs(%Runic.Workflow.StateMachine{outputs: nil}) do
+    # Default schema for state machines without user-defined outputs
+    [
+      accumulator: [
+        type: :any,
+        doc: "Current state value maintained by the state machine"
+      ]
+    ]
+  end
+
+  def outputs(%Runic.Workflow.StateMachine{outputs: user_outputs}) do
+    user_outputs
+  end
+end
+
+defimpl Runic.Component, for: Runic.Workflow.Accumulator do
+  alias Runic.Workflow
+
+  def components(accumulator) do
+    [accumulator: accumulator]
+  end
+
+  def connect(accumulator, to, workflow) when is_list(to) do
+    join =
+      to
+      |> Enum.map(& &1.hash)
+      |> Workflow.Join.new()
+
+    workflow
+    |> Workflow.add_step(to, join)
+    |> Workflow.add_step(join, accumulator)
+    |> Workflow.draw_connection(accumulator, accumulator, :component_of,
+      properties: %{kind: :accumulator}
+    )
+  end
+
+  def connect(accumulator, to, workflow) do
+    workflow
+    |> Workflow.add_step(to, accumulator)
+    |> Workflow.draw_connection(accumulator, accumulator, :component_of,
+      properties: %{kind: :accumulator}
+    )
+    |> Workflow.register_component(accumulator)
+  end
+
+  def get_component(accumulator, _kind) do
+    accumulator
+  end
+
+  def connectables(accumulator, other_component) do
+    # Filter components based on compatibility
+    accumulator
+    |> components()
+    |> Enum.filter(fn {_name, component} ->
+      connectable?(component, other_component)
+    end)
+  end
+
+  def connectable?(accumulator, other_component) do
+    # Use schema-based compatibility checking
+    producer_outputs = outputs(accumulator)
+    consumer_inputs = Runic.Component.inputs(other_component)
+
+    Runic.Component.TypeCompatibility.schemas_compatible?(producer_outputs, consumer_inputs)
+  end
+
+  def source(%Runic.Workflow.Accumulator{closure: %Runic.Closure{} = closure}) do
+    closure.source
+  end
+
+  def source(%Runic.Workflow.Accumulator{closure: nil}) do
+    nil
+  end
+
+  def hash(accumulator) do
+    accumulator.hash
+  end
+
+  def inputs(%Runic.Workflow.Accumulator{inputs: nil}) do
+    # Default schema for accumulators without user-defined inputs
+    [
+      accumulator: [
+        type: :any,
+        doc: "Input value to be accumulated with the current state"
+      ]
+    ]
+  end
+
+  def inputs(%Runic.Workflow.Accumulator{inputs: user_inputs}) do
+    user_inputs
+  end
+
+  def outputs(%Runic.Workflow.Accumulator{outputs: nil}) do
+    # Default schema for accumulators without user-defined outputs
+    [
+      accumulator: [
+        type: :any,
+        doc: "Accumulated value after applying the reducer function"
+      ]
+    ]
+  end
+
+  def outputs(%Runic.Workflow.Accumulator{outputs: user_outputs}) do
+    user_outputs
+  end
+end
+
+defimpl Runic.Component, for: Runic.Workflow.Condition do
+  alias Runic.Workflow
+
+  def connect(condition, to, workflow) when is_list(to) do
+    join =
+      to
+      |> Enum.map(& &1.hash)
+      |> Workflow.Join.new()
+
+    wrk =
+      Enum.reduce(to, workflow, fn parent, wrk ->
+        Workflow.add_step(wrk, parent, join)
+      end)
+
+    wrk
+    |> Workflow.add_step(join, condition)
+    |> Workflow.draw_connection(condition, condition, :component_of,
+      properties: %{kind: :condition}
+    )
+    |> Workflow.register_component(condition)
+    |> create_meta_ref_edges(condition)
+  end
+
+  def connect(condition, to, workflow) do
+    workflow
+    |> Workflow.add_step(to, condition)
+    |> Workflow.draw_connection(condition, condition, :component_of,
+      properties: %{kind: :condition}
+    )
+    |> Workflow.register_component(condition)
+    |> create_meta_ref_edges(condition)
+  end
+
+  defp create_meta_ref_edges(workflow, %{meta_refs: meta_refs, hash: node_hash, name: name})
+       when is_list(meta_refs) and meta_refs != [] do
+    Enum.reduce(meta_refs, workflow, fn meta_ref, wrk ->
+      target = meta_ref.target
+
+      target_component =
+        case target do
+          name when is_atom(name) ->
+            Workflow.get_component(wrk, name)
+
+          hash when is_integer(hash) ->
+            Map.get(wrk.graph.vertices, hash)
+
+          {_parent, _subcomponent} = tuple_ref ->
+            case Workflow.get_component(wrk, tuple_ref) do
+              [component | _] -> component
+              [] -> nil
+              component -> component
+            end
+
+          _ ->
+            nil
+        end
+
+      if target_component do
+        Workflow.draw_meta_ref_edge(wrk, node_hash, target_component.hash, meta_ref)
+      else
+        raise Runic.UnresolvedReferenceError,
+          component_name: name,
+          reference_kind: meta_ref.kind,
+          target: target
+      end
+    end)
+  end
+
+  defp create_meta_ref_edges(workflow, _condition), do: workflow
+
+  def connectable?(_condition, _other_component), do: true
+
+  def source(%Runic.Workflow.Condition{closure: %Runic.Closure{} = closure}) do
+    closure.source
+  end
+
+  def source(%Runic.Workflow.Condition{closure: nil}) do
+    nil
+  end
+
+  def hash(condition), do: condition.hash
+
+  def inputs(_condition) do
+    [
+      condition: [
+        type: :any,
+        doc: "Input value to evaluate"
+      ]
+    ]
+  end
+
+  def outputs(_condition) do
+    [
+      condition: [
+        type: :any,
+        doc: "Passthrough value when satisfied"
+      ]
+    ]
+  end
+end
+
+defimpl Runic.Component, for: Runic.Workflow do
+  alias Runic.Workflow
+  alias Runic.Workflow.Fact
+
+  def connect(%Workflow{} = child_workflow, parent_component, workflow) do
+    new_graph =
+      child_workflow.graph
+      |> Graph.edges()
+      |> Enum.reduce(workflow.graph, fn
+        %{v1: %Runic.Workflow.Root{}, v2: _} = edge, g ->
+          new_edge = %Graph.Edge{edge | v1: parent_component}
+          Graph.add_edge(g, new_edge)
+
+        # handle reaction memory edges to override with latest history
+        %{v1: %Fact{} = fact_v1, v2: v2, label: label} = edge, g
+        when label in [:matchable, :runnable, :ran] ->
+          out_edge_labels_of_into_mem_for_edge =
+            g
+            |> Graph.out_edges(fact_v1)
+            |> Enum.filter(&(&1.v2 == v2))
+            |> MapSet.new(& &1.label)
+
+          cond do
+            label in [:matchable, :runnable] and
+                MapSet.member?(out_edge_labels_of_into_mem_for_edge, :ran) ->
+              g
+
+            label == :ran and
+                MapSet.member?(out_edge_labels_of_into_mem_for_edge, :runnable) ->
+              Graph.update_labelled_edge(g, fact_v1, v2, :runnable, label: :ran)
+
+            true ->
+              Graph.add_edge(g, edge)
+          end
+
+        edge, g ->
+          Graph.add_edge(g, edge)
+      end)
+
+    # Merge mapped data: mapped_paths as MapSet union, other keys (tracking data) merged
+    merged_mapped =
+      Map.merge(workflow.mapped, child_workflow.mapped, fn
+        :mapped_paths, v1, v2 -> MapSet.union(v1, v2)
+        # For tracking keys like {generation, hash} -> list or map, merge appropriately
+        _key, v1, v2 when is_list(v1) and is_list(v2) -> Enum.uniq(v1 ++ v2)
+        _key, v1, v2 when is_map(v1) and is_map(v2) -> Map.merge(v1, v2)
+        _key, _v1, v2 -> v2
+      end)
+
+    %Workflow{
+      workflow
+      | graph: new_graph,
+        mapped: merged_mapped,
+        before_hooks: Map.merge(workflow.before_hooks, child_workflow.before_hooks),
+        after_hooks: Map.merge(workflow.after_hooks, child_workflow.after_hooks),
+        components: Map.merge(workflow.components, child_workflow.components),
+        inputs: Map.merge(workflow.inputs, child_workflow.inputs),
+        build_log: workflow.build_log ++ child_workflow.build_log
+    }
+  end
+
+  def get_component(%Workflow{} = workflow, sub_component_name) do
+    Workflow.get_component(workflow, sub_component_name)
+  end
+
+  def get_component(%Workflow{} = workflow, %Workflow{}, sub_component_name) do
+    get_component(workflow, sub_component_name)
+  end
+
+  def components(%Workflow{components: components}) do
+    Enum.map(components, fn {name, _hash} -> {name, name} end)
+  end
+
+  def connectables(%Workflow{} = workflow, _other_component) do
+    components(workflow)
+  end
+
+  def connectable?(%Workflow{}, _other_component), do: true
+
+  def source(%Workflow{} = workflow) do
+    quote do
+      %Runic.Workflow{
+        name: unquote(workflow.name),
+        components: unquote(Macro.escape(workflow.components))
+      }
+    end
+  end
+
+  def hash(%Workflow{hash: hash}) when not is_nil(hash), do: hash
+
+  def hash(%Workflow{} = workflow) do
+    Runic.Workflow.Components.fact_hash(workflow)
+  end
+
+  def inputs(%Workflow{}), do: []
+
+  def outputs(%Workflow{}), do: []
+end
+
+defimpl Runic.Component, for: Tuple do
+  def connect({parent, children} = _pipeline, parent_component_in_workflow, workflow)
+      when is_list(children) do
+    # Connect the parent component to each child component
+    wrk = Runic.Workflow.add_step(workflow, parent_component_in_workflow, parent)
+
+    Enum.reduce(children, wrk, fn child, acc ->
+      Runic.Component.connect(child, parent, acc)
+    end)
+  end
+
+  def get_component(_tuple, _sub_component_name), do: nil
+  def get_component(_tuple, _workflow, _sub_component_name), do: nil
+  def components(_tuple), do: []
+  def connectables(_tuple, _other_component), do: []
+  def connectable?(_tuple, _other_component), do: false
+  def source(tuple), do: Macro.escape(tuple)
+  def inputs(_tuple), do: []
+  def outputs(_tuple), do: []
+
+  def hash(pipeline) do
+    Runic.Workflow.Components.fact_hash(pipeline)
   end
 end
