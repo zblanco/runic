@@ -24,3 +24,6 @@ runic-*.tar
 
 # Temporary files, for example, from tests.
 /tmp/
+
+# Mnesia database directories
+/Mnesia.*/

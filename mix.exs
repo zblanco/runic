@@ -27,7 +27,8 @@ defmodule Runic.MixProject do
         "guides/cheatsheet.md",
         "guides/usage-rules.md",
         "guides/protocols.md",
-        "guides/scheduling.md"
+        "guides/scheduling.md",
+        "guides/durable-execution.md"
       ],
       groups_for_extras: [
         Guides: ~r/guides\/.*/
@@ -43,6 +44,21 @@ defmodule Runic.MixProject do
           Runic.Workflow.Map,
           Runic.Workflow.Reduce,
           Runic.Workflow.Join
+        ],
+        "Scheduling & Execution": [
+          Runic.Workflow.SchedulerPolicy,
+          Runic.Workflow.PolicyDriver,
+          Runic.Workflow.RunnableDispatched,
+          Runic.Workflow.RunnableCompleted,
+          Runic.Workflow.RunnableFailed
+        ],
+        Runner: [
+          Runic.Runner,
+          Runic.Runner.Worker,
+          Runic.Runner.Store,
+          Runic.Runner.Store.ETS,
+          Runic.Runner.Store.Mnesia,
+          Runic.Runner.Telemetry
         ],
         Protocols: [
           Runic.Workflow.Invokable,
@@ -65,7 +81,7 @@ defmodule Runic.MixProject do
   # Run "mix help compile.app" to learn about applications.
   def application do
     [
-      extra_applications: [:logger]
+      extra_applications: [:logger, :mnesia]
     ]
   end
 
@@ -73,6 +89,7 @@ defmodule Runic.MixProject do
   defp deps do
     [
       {:uniq, "~> 0.6.1"},
+      {:telemetry, "~> 1.0"},
       {:libgraph,
        git: "https://github.com/zblanco/libgraph.git", branch: "zw/multigraph-indexes"},
       {:ex_doc, "~> 0.34", only: :dev, runtime: false, warn_if_outdated: true},

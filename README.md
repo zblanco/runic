@@ -279,6 +279,63 @@ If the runtime modification of a workflow or complex parallel dataflow evaluatio
 
 Runic Workflows are essentially a dataflow based virtual machine running within Elixir and will not be faster than compiled Elixir code. If you know the flow of the program upfront during development you might not need Runic.
 
+## Scheduler Policies
+
+Runic workflows support declarative per-node scheduling policies for retries, timeouts, backoff, fallbacks, and failure handling — without modifying the `Invokable` protocol or existing component structs.
+
+Policies are stored on the workflow as a list of `{matcher, policy_map}` rules resolved at execution time. The first matching rule wins:
+
+```elixir
+alias Runic.Workflow
+alias Runic.Workflow.SchedulerPolicy
+
+workflow =
+  workflow
+  |> Workflow.add_scheduler_policy(:call_llm, %{
+    max_retries: 3,
+    backoff: :exponential,
+    timeout_ms: 30_000
+  })
+  |> Workflow.append_scheduler_policy(:default, %{timeout_ms: 10_000})
+
+# Policies are applied automatically during react/react_until_satisfied
+workflow |> Workflow.react_until_satisfied(input)
+
+# Runtime overrides can be passed as options (prepended with higher priority)
+workflow |> Workflow.react_until_satisfied(input,
+  scheduler_policies: [{:flaky_step, %{max_retries: 5}}]
+)
+```
+
+Policy matchers support exact name atoms, regex (`{:name, ~r/^llm_/}`), type matching (`{:type, Step}`), custom predicates (`fn node -> ... end`), and `:default` catch-alls. Backoff strategies include `:none`, `:linear`, `:exponential`, and `:jitter`.
+
+See `Runic.Workflow.SchedulerPolicy` for the full policy struct and matcher documentation, and `Runic.Workflow.PolicyDriver` for execution driver details.
+
+## Built-in Runner
+
+`Runic.Runner` provides batteries-included workflow execution infrastructure: a supervision tree with a `DynamicSupervisor` for workers, `Task.Supervisor` for fault-isolated dispatch, `Registry` for lookup, and pluggable persistence via `Runic.Runner.Store`.
+
+```elixir
+# Start a runner in your supervision tree
+{:ok, _} = Runic.Runner.start_link(name: MyApp.Runner)
+
+# Start and run a workflow
+{:ok, _pid} = Runic.Runner.start_workflow(MyApp.Runner, :order_123, workflow)
+:ok = Runic.Runner.run(MyApp.Runner, :order_123, input)
+
+# Query results
+{:ok, results} = Runic.Runner.get_results(MyApp.Runner, :order_123)
+
+# Resume from persisted state after a crash
+{:ok, _pid} = Runic.Runner.resume(MyApp.Runner, :order_123)
+```
+
+Workers automatically integrate with scheduler policies, dispatch runnables to supervised tasks with configurable `max_concurrency`, and support checkpointing strategies (`:every_cycle`, `:on_complete`, `{:every_n, n}`, `:manual`).
+
+Built-in store adapters: `Runic.Runner.Store.ETS` (default, in-memory) and `Runic.Runner.Store.Mnesia` (disk-persistent, distributed). Custom adapters implement the `Runic.Runner.Store` behaviour.
+
+Telemetry events are emitted under `[:runic, :runner, ...]` for workflow lifecycle, runnable dispatch/completion, and store operations. See `Runic.Runner.Telemetry` for the full event catalog.
+
 ## Guides
 
 For quick reference and best practices:
@@ -286,6 +343,8 @@ For quick reference and best practices:
 - [**Cheatsheet**](guides/cheatsheet.md) - Quick reference for all core APIs
 - [**Usage Rules**](guides/usage-rules.md) - Core concepts, do's/don'ts, and patterns
 - [**Protocols**](guides/protocols.md) - Extending Runic with custom components and execution behavior
+- [**Building a Workflow Scheduler**](guides/scheduling.md) - From simple spawned processes to production GenServer schedulers
+- [**Durable Execution**](guides/durable-execution.md) - Persistence, crash recovery, and checkpointing with the Runner
 
 ## Installation
 
