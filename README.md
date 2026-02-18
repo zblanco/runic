@@ -1,14 +1,16 @@
 <!-- MDOC !-->
 
-Runic is a tool for modeling your workflows as data that can be composed together at runtime.
+# Runic
+
+Runic is a tool for modeling programs as data driven workflows that can be composed together at runtime.
 
 Runic components connect together in a `Runic.Workflow` supporting lazily evaluated concurrent execution.
 
-Runic Workflows are a decorated dataflow graph (a DAG - "directed acyclic graph") capable of modeling pipelines of steps, rules, pipelines, and state machines and more.
+Runic Workflows are modeled as a decorated dataflow graph (a DAG - "directed acyclic graph") compiled from components such as steps, rules, pipelines, and state machines and more allowing coordinated interaction of disparate parts.
 
-Basic data flow dependencies such as in a pipeline are modeled as `%Step{}` structs (nodes/vertices) in the graph with directed edges (arrows) between steps.
+Data flow dependencies between Lambda expressions, common in ETL pipelines, can be built with `%Step{}` components.
 
-A step can be thought of as a simple input -> output lambda function. e.g.
+A Lambda Steps is a simple `input -> output` function.
 
 ```elixir
 require Runic
