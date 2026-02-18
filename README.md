@@ -8,6 +8,25 @@ Runic components connect together in a `Runic.Workflow` supporting lazily evalua
 
 Runic Workflows are modeled as a decorated dataflow graph (a DAG - "directed acyclic graph") compiled from components such as steps, rules, pipelines, and state machines and more allowing coordinated interaction of disparate parts.
 
+## Installation
+
+If [available in Hex](https://hex.pm/docs/publish), the package can be installed
+by adding `runic` to your list of dependencies in `mix.exs`:
+
+```elixir
+def deps do
+  [
+    {:runic, "~> 0.1.0-alpha"}
+  ]
+end
+```
+
+Documentation can be generated with [ExDoc](https://github.com/elixir-lang/ex_doc)
+and published on [HexDocs](https://hexdocs.pm). Once published, the docs can
+be found at <https://hexdocs.pm/runic>.
+
+## Concepts
+
 Data flow dependencies between Lambda expressions, common in ETL pipelines, can be built with `%Step{}` components.
 
 A Lambda Steps is a simple `input -> output` function.
@@ -347,21 +366,4 @@ For quick reference and best practices:
 - [**Protocols**](guides/protocols.md) - Extending Runic with custom components and execution behavior
 - [**Building a Workflow Scheduler**](guides/scheduling.md) - From simple spawned processes to production GenServer schedulers
 - [**Durable Execution**](guides/durable-execution.md) - Persistence, crash recovery, and checkpointing with the Runner
-
-## Installation
-
-If [available in Hex](https://hex.pm/docs/publish), the package can be installed
-by adding `runic` to your list of dependencies in `mix.exs`:
-
-```elixir
-def deps do
-  [
-    {:runic, "~> 0.1.0"}
-  ]
-end
-```
-
-Documentation can be generated with [ExDoc](https://github.com/elixir-lang/ex_doc)
-and published on [HexDocs](https://hexdocs.pm). Once published, the docs can
-be found at <https://hexdocs.pm/runic>.
 
