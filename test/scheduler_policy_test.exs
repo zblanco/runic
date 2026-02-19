@@ -164,6 +164,24 @@ defmodule Runic.Workflow.SchedulerPolicyTest do
       assert result.max_retries == 1
     end
 
+    test "node without :name field (e.g. Join) falls through to :default" do
+      alias Runic.Workflow.Join
+
+      join_node = %Join{hash: 12345, joins: [1, 2, 3]}
+      fact = Fact.new(value: :test)
+      context = CausalContext.new(node_hash: join_node.hash, input_fact: fact, ancestry_depth: 0)
+      runnable = Runnable.new(join_node, fact, context)
+
+      policies = [
+        {:some_step, %{max_retries: 3, timeout_ms: 30_000}},
+        {{:name, ~r/^generate_/}, %{max_retries: 2}},
+        {:default, %{max_retries: 99}}
+      ]
+
+      result = SchedulerPolicy.resolve(runnable, policies)
+      assert result.max_retries == 99
+    end
+
     test "nil name on node doesn't crash any matcher" do
       step = %Step{name: nil, work: fn x -> x end, hash: :erlang.phash2(fn x -> x end)}
       fact = Fact.new(value: :test)

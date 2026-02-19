@@ -231,13 +231,19 @@ defmodule Runic.Workflow.SchedulerPolicy do
   # ---------------------------------------------------------------------------
 
   defp matches?(matcher, node) when is_atom(matcher) and matcher != :default do
-    normalize_name(node.name) == matcher
+    case Map.get(node, :name) do
+      nil -> false
+      name -> normalize_name(name) == matcher
+    end
   end
 
   defp matches?(:default, _node), do: true
 
   defp matches?({:name, %Regex{} = regex}, node) do
-    Regex.match?(regex, to_string(node.name))
+    case Map.get(node, :name) do
+      nil -> false
+      name -> Regex.match?(regex, to_string(name))
+    end
   end
 
   defp matches?({:type, modules}, node) when is_list(modules) do
