@@ -169,7 +169,7 @@ defmodule Runic.Workflow.PolicyDriver do
   defp build_dispatched_event(%Runnable{} = runnable, %SchedulerPolicy{} = policy, attempt) do
     %RunnableDispatched{
       runnable_id: runnable.id,
-      node_name: runnable.node.name,
+      node_name: Map.get(runnable.node, :name, runnable.node.hash),
       node_hash: runnable.node.hash,
       input_fact: runnable.input_fact,
       dispatched_at: System.monotonic_time(:millisecond),

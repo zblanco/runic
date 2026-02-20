@@ -31,7 +31,6 @@ defmodule Runic.Runner.Worker do
     :checkpoint_strategy,
     status: :idle,
     active_tasks: %{},
-    dispatched_ids: MapSet.new(),
     dispatch_times: %{},
     cycle_count: 0,
     started_at: nil
@@ -203,10 +202,11 @@ defmodule Runic.Runner.Worker do
     state = %{state | workflow: workflow}
 
     available_slots = state.max_concurrency - map_size(state.active_tasks)
+    active_runnable_ids = MapSet.new(Map.values(state.active_tasks))
 
     runnables_to_dispatch =
       runnables
-      |> Enum.reject(fn r -> MapSet.member?(state.dispatched_ids, r.id) end)
+      |> Enum.reject(fn r -> MapSet.member?(active_runnable_ids, r.id) end)
       |> Enum.take(max(available_slots, 0))
 
     Enum.reduce(runnables_to_dispatch, state, fn runnable, acc ->
@@ -233,7 +233,6 @@ defmodule Runic.Runner.Worker do
       %{
         acc
         | active_tasks: Map.put(acc.active_tasks, task.ref, runnable.id),
-          dispatched_ids: MapSet.put(acc.dispatched_ids, runnable.id),
           dispatch_times: Map.put(acc.dispatch_times, task.ref, now)
       }
     end)
