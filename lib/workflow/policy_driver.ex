@@ -327,7 +327,9 @@ defmodule Runic.Workflow.PolicyDriver do
 
   defp skip_runnable(%Runnable{} = runnable) do
     apply_fn = fn workflow ->
-      Workflow.mark_runnable_as_ran(workflow, runnable.node, runnable.input_fact)
+      workflow
+      |> Workflow.mark_runnable_as_ran(runnable.node, runnable.input_fact)
+      |> Workflow.skip_downstream_subgraph(runnable.node)
     end
 
     Runnable.skip(runnable, apply_fn)

@@ -157,7 +157,12 @@ defmodule Runic.Runner.Worker do
           )
         end
 
-        state = %{state | active_tasks: active_tasks}
+        {dispatch_time, dispatch_times} = Map.pop(state.dispatch_times, ref)
+        state = %{state | active_tasks: active_tasks, dispatch_times: dispatch_times}
+
+        state = mark_crashed_runnable(state, runnable_id, reason, dispatch_time)
+        state = maybe_checkpoint(state)
+        state = dispatch_runnables(state)
         state = maybe_transition_to_idle(state)
 
         {:noreply, state}
@@ -169,6 +174,27 @@ defmodule Runic.Runner.Worker do
   end
 
   # --- Private ---
+
+  defp mark_crashed_runnable(state, runnable_id, reason, dispatch_time) do
+    # Find the runnable in the workflow graph so we can mark it as failed.
+    # Without this, the :runnable edge stays in the graph and is_runnable?
+    # returns true forever — causing a deadlock.
+    case find_runnable_by_id(state.workflow, runnable_id) do
+      nil ->
+        state
+
+      runnable ->
+        failed = Runnable.fail(runnable, {:task_crashed, reason})
+        emit_runnable_result(failed, state.id, dispatch_time)
+        workflow = Workflow.apply_runnable(state.workflow, failed)
+        %{state | workflow: workflow}
+    end
+  end
+
+  defp find_runnable_by_id(workflow, runnable_id) do
+    Workflow.prepared_runnables(workflow)
+    |> Enum.find(fn r -> r.id == runnable_id end)
+  end
 
   defp handle_task_result(ref, executed, events, state) do
     {_runnable_id, active_tasks} = Map.pop(state.active_tasks, ref)

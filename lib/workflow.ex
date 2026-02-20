@@ -2693,7 +2693,58 @@ defmodule Runic.Workflow do
          error: error
        }) do
     Logger.warning("Runnable failed for node #{inspect(node)} with error: #{inspect(error)}")
-    mark_runnable_as_ran(workflow, node, fact)
+
+    workflow
+    |> mark_runnable_as_ran(node, fact)
+    |> skip_downstream_subgraph(node)
+  end
+
+  @doc """
+  Marks all nodes transitively downstream of `failed_node` as unreachable.
+
+  Walks the structural `:flow` edges from `failed_node` to find all transitive
+  dependents, then relabels any pending `:runnable` or `:joined` edges pointing
+  to those nodes as `:upstream_failed`. This prevents the workflow from getting
+  stuck waiting for work that can never complete due to a missing upstream fact.
+  """
+  @spec skip_downstream_subgraph(t(), struct()) :: t()
+  def skip_downstream_subgraph(%__MODULE__{graph: graph} = workflow, failed_node) do
+    downstream_nodes = reachable_via_flow(graph, failed_node) -- [failed_node]
+
+    graph =
+      Enum.reduce(downstream_nodes, graph, fn node, g ->
+        g
+        |> Graph.in_edges(node)
+        |> Enum.filter(&(&1.label in [:runnable, :joined]))
+        |> Enum.reduce(g, fn edge, g_acc ->
+          case Graph.update_labelled_edge(g_acc, edge.v1, edge.v2, edge.label,
+                 label: :upstream_failed
+               ) do
+            %Graph{} = updated -> updated
+            {:error, :no_such_edge} -> g_acc
+          end
+        end)
+      end)
+
+    %{workflow | graph: graph}
+  end
+
+  defp reachable_via_flow(graph, start_node) do
+    do_reachable_via_flow(graph, [start_node], MapSet.new(), [])
+  end
+
+  defp do_reachable_via_flow(_graph, [], _visited, acc), do: acc
+
+  defp do_reachable_via_flow(graph, [node | rest], visited, acc) do
+    node_id = graph.vertex_identifier.(node)
+
+    if MapSet.member?(visited, node_id) do
+      do_reachable_via_flow(graph, rest, visited, acc)
+    else
+      visited = MapSet.put(visited, node_id)
+      children = for e <- Graph.out_edges(graph, node, by: :flow), do: e.v2
+      do_reachable_via_flow(graph, children ++ rest, visited, [node | acc])
+    end
   end
 
   # =============================================================================
