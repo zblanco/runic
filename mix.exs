@@ -4,7 +4,7 @@ defmodule Runic.MixProject do
   def project do
     [
       app: :runic,
-      version: "0.1.0-alpha.1",
+      version: "0.1.0-alpha.2",
       elixir: "~> 1.18",
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
