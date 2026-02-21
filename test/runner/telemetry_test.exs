@@ -33,10 +33,8 @@ defmodule Runic.Runner.TelemetryTest do
           [:runic, :runner, :workflow, :start],
           [:runic, :runner, :workflow, :stop]
         ],
-        fn event, measurements, metadata, _config ->
-          send(test_pid, {:telemetry, event, measurements, metadata})
-        end,
-        nil
+        &Runic.TestTelemetryHandler.handle_event/4,
+        %{test_pid: test_pid}
       )
 
       result = Telemetry.workflow_span(%{id: :test_wf}, fn -> :ok end)
@@ -61,10 +59,8 @@ defmodule Runic.Runner.TelemetryTest do
       :telemetry.attach(
         "test-runnable-dispatch-#{inspect(ref)}",
         [:runic, :runner, :runnable, :start],
-        fn event, measurements, metadata, _config ->
-          send(test_pid, {:telemetry, event, measurements, metadata})
-        end,
-        nil
+        &Runic.TestTelemetryHandler.handle_event/4,
+        %{test_pid: test_pid}
       )
 
       Telemetry.runnable_event(:dispatch, %{workflow_id: :wf1, node_name: :step1})
@@ -82,10 +78,8 @@ defmodule Runic.Runner.TelemetryTest do
       :telemetry.attach(
         "test-runnable-complete-#{inspect(ref)}",
         [:runic, :runner, :runnable, :stop],
-        fn event, measurements, metadata, _config ->
-          send(test_pid, {:telemetry, event, measurements, metadata})
-        end,
-        nil
+        &Runic.TestTelemetryHandler.handle_event/4,
+        %{test_pid: test_pid}
       )
 
       Telemetry.runnable_event(:complete, %{duration: 42}, %{workflow_id: :wf1, node_name: :step1})
@@ -103,10 +97,8 @@ defmodule Runic.Runner.TelemetryTest do
       :telemetry.attach(
         "test-runnable-exception-#{inspect(ref)}",
         [:runic, :runner, :runnable, :exception],
-        fn event, measurements, metadata, _config ->
-          send(test_pid, {:telemetry, event, measurements, metadata})
-        end,
-        nil
+        &Runic.TestTelemetryHandler.handle_event/4,
+        %{test_pid: test_pid}
       )
 
       Telemetry.runnable_event(:exception, %{workflow_id: :wf1, error: :boom})
@@ -129,10 +121,8 @@ defmodule Runic.Runner.TelemetryTest do
           [:runic, :runner, :store, :start],
           [:runic, :runner, :store, :stop]
         ],
-        fn event, measurements, metadata, _config ->
-          send(test_pid, {:telemetry, event, measurements, metadata})
-        end,
-        nil
+        &Runic.TestTelemetryHandler.handle_event/4,
+        %{test_pid: test_pid}
       )
 
       result = Telemetry.store_span(:save, %{workflow_id: :wf1}, fn -> :ok end)

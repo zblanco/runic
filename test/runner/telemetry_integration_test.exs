@@ -14,10 +14,8 @@ defmodule Runic.Runner.TelemetryIntegrationTest do
     :telemetry.attach_many(
       handler_id,
       Runic.Runner.Telemetry.event_names(),
-      fn event, measurements, metadata, _config ->
-        send(test_pid, {:telemetry, event, measurements, metadata})
-      end,
-      nil
+      &Runic.TestTelemetryHandler.handle_event/4,
+      %{test_pid: test_pid}
     )
 
     on_exit(fn -> :telemetry.detach(handler_id) end)
