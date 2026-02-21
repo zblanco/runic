@@ -177,6 +177,11 @@ defmodule Runic.Workflow do
   alias Runic.Workflow.ComponentAdded
   alias Runic.Workflow.ReactionOccurred
   alias Runic.Workflow.Runnable
+  alias Runic.Workflow.SchedulerPolicy
+  alias Runic.Workflow.PolicyDriver
+  alias Runic.Workflow.RunnableDispatched
+  alias Runic.Workflow.RunnableCompleted
+  alias Runic.Workflow.RunnableFailed
   alias Runic.Workflow.Private
 
   @type t() :: %__MODULE__{
@@ -191,7 +196,11 @@ defmodule Runic.Workflow do
           # hash of parent fact for fan_out -> path_to_fan_in e.g. [fan_out, step1, step2, fan_in]
           mapped: map(),
           # input_fact_hash -> MapSet.new([produced_facts])
-          inputs: map()
+          inputs: map(),
+          # list of {matcher, policy_map} tuples for scheduler policies
+          scheduler_policies: list(),
+          # accumulated runnable lifecycle events for durable execution
+          runnable_events: list()
         }
 
   @type runnable() :: {fun(), term()}
@@ -204,7 +213,9 @@ defmodule Runic.Workflow do
             after_hooks: %{},
             mapped: %{},
             build_log: [],
-            inputs: %{}
+            inputs: %{},
+            scheduler_policies: [],
+            runnable_events: []
 
   @doc """
   Creates an empty workflow with no components.
@@ -242,6 +253,8 @@ defmodule Runic.Workflow do
     |> Map.put(:build_log, [])
     |> Map.put(:inputs, %{})
     |> Map.put(:mapped, %{mapped_paths: MapSet.new()})
+    |> Map.put_new(:scheduler_policies, [])
+    |> Map.put_new(:runnable_events, [])
   end
 
   defp new_graph do
@@ -254,6 +267,88 @@ defmodule Runic.Workflow do
 
   @doc false
   def root(), do: Private.root()
+
+  @doc """
+  Replaces the workflow's scheduler policies list entirely.
+  """
+  @spec set_scheduler_policies(t(), list()) :: t()
+  def set_scheduler_policies(%__MODULE__{} = workflow, policies) when is_list(policies) do
+    %{workflow | scheduler_policies: policies}
+  end
+
+  @doc """
+  Prepends a `{matcher, policy}` rule to the workflow's scheduler policies (higher priority).
+  """
+  @spec add_scheduler_policy(t(), term(), map()) :: t()
+  def add_scheduler_policy(%__MODULE__{} = workflow, matcher, policy) when is_map(policy) do
+    %{workflow | scheduler_policies: [{matcher, policy} | workflow.scheduler_policies]}
+  end
+
+  @doc """
+  Appends a `{matcher, policy}` rule to the workflow's scheduler policies (lower priority).
+  """
+  @spec append_scheduler_policy(t(), term(), map()) :: t()
+  def append_scheduler_policy(%__MODULE__{} = workflow, matcher, policy) when is_map(policy) do
+    %{workflow | scheduler_policies: workflow.scheduler_policies ++ [{matcher, policy}]}
+  end
+
+  @doc """
+  Executes a list of runnables with the given scheduler policies.
+
+  Resolves each runnable's policy and executes through the PolicyDriver.
+  For use by external schedulers calling `prepare_for_dispatch/1` directly.
+  """
+  @spec execute_with_policies([Runnable.t()], list()) :: [Runnable.t()]
+  def execute_with_policies(runnables, policies) when is_list(runnables) do
+    Enum.map(runnables, fn runnable ->
+      policy = SchedulerPolicy.resolve(runnable, policies)
+      PolicyDriver.execute(runnable, policy)
+    end)
+  end
+
+  @doc """
+  Appends runnable lifecycle events to the workflow's event accumulator.
+
+  Used by schedulers to record `%RunnableDispatched{}`, `%RunnableCompleted{}`,
+  and `%RunnableFailed{}` events produced by `PolicyDriver.execute/3` with
+  `emit_events: true`.
+  """
+  @spec append_runnable_events(t(), list()) :: t()
+  def append_runnable_events(%__MODULE__{} = workflow, events) when is_list(events) do
+    %{workflow | runnable_events: workflow.runnable_events ++ events}
+  end
+
+  @doc """
+  Identifies dispatched-but-not-completed runnables from the workflow's runnable events.
+
+  Returns a list of `%RunnableDispatched{}` events that have no corresponding
+  `%RunnableCompleted{}` or `%RunnableFailed{}` event. Useful for crash recovery
+  to find in-flight work that needs to be re-dispatched.
+  """
+  @spec pending_runnables(t()) :: [RunnableDispatched.t()]
+  def pending_runnables(%__MODULE__{runnable_events: events}) do
+    {dispatched, resolved} =
+      Enum.reduce(events, {%{}, MapSet.new()}, fn
+        %RunnableDispatched{} = event, {d, r} ->
+          key = {event.runnable_id, event.attempt}
+          {Map.put(d, key, event), r}
+
+        %RunnableCompleted{} = event, {d, r} ->
+          {d, MapSet.put(r, event.runnable_id)}
+
+        %RunnableFailed{} = event, {d, r} ->
+          {d, MapSet.put(r, event.runnable_id)}
+
+        _other, acc ->
+          acc
+      end)
+
+    dispatched
+    |> Enum.reject(fn {{runnable_id, _attempt}, _event} ->
+      MapSet.member?(resolved, runnable_id)
+    end)
+    |> Enum.map(fn {_key, event} -> event end)
+  end
 
   @doc """
   Adds a component to the workflow, connecting it to the parent step or root if no parent is specified.
@@ -661,6 +756,15 @@ defmodule Runic.Workflow do
           wrk
           | graph: Graph.add_edge(wrk.graph, reaction_edge)
         }
+
+      %RunnableDispatched{} = event, wrk ->
+        %{wrk | runnable_events: wrk.runnable_events ++ [event]}
+
+      %RunnableCompleted{} = event, wrk ->
+        %{wrk | runnable_events: wrk.runnable_events ++ [event]}
+
+      %RunnableFailed{} = event, wrk ->
+        %{wrk | runnable_events: wrk.runnable_events ++ [event]}
     end)
   end
 
@@ -700,7 +804,7 @@ defmodule Runic.Workflow do
       restored = Workflow.from_log(log)
   """
   def log(wrk) do
-    build_log(wrk) ++ reactions_occurred(wrk)
+    build_log(wrk) ++ reactions_occurred(wrk) ++ wrk.runnable_events
   end
 
   defp reactions_occurred(%__MODULE__{graph: g}) do
@@ -1678,7 +1782,7 @@ defmodule Runic.Workflow do
       if Keyword.get(opts, :async, false) do
         execute_runnables_async(workflow, runnables, opts)
       else
-        execute_runnables_serial(workflow, runnables)
+        execute_runnables_serial(workflow, runnables, opts)
       end
     else
       workflow
@@ -1716,19 +1820,38 @@ defmodule Runic.Workflow do
     react(wrk, Fact.new(value: raw_fact), opts)
   end
 
-  defp execute_runnables_serial(workflow, runnables) do
+  defp execute_runnables_serial(workflow, runnables, opts) do
+    policies = resolve_effective_policies(workflow, opts)
+    driver_opts = build_driver_opts(opts)
+
     runnables
-    |> Enum.map(fn runnable -> Invokable.execute(runnable.node, runnable) end)
+    |> Enum.map(fn runnable ->
+      if policies == [] do
+        Invokable.execute(runnable.node, runnable)
+      else
+        policy = SchedulerPolicy.resolve(runnable, policies)
+        PolicyDriver.execute(runnable, policy, driver_opts)
+      end
+    end)
     |> Enum.reduce(workflow, fn executed, wrk -> apply_runnable(wrk, executed) end)
   end
 
   defp execute_runnables_async(workflow, runnables, opts) do
     max_concurrency = Keyword.get(opts, :max_concurrency, System.schedulers_online())
     timeout = Keyword.get(opts, :timeout, :infinity)
+    policies = resolve_effective_policies(workflow, opts)
+    driver_opts = build_driver_opts(opts)
 
     runnables
     |> Task.async_stream(
-      fn runnable -> Invokable.execute(runnable.node, runnable) end,
+      fn runnable ->
+        if policies == [] do
+          Invokable.execute(runnable.node, runnable)
+        else
+          policy = SchedulerPolicy.resolve(runnable, policies)
+          PolicyDriver.execute(runnable, policy, driver_opts)
+        end
+      end,
       max_concurrency: max_concurrency,
       timeout: timeout
     )
@@ -1740,6 +1863,25 @@ defmodule Runic.Workflow do
         Logger.warning("Async execution failed: #{inspect(reason)}")
         wrk
     end)
+  end
+
+  defp build_driver_opts(opts) do
+    case Keyword.get(opts, :deadline_at) do
+      nil -> []
+      deadline_at -> [deadline_at: deadline_at]
+    end
+  end
+
+  defp resolve_effective_policies(workflow, opts) do
+    runtime = Keyword.get(opts, :scheduler_policies)
+    mode = Keyword.get(opts, :scheduler_policies_mode, :merge)
+    base = workflow.scheduler_policies
+
+    case {runtime, mode} do
+      {nil, _} -> base
+      {_, :replace} -> runtime
+      {_, :merge} -> SchedulerPolicy.merge_policies(runtime, base)
+    end
   end
 
   @doc """
@@ -1767,6 +1909,11 @@ defmodule Runic.Workflow do
   - `:async` - When `true`, executes runnables in parallel. Default: `false`
   - `:max_concurrency` - Maximum parallel tasks when `async: true`
   - `:timeout` - Timeout for each task when `async: true`
+  - `:deadline_ms` - Wall-clock deadline for the entire workflow execution in milliseconds.
+    The policy driver will fail runnables with `{:deadline_exceeded, remaining_ms}` if the
+    deadline is reached. Converted to an absolute `deadline_at` monotonic time internally.
+  - `:checkpoint` - A 1-arity function called after each react cycle with the updated workflow.
+    Useful for persisting intermediate state in long-running durable workflows.
 
   ## Warning
 
@@ -1788,10 +1935,13 @@ defmodule Runic.Workflow do
   def react_until_satisfied(workflow, fact_or_value \\ nil, opts \\ [])
 
   def react_until_satisfied(%__MODULE__{} = workflow, nil, opts) do
+    opts = maybe_convert_deadline(opts)
     do_react_until_satisfied(workflow, is_runnable?(workflow), opts)
   end
 
   def react_until_satisfied(%__MODULE__{} = wrk, %Fact{ancestry: nil} = fact, opts) do
+    opts = maybe_convert_deadline(opts)
+
     wrk
     |> react(fact, opts)
     |> react_until_satisfied(nil, opts)
@@ -1801,10 +1951,32 @@ defmodule Runic.Workflow do
     react_until_satisfied(wrk, Fact.new(value: raw_fact), opts)
   end
 
+  defp maybe_convert_deadline(opts) do
+    case {Keyword.get(opts, :deadline_ms), Keyword.get(opts, :deadline_at)} do
+      {nil, _} ->
+        opts
+
+      {_deadline_ms, deadline_at} when not is_nil(deadline_at) ->
+        # Already converted
+        opts
+
+      {deadline_ms, nil} ->
+        deadline_at = System.monotonic_time(:millisecond) + deadline_ms
+
+        opts
+        |> Keyword.put(:deadline_at, deadline_at)
+    end
+  end
+
   defp do_react_until_satisfied(%__MODULE__{} = workflow, true = _is_runnable?, opts) do
+    checkpoint = Keyword.get(opts, :checkpoint)
+
     workflow
     |> react(opts)
-    |> then(fn wrk -> do_react_until_satisfied(wrk, is_runnable?(wrk), opts) end)
+    |> then(fn wrk ->
+      if is_function(checkpoint, 1), do: checkpoint.(wrk)
+      do_react_until_satisfied(wrk, is_runnable?(wrk), opts)
+    end)
   end
 
   defp do_react_until_satisfied(%__MODULE__{} = workflow, false = _is_runnable?, _opts),
@@ -2521,7 +2693,58 @@ defmodule Runic.Workflow do
          error: error
        }) do
     Logger.warning("Runnable failed for node #{inspect(node)} with error: #{inspect(error)}")
-    mark_runnable_as_ran(workflow, node, fact)
+
+    workflow
+    |> mark_runnable_as_ran(node, fact)
+    |> skip_downstream_subgraph(node)
+  end
+
+  @doc """
+  Marks all nodes transitively downstream of `failed_node` as unreachable.
+
+  Walks the structural `:flow` edges from `failed_node` to find all transitive
+  dependents, then relabels any pending `:runnable` or `:joined` edges pointing
+  to those nodes as `:upstream_failed`. This prevents the workflow from getting
+  stuck waiting for work that can never complete due to a missing upstream fact.
+  """
+  @spec skip_downstream_subgraph(t(), struct()) :: t()
+  def skip_downstream_subgraph(%__MODULE__{graph: graph} = workflow, failed_node) do
+    downstream_nodes = reachable_via_flow(graph, failed_node) -- [failed_node]
+
+    graph =
+      Enum.reduce(downstream_nodes, graph, fn node, g ->
+        g
+        |> Graph.in_edges(node)
+        |> Enum.filter(&(&1.label in [:runnable, :joined]))
+        |> Enum.reduce(g, fn edge, g_acc ->
+          case Graph.update_labelled_edge(g_acc, edge.v1, edge.v2, edge.label,
+                 label: :upstream_failed
+               ) do
+            %Graph{} = updated -> updated
+            {:error, :no_such_edge} -> g_acc
+          end
+        end)
+      end)
+
+    %{workflow | graph: graph}
+  end
+
+  defp reachable_via_flow(graph, start_node) do
+    do_reachable_via_flow(graph, [start_node], MapSet.new(), [])
+  end
+
+  defp do_reachable_via_flow(_graph, [], _visited, acc), do: acc
+
+  defp do_reachable_via_flow(graph, [node | rest], visited, acc) do
+    node_id = graph.vertex_identifier.(node)
+
+    if MapSet.member?(visited, node_id) do
+      do_reachable_via_flow(graph, rest, visited, acc)
+    else
+      visited = MapSet.put(visited, node_id)
+      children = for e <- Graph.out_edges(graph, node, by: :flow), do: e.v2
+      do_reachable_via_flow(graph, children ++ rest, visited, [node | acc])
+    end
   end
 
   # =============================================================================
