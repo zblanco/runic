@@ -224,7 +224,7 @@ alias Runic.Workflow
 
 # Execute runnables in parallel with configurable concurrency
 workflow
-|> Workflow.react_until_satisfied_parallel(input, max_concurrency: 8) # Task.async_stream options
+|> Workflow.react_until_satisfied(input, async: true, max_concurrency: 8) # Task.async_stream options
 |> Workflow.raw_productions()
 ```
 
