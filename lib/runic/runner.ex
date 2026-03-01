@@ -165,10 +165,91 @@ defmodule Runic.Runner do
 
   Loads the workflow log from the store, rebuilds the workflow via
   `Workflow.from_log/1`, and starts a new Worker.
+
+  ## Options
+
+    - `:rehydration` — Controls how fact values are loaded during recovery.
+      - `:full` (default) — All fact values are loaded into memory.
+      - `:hybrid` — Uses lean replay to create `FactRef` vertices, classifies
+        hot/cold facts, then resolves only hot values from the fact store.
+        Requires a store that implements `save_fact/3` and `load_fact/2`.
+      - `:lazy` — All facts stay as `FactRef` structs, resolved on demand
+        during dispatch. Maximum memory savings, but requires resolution
+        before any fact value can be used.
   """
   def resume(runner, workflow_id, opts \\ []) do
     {store_mod, store_state} = get_store(runner)
 
+    if Runic.Runner.Store.supports_stream?(store_mod) do
+      case store_mod.stream(workflow_id, store_state) do
+        {:ok, event_stream} ->
+          rehydration = Keyword.get(opts, :rehydration, :full)
+          store = {store_mod, store_state}
+          events = Enum.to_list(event_stream)
+
+          {workflow, resolver} = resume_from_events(events, rehydration, store)
+
+          worker_opts =
+            opts
+            |> Keyword.put(:resumed, true)
+            |> Keyword.put(:resolver, resolver)
+
+          start_workflow(runner, workflow_id, workflow, worker_opts)
+
+        {:error, :not_found} ->
+          # Fall back to legacy load
+          resume_from_log(runner, workflow_id, store_mod, store_state, opts)
+
+        {:error, _} = error ->
+          error
+      end
+    else
+      resume_from_log(runner, workflow_id, store_mod, store_state, opts)
+    end
+  end
+
+  defp resume_from_events(events, :full, store) do
+    # Check if any FactProduced events have been stripped of values
+    has_stripped =
+      Enum.any?(events, fn
+        %Runic.Workflow.Events.FactProduced{value: nil} -> true
+        _ -> false
+      end)
+
+    if has_stripped do
+      # Lean replay + resolve all facts to restore full in-memory state
+      workflow = Runic.Workflow.from_events(events, nil, fact_mode: :ref)
+
+      all_ref_hashes =
+        for {hash, %Runic.Workflow.FactRef{}} <- workflow.graph.vertices,
+            into: MapSet.new(),
+            do: hash
+
+      resolver = Runic.Workflow.FactResolver.new(store)
+
+      {workflow, _resolver} =
+        Runic.Workflow.Rehydration.resolve_hot(workflow, all_ref_hashes, resolver)
+
+      {workflow, nil}
+    else
+      {Runic.Workflow.from_events(events), nil}
+    end
+  end
+
+  defp resume_from_events(events, :hybrid, store) do
+    workflow = Runic.Workflow.from_events(events, nil, fact_mode: :ref)
+    %{hot: hot} = Runic.Workflow.Rehydration.classify(workflow)
+    resolver = Runic.Workflow.FactResolver.new(store)
+    {workflow, resolver} = Runic.Workflow.Rehydration.resolve_hot(workflow, hot, resolver)
+    {workflow, resolver}
+  end
+
+  defp resume_from_events(events, :lazy, store) do
+    workflow = Runic.Workflow.from_events(events, nil, fact_mode: :ref)
+    {workflow, Runic.Workflow.FactResolver.new(store)}
+  end
+
+  defp resume_from_log(runner, workflow_id, store_mod, store_state, opts) do
     case store_mod.load(workflow_id, store_state) do
       {:ok, log} ->
         workflow = Runic.Workflow.from_log(log)

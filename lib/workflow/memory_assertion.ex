@@ -14,3 +14,19 @@ defmodule Runic.Workflow.MemoryAssertion do
     }
   end
 end
+
+defimpl Runic.Workflow.Activator, for: Runic.Workflow.MemoryAssertion do
+  alias Runic.Workflow
+  alias Runic.Workflow.Runnable
+  alias Runic.Workflow.Private
+
+  def activate_downstream(%Runic.Workflow.MemoryAssertion{} = node, %Workflow{} = wf, %Runnable{
+        result: true,
+        input_fact: fact
+      }) do
+    Private.activate_downstream_with_events(wf, node, fact)
+  end
+
+  def activate_downstream(%Runic.Workflow.MemoryAssertion{}, %Workflow{} = wf, %Runnable{}),
+    do: {wf, []}
+end

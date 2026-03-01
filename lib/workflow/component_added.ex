@@ -12,7 +12,8 @@ defmodule Runic.Workflow.ComponentAdded do
           closure: Closure.t() | nil,
           source: term() | nil,
           bindings: map(),
-          to: term()
+          to: term(),
+          hash: term()
         }
 
   defstruct [
@@ -21,7 +22,8 @@ defmodule Runic.Workflow.ComponentAdded do
     # Deprecated fields (kept for backward compatibility)
     :source,
     :bindings,
-    :to
+    :to,
+    :hash
   ]
 
   # defimpl JSON.Encoder, for: __MODULE__ do

@@ -58,7 +58,15 @@ defmodule Runic.Runner.DurableExecutionTest do
       Process.sleep(50)
 
       {store_mod, store_state} = Runic.Runner.get_store(runner)
-      {:ok, log} = store_mod.load(:wf_durable_store, store_state)
+
+      log =
+        if Runic.Runner.Store.supports_stream?(store_mod) do
+          {:ok, stream} = store_mod.stream(:wf_durable_store, store_state)
+          Enum.to_list(stream)
+        else
+          {:ok, l} = store_mod.load(:wf_durable_store, store_state)
+          l
+        end
 
       dispatched = Enum.filter(log, &match?(%RunnableDispatched{}, &1))
       completed = Enum.filter(log, &match?(%RunnableCompleted{}, &1))
@@ -254,7 +262,7 @@ defmodule Runic.Runner.DurableExecutionTest do
       :ok = Runic.Runner.checkpoint(runner, :wf_manual2)
 
       {store_mod, store_state} = Runic.Runner.get_store(runner)
-      assert {:ok, _log} = store_mod.load(:wf_manual2, store_state)
+      assert store_mod.exists?(:wf_manual2, store_state)
     end
 
     test "checkpoint/2 on non-existent workflow returns {:error, :not_found}", %{runner: runner} do
@@ -284,7 +292,7 @@ defmodule Runic.Runner.DurableExecutionTest do
       :ok = Runic.Runner.checkpoint(runner, :wf_no_auto_ckpt)
 
       {store_mod, store_state} = Runic.Runner.get_store(runner)
-      assert {:ok, _log} = store_mod.load(:wf_no_auto_ckpt, store_state)
+      assert store_mod.exists?(:wf_no_auto_ckpt, store_state)
     end
   end
 

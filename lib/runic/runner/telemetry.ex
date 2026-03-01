@@ -20,6 +20,10 @@ defmodule Runic.Runner.Telemetry do
     * `[:runic, :runner, :store, :start]` — store operation started
     * `[:runic, :runner, :store, :stop]` — store operation completed
     * `[:runic, :runner, :store, :exception]` — store operation failed
+
+  ### Promise Events
+    * `[:runic, :runner, :promise, :start]` — promise dispatched
+    * `[:runic, :runner, :promise, :stop]` — promise completed
   """
 
   @workflow_start [:runic, :runner, :workflow, :start]
@@ -33,6 +37,11 @@ defmodule Runic.Runner.Telemetry do
   @store_start [:runic, :runner, :store, :start]
   @store_stop [:runic, :runner, :store, :stop]
   @store_exception [:runic, :runner, :store, :exception]
+
+  @promise_start [:runic, :runner, :promise, :start]
+  @promise_stop [:runic, :runner, :promise, :stop]
+
+  @rehydration_complete [:runic, :runner, :rehydration, :complete]
 
   @doc """
   Wraps a workflow lifecycle operation in a telemetry span.
@@ -105,6 +114,29 @@ defmodule Runic.Runner.Telemetry do
   end
 
   @doc """
+  Emits a promise lifecycle event.
+
+  ## Event Types
+
+    * `:start` — promise dispatched for execution
+    * `:stop` — promise completed (includes duration measurement)
+  """
+  def promise_event(:start, metadata) do
+    :telemetry.execute(@promise_start, %{system_time: System.system_time()}, metadata)
+  end
+
+  def promise_event(:stop, measurements, metadata) do
+    :telemetry.execute(@promise_stop, measurements, metadata)
+  end
+
+  @doc """
+  Emits a rehydration completion event with memory measurements.
+  """
+  def rehydration_event(:complete, measurements, metadata) do
+    :telemetry.execute(@rehydration_complete, measurements, metadata)
+  end
+
+  @doc """
   Returns all telemetry event names emitted by the Runner.
 
   Useful for `:telemetry.list_handlers/1` and handler setup.
@@ -119,7 +151,10 @@ defmodule Runic.Runner.Telemetry do
       @runnable_exception,
       @store_start,
       @store_stop,
-      @store_exception
+      @store_exception,
+      @promise_start,
+      @promise_stop,
+      @rehydration_complete
     ]
   end
 end

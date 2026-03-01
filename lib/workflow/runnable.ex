@@ -3,19 +3,19 @@ defmodule Runic.Workflow.Runnable do
   A prepared unit of work ready for execution.
 
   Contains everything needed to execute independently of the source workflow.
-  After execute/2, contains result and apply_fn for reducing back into workflow.
+  After execute/2, contains result and events for reducing back into workflow.
 
   ## Three-Phase Execution Model
 
   1. **Prepare** - Extract minimal context from workflow, build a Runnable
   2. **Execute** - Run the node's work function in isolation (potentially parallel)
-  3. **Apply** - Reduce the execution result back into the workflow's memory
+  3. **Apply** - Fold events back into the workflow via `apply_event/2`
 
   The Runnable struct is the carrier between these phases, holding:
   - The node to invoke
   - The input fact triggering invocation
   - Minimal causal context (no full workflow reference)
-  - After execution: result, status, and apply_fn for reducing into workflow
+  - After execution: result, status, and events for reducing into workflow
   """
 
   alias Runic.Workflow.{Fact, CausalContext}
@@ -29,7 +29,8 @@ defmodule Runic.Workflow.Runnable do
           context: CausalContext.t() | nil,
           status: status(),
           result: term() | nil,
-          apply_fn: (Runic.Workflow.t() -> Runic.Workflow.t()) | nil,
+          events: [struct()] | nil,
+          hook_apply_fns: [function()] | nil,
           error: term() | nil
         }
 
@@ -40,7 +41,8 @@ defmodule Runic.Workflow.Runnable do
     :context,
     :status,
     :result,
-    :apply_fn,
+    :events,
+    :hook_apply_fns,
     :error
   ]
 
@@ -83,11 +85,29 @@ defmodule Runic.Workflow.Runnable do
   end
 
   @doc """
-  Marks a runnable as completed with result and apply_fn.
+  Marks a runnable as completed with result and events.
+
+  Events are the list of event structs produced by `Invokable.execute/2`.
+  They will be folded into the workflow via `apply_event/2` during the apply phase.
   """
-  @spec complete(t(), term(), (Runic.Workflow.t() -> Runic.Workflow.t())) :: t()
-  def complete(%__MODULE__{} = runnable, result, apply_fn) do
-    %{runnable | status: :completed, result: result, apply_fn: apply_fn}
+  @spec complete(t(), term(), [struct()]) :: t()
+  def complete(%__MODULE__{} = runnable, result, events) when is_list(events) do
+    %{runnable | status: :completed, result: result, events: events}
+  end
+
+  @doc """
+  Marks a runnable as completed with events and hook apply_fns.
+  """
+  @spec complete(t(), term(), [struct()], [function()]) :: t()
+  def complete(%__MODULE__{} = runnable, result, events, hook_apply_fns)
+      when is_list(events) and is_list(hook_apply_fns) do
+    %{
+      runnable
+      | status: :completed,
+        result: result,
+        events: events,
+        hook_apply_fns: hook_apply_fns
+    }
   end
 
   @doc """
@@ -99,10 +119,13 @@ defmodule Runic.Workflow.Runnable do
   end
 
   @doc """
-  Marks a runnable as skipped with an apply_fn that handles the skip.
+  Marks a runnable as skipped with events.
+
+  The events (typically just `ActivationConsumed`) are folded during apply,
+  and downstream nodes are marked as `:upstream_failed`.
   """
-  @spec skip(t(), (Runic.Workflow.t() -> Runic.Workflow.t())) :: t()
-  def skip(%__MODULE__{} = runnable, apply_fn) do
-    %{runnable | status: :skipped, apply_fn: apply_fn}
+  @spec skip(t(), [struct()]) :: t()
+  def skip(%__MODULE__{} = runnable, events) when is_list(events) do
+    %{runnable | status: :skipped, events: events}
   end
 end

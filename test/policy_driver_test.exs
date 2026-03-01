@@ -131,7 +131,8 @@ defmodule Runic.Workflow.PolicyDriverTest do
 
       assert result.status == :completed
       assert result.result.value == :synthetic
-      assert is_function(result.apply_fn, 1)
+      assert is_list(result.events)
+      assert length(result.events) > 0
     end
 
     test "fallback returning {:retry_with, overrides} merges into meta_context and executes" do
@@ -198,13 +199,14 @@ defmodule Runic.Workflow.PolicyDriverTest do
       assert result.status == :failed
     end
 
-    test ":skip returns a skipped runnable with a valid apply_fn" do
+    test ":skip returns a skipped runnable with events" do
       runnable = make_runnable(fn _x -> raise "boom" end)
       policy = SchedulerPolicy.new(on_failure: :skip)
       result = PolicyDriver.execute(runnable, policy)
 
       assert result.status == :skipped
-      assert is_function(result.apply_fn, 1)
+      assert is_list(result.events)
+      assert length(result.events) > 0
     end
   end
 

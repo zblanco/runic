@@ -28,7 +28,8 @@ defmodule Runic.MixProject do
         "guides/usage-rules.md",
         "guides/protocols.md",
         "guides/scheduling.md",
-        "guides/durable-execution.md"
+        "guides/durable-execution.md",
+        "guides/execution-strategies.md"
       ],
       groups_for_extras: [
         Guides: ~r/guides\/.*/
@@ -55,6 +56,16 @@ defmodule Runic.MixProject do
         Runner: [
           Runic.Runner,
           Runic.Runner.Worker,
+          Runic.Runner.Executor,
+          Runic.Runner.Executor.Task,
+          Runic.Runner.Executor.GenStage,
+          Runic.Runner.Scheduler,
+          Runic.Runner.Scheduler.Default,
+          Runic.Runner.Scheduler.ChainBatching,
+          Runic.Runner.Scheduler.FlowBatch,
+          Runic.Runner.Scheduler.ContractTest,
+          Runic.Runner.Promise,
+          Runic.Runner.PromiseBuilder,
           Runic.Runner.Store,
           Runic.Runner.Store.ETS,
           Runic.Runner.Store.Mnesia,
@@ -95,7 +106,9 @@ defmodule Runic.MixProject do
       {:ex_doc, "~> 0.34", only: :dev, runtime: false, warn_if_outdated: true},
       {:tidewave, "~> 0.4", only: :dev},
       {:bandit, "~> 1.0", only: :dev},
-      {:benchee, "~> 1.3", only: :dev}
+      {:benchee, "~> 1.3", only: :dev},
+      {:gen_stage, "~> 1.2", optional: true},
+      {:flow, "~> 1.2", optional: true}
       # {:libgraph, "~> 0.16.0", path: "~/wrk/oss/libgraph"}
     ]
   end

@@ -8,11 +8,13 @@ defmodule Runic.Workflow.Private do
   alias Runic.Workflow.Step
   alias Runic.Workflow.Condition
   alias Runic.Workflow.Fact
+  alias Runic.Workflow.FactRef
   alias Runic.Workflow.Rule
   alias Runic.Workflow.FanOut
   alias Runic.Workflow.FanIn
   alias Runic.Workflow.Join
   alias Runic.Workflow.Invokable
+  alias Runic.Workflow.Events.RunnableActivated
   alias Runic.Component
 
   # =============================================================================
@@ -220,6 +222,13 @@ defmodule Runic.Workflow.Private do
     }
   end
 
+  def log_fact(%Workflow{graph: graph} = wrk, %FactRef{} = ref) do
+    %Workflow{
+      wrk
+      | graph: Graph.add_vertex(graph, ref)
+    }
+  end
+
   # =============================================================================
   # Hooks
   # =============================================================================
@@ -331,6 +340,25 @@ defmodule Runic.Workflow.Private do
     |> Enum.reduce(workflow, fn step, wrk ->
       draw_connection(wrk, fact, step, connection_for_activatable(step))
     end)
+  end
+
+  @doc false
+  def activate_downstream_with_events(%Workflow{} = workflow, node, %Fact{} = fact) do
+    next = Workflow.next_steps(workflow, node)
+
+    activation_events =
+      Enum.map(next, fn step ->
+        %RunnableActivated{
+          fact_hash: fact.hash,
+          node_hash: step.hash,
+          activation_kind: connection_for_activatable(step)
+        }
+      end)
+
+    wf =
+      Enum.reduce(activation_events, workflow, fn event, w -> Workflow.apply_event(w, event) end)
+
+    {wf, activation_events}
   end
 
   @doc false

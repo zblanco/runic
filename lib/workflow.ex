@@ -171,6 +171,7 @@ defmodule Runic.Workflow do
   alias Runic.Workflow.Step
   alias Runic.Workflow.Condition
   alias Runic.Workflow.Fact
+  alias Runic.Workflow.FactRef
   alias Runic.Workflow.Rule
   alias Runic.Workflow.Join
   alias Runic.Workflow.Invokable
@@ -183,6 +184,17 @@ defmodule Runic.Workflow do
   alias Runic.Workflow.RunnableCompleted
   alias Runic.Workflow.RunnableFailed
   alias Runic.Workflow.Private
+  alias Runic.Workflow.Events.FactProduced
+  alias Runic.Workflow.Events.ActivationConsumed
+  alias Runic.Workflow.Events.RunnableActivated
+  alias Runic.Workflow.Events.ConditionSatisfied
+  alias Runic.Workflow.Events.MapReduceTracked
+  alias Runic.Workflow.Events.StateInitiated
+  alias Runic.Workflow.Events.JoinFactReceived
+  alias Runic.Workflow.Events.JoinCompleted
+  alias Runic.Workflow.Events.JoinEdgeRelabeled
+  alias Runic.Workflow.Events.FanOutFactEmitted
+  alias Runic.Workflow.Events.FanInCompleted
 
   @type t() :: %__MODULE__{
           name: String.t(),
@@ -200,7 +212,9 @@ defmodule Runic.Workflow do
           # list of {matcher, policy_map} tuples for scheduler policies
           scheduler_policies: list(),
           # accumulated runnable lifecycle events for durable execution
-          runnable_events: list()
+          runnable_events: list(),
+          # when true, apply_runnable/2 buffers events into uncommitted_events
+          emit_events: boolean()
         }
 
   @type runnable() :: {fun(), term()}
@@ -215,7 +229,9 @@ defmodule Runic.Workflow do
             build_log: [],
             inputs: %{},
             scheduler_policies: [],
-            runnable_events: []
+            runnable_events: [],
+            emit_events: false,
+            uncommitted_events: []
 
   @doc """
   Creates an empty workflow with no components.
@@ -524,6 +540,7 @@ defmodule Runic.Workflow do
         closure: closure,
         name: component.name,
         to: parent,
+        hash: Map.get(component, :hash),
         # Backward compatibility: also set source/bindings for old deserialization
         source: Component.source(component),
         bindings: if(closure, do: closure.bindings, else: %{})
@@ -564,7 +581,8 @@ defmodule Runic.Workflow do
           %ComponentAdded{
             closure: closure,
             name: component.name,
-            to: parent
+            to: parent,
+            hash: Map.get(component, :hash)
           }
 
         nil ->
@@ -573,6 +591,7 @@ defmodule Runic.Workflow do
             source: Component.source(component),
             name: component.name,
             to: parent,
+            hash: Map.get(component, :hash),
             bindings: Map.get(component, :bindings, %{})
           }
       end
@@ -628,6 +647,207 @@ defmodule Runic.Workflow do
     add(wrk, component, to: event.to)
   end
 
+  def apply_event(%__MODULE__{} = wf, %FactProduced{} = e) do
+    fact = Fact.new(hash: e.hash, value: e.value, ancestry: e.ancestry)
+    wf = log_fact(wf, fact)
+
+    case e.ancestry do
+      {producer_hash, _parent_fact_hash} ->
+        producer = Map.get(wf.graph.vertices, producer_hash)
+
+        if producer do
+          draw_connection(wf, producer, fact, e.producer_label, weight: e.weight || 0)
+        else
+          wf
+        end
+
+      nil ->
+        wf
+    end
+  end
+
+  def apply_event(%__MODULE__{} = wf, %ActivationConsumed{} = e) do
+    node = Map.get(wf.graph.vertices, e.node_hash)
+    fact = Map.get(wf.graph.vertices, e.fact_hash)
+
+    if node && fact do
+      mark_runnable_as_ran(wf, node, fact)
+    else
+      wf
+    end
+  end
+
+  def apply_event(%__MODULE__{} = wf, %ConditionSatisfied{} = e) do
+    fact = Map.get(wf.graph.vertices, e.fact_hash)
+    cond_node = Map.get(wf.graph.vertices, e.condition_hash)
+
+    if fact && cond_node do
+      draw_connection(wf, fact, cond_node, :satisfied, weight: e.weight || 0)
+    else
+      wf
+    end
+  end
+
+  def apply_event(%__MODULE__{} = wf, %RunnableActivated{} = e) do
+    fact = Map.get(wf.graph.vertices, e.fact_hash)
+    node = Map.get(wf.graph.vertices, e.node_hash)
+
+    if fact && node do
+      draw_connection(wf, fact, node, e.activation_kind)
+    else
+      wf
+    end
+  end
+
+  def apply_event(%__MODULE__{} = wf, %MapReduceTracked{} = e) do
+    seen_key = {e.source_fact_hash, e.step_hash}
+    seen = Map.get(wf.mapped, seen_key, %{})
+    seen = Map.put(seen, e.fan_out_fact_hash, e.result_fact_hash)
+
+    mapped =
+      wf.mapped
+      |> Map.put(seen_key, seen)
+      |> Map.put({:fan_out_for_batch, e.source_fact_hash}, e.fan_out_hash)
+
+    %{wf | mapped: mapped}
+  end
+
+  def apply_event(%__MODULE__{} = wf, %StateInitiated{} = e) do
+    init_fact = Fact.new(hash: e.init_fact_hash, value: e.init_value, ancestry: e.init_ancestry)
+    acc = Map.get(wf.graph.vertices, e.accumulator_hash)
+
+    if acc do
+      wf
+      |> log_fact(init_fact)
+      |> draw_connection(acc, init_fact, :state_initiated, weight: e.weight || 0)
+    else
+      wf
+    end
+  end
+
+  def apply_event(%__MODULE__{} = wf, %JoinFactReceived{} = e) do
+    fact = Map.get(wf.graph.vertices, e.fact_hash)
+    join = Map.get(wf.graph.vertices, e.join_hash)
+
+    if fact && join do
+      draw_connection(wf, fact, join, :joined, weight: e.weight || 0)
+    else
+      wf
+    end
+  end
+
+  def apply_event(%__MODULE__{} = wf, %JoinCompleted{} = e) do
+    join = Map.get(wf.graph.vertices, e.join_hash)
+
+    result_fact =
+      Fact.new(hash: e.result_fact_hash, value: e.result_value, ancestry: e.result_ancestry)
+
+    if join do
+      wf
+      |> log_fact(result_fact)
+      |> draw_connection(join, result_fact, :produced, weight: e.weight || 0)
+    else
+      wf
+    end
+  end
+
+  def apply_event(%__MODULE__{} = wf, %JoinEdgeRelabeled{} = e) do
+    fact = Map.get(wf.graph.vertices, e.fact_hash)
+    join = Map.get(wf.graph.vertices, e.join_hash)
+
+    if fact && join do
+      case Graph.update_labelled_edge(wf.graph, fact, join, e.from_label, label: e.to_label) do
+        %Graph{} = updated -> %{wf | graph: updated}
+        _ -> wf
+      end
+    else
+      wf
+    end
+  end
+
+  def apply_event(%__MODULE__{} = wf, %FanOutFactEmitted{} = e) do
+    fact =
+      Fact.new(hash: e.emitted_fact_hash, value: e.emitted_value, ancestry: e.emitted_ancestry)
+
+    fan_out = Map.get(wf.graph.vertices, e.fan_out_hash)
+
+    wf = log_fact(wf, fact)
+
+    wf =
+      if fan_out do
+        draw_connection(wf, fan_out, fact, :fan_out, weight: e.weight || 0)
+      else
+        wf
+      end
+
+    # Update mapped tracking for downstream FanIn coordination
+    key = {e.source_fact_hash, e.fan_out_hash}
+    expected = Map.get(wf.mapped, key, [])
+    %{wf | mapped: Map.put(wf.mapped, key, [e.emitted_fact_hash | expected])}
+  end
+
+  def apply_event(%__MODULE__{} = wf, %FanInCompleted{} = e) do
+    fan_in = Map.get(wf.graph.vertices, e.fan_in_hash)
+
+    result_fact =
+      Fact.new(hash: e.result_fact_hash, value: e.result_value, ancestry: e.result_ancestry)
+
+    if fan_in do
+      wf
+      |> log_fact(result_fact)
+      |> draw_connection(fan_in, result_fact, :reduced, weight: e.weight || 0)
+      |> fan_in_mark_completed(e)
+      |> fan_in_cleanup_mapped(e)
+    else
+      wf
+    end
+  end
+
+  # Fallback: protocol dispatch for custom events from external Invokable implementations
+  def apply_event(%__MODULE__{} = wf, event) when is_struct(event) do
+    Runic.Workflow.EventApplicator.apply(event, wf)
+  end
+
+  # Lean replay: creates FactRef instead of Fact when value was stripped.
+  # Falls back to full Fact for legacy events that still carry values (migration).
+  defp apply_event_lean(%__MODULE__{} = wf, %FactProduced{value: nil} = e) do
+    ref = %FactRef{hash: e.hash, ancestry: e.ancestry}
+    wf = log_fact(wf, ref)
+
+    case e.ancestry do
+      {producer_hash, _parent_fact_hash} ->
+        producer = Map.get(wf.graph.vertices, producer_hash)
+
+        if producer do
+          draw_connection(wf, producer, ref, e.producer_label, weight: e.weight || 0)
+        else
+          wf
+        end
+
+      nil ->
+        wf
+    end
+  end
+
+  defp apply_event_lean(%__MODULE__{} = wf, %FactProduced{} = e) do
+    apply_event(wf, e)
+  end
+
+  defp fan_in_mark_completed(%__MODULE__{} = wf, %FanInCompleted{} = e) do
+    completed_key = {:fan_in_completed, e.source_fact_hash, e.fan_in_hash}
+    %{wf | mapped: Map.put(wf.mapped, completed_key, true)}
+  end
+
+  defp fan_in_cleanup_mapped(%__MODULE__{} = wf, %FanInCompleted{} = e) do
+    mapped =
+      wf.mapped
+      |> Map.delete(e.expected_key)
+      |> Map.delete(e.seen_key)
+      |> Map.delete({:fan_out_for_batch, e.source_fact_hash})
+
+    %{wf | mapped: mapped}
+  end
+
   @doc """
   Applies a list of `%ComponentAdded{}` events to the workflow.
 
@@ -671,8 +891,16 @@ defmodule Runic.Workflow do
           raise "ComponentAdded event has neither closure nor source"
       end
 
-    component
-    |> Map.put(:name, event.name)
+    component =
+      component
+      |> Map.put(:name, event.name)
+
+    # Restore original hash if stored — ensures hash stability across rebuilds
+    if event.hash do
+      Map.put(component, :hash, event.hash)
+    else
+      component
+    end
   end
 
   # Backward compatibility: evaluate source with old __caller_context__ approach
@@ -768,6 +996,91 @@ defmodule Runic.Workflow do
     end)
   end
 
+  @doc """
+  Rebuilds a workflow from a mixed stream of build and runtime events.
+
+  Separates `%ComponentAdded{}` events (workflow structure) from runtime events
+  (e.g. `%FactProduced{}`, `%ActivationConsumed{}`), rebuilds the workflow
+  structure via `from_log/1`, then replays runtime events via `apply_event/2`.
+
+  When a `base_workflow` is provided, skips structure reconstruction and
+  replays only runtime events on top of the base.
+
+  This is the primary recovery path for event-sourced stores using
+  `append/3` and `stream/2`.
+
+  ## Examples
+
+      # Full rebuild from event stream
+      {:ok, event_stream} = store.stream(workflow_id, store_state)
+      workflow = Workflow.from_events(Enum.to_list(event_stream))
+
+      # Replay on an existing workflow structure
+      workflow = Workflow.from_events(runtime_events, base_workflow)
+  """
+  @spec from_events(Enumerable.t(), t() | nil) :: t()
+  def from_events(events, base_workflow \\ nil) do
+    do_from_events(events, base_workflow, [])
+  end
+
+  @doc """
+  Like `from_events/2` but accepts options for replay control.
+
+  ## Options
+
+    * `:fact_mode` — `:full` (default) creates `Fact` vertices from `FactProduced`
+      events. `:ref` creates lightweight `FactRef` vertices instead, enabling
+      lean replay that avoids loading cold fact values into memory.
+
+  ## Example
+
+      # Lean replay: creates FactRef vertices, resolve hot ones later
+      workflow = Workflow.from_events(events, nil, fact_mode: :ref)
+  """
+  @spec from_events(Enumerable.t(), t() | nil, keyword()) :: t()
+  def from_events(events, base_workflow, opts) when is_list(opts) do
+    do_from_events(events, base_workflow, opts)
+  end
+
+  defp do_from_events(events, base_workflow, opts) do
+    fact_mode = Keyword.get(opts, :fact_mode, :full)
+
+    {build_events, runtime_events} =
+      Enum.split_with(events, fn event ->
+        is_struct(event, ComponentAdded) or
+          is_struct(event, ReactionOccurred) or
+          is_struct(event, RunnableDispatched) or
+          is_struct(event, RunnableCompleted) or
+          is_struct(event, RunnableFailed)
+      end)
+
+    base =
+      if base_workflow do
+        # Replay only structural/lifecycle events that from_log handles
+        if build_events != [] do
+          from_log(build_events)
+          |> then(fn rebuilt ->
+            # Merge runnable_events from rebuilt onto base if base is provided
+            %{
+              base_workflow
+              | runnable_events: base_workflow.runnable_events ++ rebuilt.runnable_events
+            }
+          end)
+        else
+          base_workflow
+        end
+      else
+        from_log(build_events)
+      end
+
+    Enum.reduce(runtime_events, base, fn event, wf ->
+      case {fact_mode, event} do
+        {:ref, %FactProduced{}} -> apply_event_lean(wf, event)
+        _ -> apply_event(wf, event)
+      end
+    end)
+  end
+
   # Rebuild getter_fn for :meta_ref edges during from_log restoration
   # The getter_fn was stripped during serialization and must be rebuilt
   defp restore_meta_ref_properties(:meta_ref, properties) when is_map(properties) do
@@ -792,6 +1105,15 @@ defmodule Runic.Workflow do
   the workflow structure and execution state. Use with `from_log/1` to
   persist and restore both the workflow definition and its runtime state.
 
+  ## Deprecation
+
+  Prefer `build_log/1` + `uncommitted_events` for the event-sourced model.
+  `log/1` derives events by scanning the full graph (O(total edges)), whereas
+  `uncommitted_events` accumulates events incrementally during execution.
+
+  Use `build_log(workflow) ++ workflow.uncommitted_events` instead, and
+  reconstruct with `Workflow.from_events/2`.
+
   ## Example
 
       require Runic
@@ -803,6 +1125,7 @@ defmodule Runic.Workflow do
       log = Workflow.log(ran)
       restored = Workflow.from_log(log)
   """
+  @deprecated "Use build_log/1 + workflow.uncommitted_events with from_events/2 instead"
   def log(wrk) do
     build_log(wrk) ++ reactions_occurred(wrk) ++ wrk.runnable_events
   end
@@ -1660,9 +1983,9 @@ defmodule Runic.Workflow do
       [10]
   """
   def raw_productions(%__MODULE__{graph: graph}) do
-    for %Graph.Edge{} = edge <-
+    for %Graph.Edge{v2: %Fact{value: value}} <-
           Graph.edges(graph, by: [:produced, :state_produced, :state_initiated, :reduced]) do
-      edge.v2.value
+      value
     end
   end
 
@@ -1707,11 +2030,11 @@ defmodule Runic.Workflow do
     wrk.graph
     |> Graph.out_edges(component, by: :component_of)
     |> Enum.flat_map(fn %{v2: invokable} ->
-      for edge <-
+      for %Graph.Edge{v2: %Fact{value: value}} <-
             Graph.out_edges(wrk.graph, invokable,
               by: [:produced, :state_produced, :state_initiated, :reduced]
             ) do
-        edge.v2.value
+        value
       end
     end)
   end
@@ -2491,18 +2814,27 @@ defmodule Runic.Workflow do
       iex> ancestry_depth(workflow, fact_after_two_steps)
       2
   """
-  @spec ancestry_depth(t(), Fact.t()) :: non_neg_integer()
+  @spec ancestry_depth(t(), Fact.t() | FactRef.t()) :: non_neg_integer()
   def ancestry_depth(%__MODULE__{}, %Fact{ancestry: nil}), do: 0
+  def ancestry_depth(%__MODULE__{}, %FactRef{ancestry: nil}), do: 0
 
   def ancestry_depth(%__MODULE__{graph: graph} = workflow, %Fact{
         ancestry: {_producer_hash, parent_fact_hash}
       }) do
     case Map.get(graph.vertices, parent_fact_hash) do
-      %Fact{} = parent_fact ->
-        1 + ancestry_depth(workflow, parent_fact)
+      %Fact{} = parent -> 1 + ancestry_depth(workflow, parent)
+      %FactRef{} = parent -> 1 + ancestry_depth(workflow, parent)
+      nil -> 1
+    end
+  end
 
-      nil ->
-        1
+  def ancestry_depth(%__MODULE__{graph: graph} = workflow, %FactRef{
+        ancestry: {_producer_hash, parent_fact_hash}
+      }) do
+    case Map.get(graph.vertices, parent_fact_hash) do
+      %Fact{} = parent -> 1 + ancestry_depth(workflow, parent)
+      %FactRef{} = parent -> 1 + ancestry_depth(workflow, parent)
+      nil -> 1
     end
   end
 
@@ -2519,8 +2851,9 @@ defmodule Runic.Workflow do
       iex> causal_depth(workflow, produced_fact)
       3  # produced after 3 causal steps
   """
-  @spec causal_depth(t(), Fact.t()) :: non_neg_integer()
-  def causal_depth(%__MODULE__{} = workflow, %Fact{} = fact) do
+  @spec causal_depth(t(), Fact.t() | FactRef.t()) :: non_neg_integer()
+  def causal_depth(%__MODULE__{} = workflow, fact)
+      when is_struct(fact, Fact) or is_struct(fact, FactRef) do
     ancestry_depth(workflow, fact)
   end
 
@@ -2575,7 +2908,7 @@ defmodule Runic.Workflow do
 
   1. **Prepare** - This function calls `Invokable.prepare/3` for each pending node
   2. **Execute** - Call `Invokable.execute/2` on each runnable (can be parallelized)
-  3. **Apply** - Call `runnable.apply_fn.(workflow)` to reduce results back
+  3. **Apply** - Call `Workflow.apply_runnable(workflow, runnable)` to fold events back
 
   ## Returns
 
@@ -2651,13 +2984,15 @@ defmodule Runic.Workflow do
   @doc """
   Applies a completed runnable back to the workflow.
 
-  Called by schedulers after receiving execution results. The runnable's
-  `apply_fn` is invoked to reduce results into the workflow state.
+  Called by schedulers after receiving execution results.
+
+  Events from the runnable are folded via `apply_event/2`, hook apply_fns
+  are run, and downstream nodes are activated.
 
   ## Parameters
 
   - `workflow` - The current workflow state
-  - `runnable` - A runnable with status `:completed` or `:failed`
+  - `runnable` - A runnable with status `:completed`, `:failed`, `:skipped`, or `:pending`
 
   ## Returns
 
@@ -2669,14 +3004,58 @@ defmodule Runic.Workflow do
       workflow = Workflow.apply_runnable(workflow, executed)
   """
   @spec apply_runnable(t(), Runnable.t()) :: t()
-  def apply_runnable(%__MODULE__{} = workflow, %Runnable{status: :completed, apply_fn: apply_fn})
-      when is_function(apply_fn, 1) do
-    apply_fn.(workflow)
+
+  def apply_runnable(
+        %__MODULE__{} = workflow,
+        %Runnable{status: :completed, events: events} = runnable
+      )
+      when is_list(events) and events != [] do
+    # 1. Fold core events
+    wf = Enum.reduce(events, workflow, fn event, wf -> apply_event(wf, event) end)
+
+    # 2. Run hook apply_fns if present (collected during execute, not serializable)
+    wf = apply_hook_fns(wf, runnable.hook_apply_fns || [])
+
+    # 3. Coordination finalization (Join completion check, etc.)
+    #    Returns {wf, derived_events} — derived events are already folded into wf
+    {wf, derived_events} = maybe_finalize_coordination(wf, runnable)
+
+    # 4. Emit downstream activations (skipped when coordination produced derived events,
+    #    since coordination already handled downstream activation)
+    #    Returns {wf, activation_events} so activation edges are captured in the event stream
+    {wf, activation_events} =
+      if derived_events == [] do
+        emit_downstream_activations(wf, runnable)
+      else
+        {wf, []}
+      end
+
+    # 5. Buffer all events as uncommitted (only when emit_events is enabled)
+    if wf.emit_events do
+      all_new =
+        Enum.reverse(activation_events) ++ Enum.reverse(derived_events) ++ Enum.reverse(events)
+
+      %{wf | uncommitted_events: all_new ++ wf.uncommitted_events}
+    else
+      wf
+    end
   end
 
-  def apply_runnable(%__MODULE__{} = workflow, %Runnable{status: :skipped, apply_fn: apply_fn})
-      when is_function(apply_fn, 1) do
-    apply_fn.(workflow)
+  # Skipped runnable: fold events (marks activation as consumed),
+  # then skip all downstream nodes to prevent stalled workflows.
+  def apply_runnable(
+        %__MODULE__{} = workflow,
+        %Runnable{status: :skipped, events: events, node: node} = _runnable
+      )
+      when is_list(events) and events != [] do
+    wf = Enum.reduce(events, workflow, fn event, wf -> apply_event(wf, event) end)
+    wf = skip_downstream_subgraph(wf, node)
+
+    if wf.emit_events do
+      %{wf | uncommitted_events: Enum.reverse(events) ++ wf.uncommitted_events}
+    else
+      wf
+    end
   end
 
   def apply_runnable(%__MODULE__{} = workflow, %Runnable{status: :failed} = runnable) do
@@ -2685,6 +3064,66 @@ defmodule Runic.Workflow do
 
   def apply_runnable(%__MODULE__{} = workflow, %Runnable{status: :pending}) do
     workflow
+  end
+
+  @doc """
+  Enables event emission on the workflow.
+
+  When `emit_events` is `true`, `apply_runnable/2` buffers events into
+  `uncommitted_events` for consumption by durable execution stores.
+  """
+  @spec enable_event_emission(t()) :: t()
+  def enable_event_emission(%__MODULE__{} = wf), do: %{wf | emit_events: true}
+
+  @doc """
+  Disables event emission on the workflow.
+
+  When `emit_events` is `false` (the default), `apply_runnable/2` skips
+  the `uncommitted_events` buffer entirely, avoiding allocation overhead
+  for in-memory scripting use cases.
+  """
+  @spec disable_event_emission(t()) :: t()
+  def disable_event_emission(%__MODULE__{} = wf), do: %{wf | emit_events: false}
+
+  # Emit downstream activations: dispatches to Activator protocol if implemented,
+  # otherwise uses the default activation logic (find :flow successors, draw activation edges).
+  # Returns {wf, activation_events} so all graph mutations are captured in the event stream.
+  defp emit_downstream_activations(%__MODULE__{} = wf, %Runnable{node: node} = runnable) do
+    if Runic.Workflow.Activator.impl_for(node) do
+      Runic.Workflow.Activator.activate_downstream(node, wf, runnable)
+    else
+      default_emit_downstream(wf, runnable)
+    end
+  end
+
+  # Default: single Fact result — activate :flow successors via RunnableActivated events
+  defp default_emit_downstream(%__MODULE__{} = wf, %Runnable{result: result, node: node})
+       when is_struct(result, Fact) do
+    next = next_steps(wf, node)
+
+    activation_events =
+      Enum.map(next, fn step ->
+        %RunnableActivated{
+          fact_hash: result.hash,
+          node_hash: step.hash,
+          activation_kind: Private.connection_for_activatable(step)
+        }
+      end)
+
+    wf = Enum.reduce(activation_events, wf, fn event, w -> apply_event(w, event) end)
+    {wf, activation_events}
+  end
+
+  defp default_emit_downstream(%__MODULE__{} = wf, _runnable), do: {wf, []}
+
+  # Coordination finalization: dispatches to Coordinator protocol if implemented,
+  # otherwise returns {wf, []} (no coordination needed).
+  defp maybe_finalize_coordination(%__MODULE__{} = wf, %Runnable{node: node} = runnable) do
+    if Runic.Workflow.Coordinator.impl_for(node) do
+      Runic.Workflow.Coordinator.finalize(node, wf, runnable)
+    else
+      {wf, []}
+    end
   end
 
   defp handle_failed_runnable(%__MODULE__{} = workflow, %Runnable{

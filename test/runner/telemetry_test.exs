@@ -4,9 +4,9 @@ defmodule Runic.Runner.TelemetryTest do
   alias Runic.Runner.Telemetry
 
   describe "event_names/0" do
-    test "returns 9 event names" do
+    test "returns 12 event names" do
       names = Telemetry.event_names()
-      assert length(names) == 9
+      assert length(names) == 12
     end
 
     test "all event names start with :runic" do
