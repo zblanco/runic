@@ -1329,6 +1329,12 @@ defmodule Runic do
           new_opt = {key, new_var}
           {[new_opt | opts_acc], [binding_assignment | bindings_acc]}
 
+        {key, {var, meta, ctx} = expr}, {opts_acc, bindings_acc}
+        when is_atom(var) and is_atom(ctx) and var != :_ ->
+          new_var = Macro.var(var, ctx)
+          binding_assignment = {:=, meta, [new_var, expr]}
+          {[{key, new_var} | opts_acc], [binding_assignment | bindings_acc]}
+
         {key, value}, {opts_acc, bindings_acc} ->
           {[{key, value} | opts_acc], bindings_acc}
       end)
