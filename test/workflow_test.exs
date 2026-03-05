@@ -2420,6 +2420,213 @@ defmodule WorkflowTest do
     end
   end
 
+  describe "remove_component/2" do
+    test "removes a middle component and rewires upstream to downstream" do
+      step1 = Runic.step(fn x -> x + 1 end, name: :add)
+      step2 = Runic.step(fn x -> x * 2 end, name: :double)
+      step3 = Runic.step(fn x -> x - 1 end, name: :subtract)
+
+      workflow =
+        Workflow.new()
+        |> Workflow.add(step1)
+        |> Workflow.add(step2, to: :add)
+        |> Workflow.add(step3, to: :double)
+
+      workflow = Workflow.remove_component(workflow, :double)
+
+      assert is_nil(Workflow.get_component(workflow, :double))
+      assert Workflow.get_component(workflow, :add) != nil
+      assert Workflow.get_component(workflow, :subtract) != nil
+
+      # :add should now flow directly to :subtract
+      add_step = Workflow.get_component(workflow, :add)
+      next = Workflow.next_steps(workflow, add_step)
+      assert length(next) == 1
+      assert hd(next).name == :subtract
+
+      # Execution should still work: 5 + 1 = 6, 6 - 1 = 5
+      result =
+        workflow
+        |> Workflow.react_until_satisfied(5)
+        |> Workflow.raw_productions(:subtract)
+
+      assert result == [5]
+    end
+
+    test "removes a leaf component without affecting the rest" do
+      step1 = Runic.step(fn x -> x + 1 end, name: :add)
+      step2 = Runic.step(fn x -> x * 2 end, name: :double)
+
+      workflow =
+        Workflow.new()
+        |> Workflow.add(step1)
+        |> Workflow.add(step2, to: :add)
+
+      workflow = Workflow.remove_component(workflow, :double)
+
+      assert is_nil(Workflow.get_component(workflow, :double))
+
+      result =
+        workflow
+        |> Workflow.react_until_satisfied(5)
+        |> Workflow.raw_productions(:add)
+
+      assert result == [6]
+    end
+
+    test "removes a root-level component" do
+      step1 = Runic.step(fn x -> x + 1 end, name: :add)
+      step2 = Runic.step(fn x -> x * 2 end, name: :double)
+
+      workflow =
+        Workflow.new()
+        |> Workflow.add(step1)
+        |> Workflow.add(step2)
+
+      workflow = Workflow.remove_component(workflow, :add)
+
+      assert is_nil(Workflow.get_component(workflow, :add))
+      assert Workflow.get_component(workflow, :double) != nil
+
+      result =
+        workflow
+        |> Workflow.react_until_satisfied(5)
+        |> Workflow.raw_productions(:double)
+
+      assert result == [10]
+    end
+
+    test "removes a branching root and rewires children to root" do
+      root_step = Runic.step(fn x -> x end, name: :passthrough)
+      branch_a = Runic.step(fn x -> x + 1 end, name: :branch_a)
+      branch_b = Runic.step(fn x -> x * 2 end, name: :branch_b)
+
+      workflow =
+        Workflow.new()
+        |> Workflow.add(root_step)
+        |> Workflow.add(branch_a, to: :passthrough)
+        |> Workflow.add(branch_b, to: :passthrough)
+
+      workflow = Workflow.remove_component(workflow, :passthrough)
+
+      # Both branches should now be root-level
+      result =
+        workflow
+        |> Workflow.react_until_satisfied(5)
+        |> Workflow.raw_productions()
+
+      assert Enum.sort(result) == [6, 10]
+    end
+
+    test "removes a rule component and its sub-components" do
+      step = Runic.step(fn x -> x + 1 end, name: :increment)
+      rule = Runic.rule(fn x when x > 0 -> :positive end, name: :classify)
+
+      workflow =
+        Workflow.new()
+        |> Workflow.add(step)
+        |> Workflow.add(rule, to: :increment)
+
+      workflow = Workflow.remove_component(workflow, :classify)
+
+      assert is_nil(Workflow.get_component(workflow, :classify))
+      assert Workflow.get_component(workflow, :increment) != nil
+
+      # Step should still produce normally
+      result =
+        workflow
+        |> Workflow.react_until_satisfied(5)
+        |> Workflow.raw_productions(:increment)
+
+      assert result == [6]
+    end
+
+    test "returns workflow unchanged for nonexistent component" do
+      step = Runic.step(fn x -> x + 1 end, name: :add)
+
+      workflow =
+        Workflow.new()
+        |> Workflow.add(step)
+
+      assert Workflow.remove_component(workflow, :nonexistent) == workflow
+    end
+
+    test "appends ComponentRemoved event to build log" do
+      step1 = Runic.step(fn x -> x + 1 end, name: :add)
+      step2 = Runic.step(fn x -> x * 2 end, name: :double)
+
+      workflow =
+        Workflow.new()
+        |> Workflow.add(step1)
+        |> Workflow.add(step2, to: :add)
+
+      workflow = Workflow.remove_component(workflow, :double)
+
+      assert Enum.any?(workflow.build_log, fn
+               %Runic.Workflow.ComponentRemoved{name: :double} -> true
+               _ -> false
+             end)
+    end
+
+    test "updates connected_components graph after removal" do
+      step1 = Runic.step(fn x -> x + 1 end, name: :add)
+      step2 = Runic.step(fn x -> x * 2 end, name: :double)
+      step3 = Runic.step(fn x -> x - 1 end, name: :subtract)
+
+      workflow =
+        Workflow.new()
+        |> Workflow.add(step1)
+        |> Workflow.add(step2, to: :add)
+        |> Workflow.add(step3, to: :double)
+
+      cg_before = Workflow.connected_components(workflow)
+      assert length(Graph.edges(cg_before)) == 2
+
+      workflow = Workflow.remove_component(workflow, :double)
+
+      cg_after = Workflow.connected_components(workflow)
+      vertices = Graph.vertices(cg_after)
+      edges = Graph.edges(cg_after)
+
+      vertex_names = Enum.map(vertices, & &1.name) |> Enum.sort()
+      assert vertex_names == [:add, :subtract]
+
+      # Should have a new :connects_to edge from :add to :subtract
+      assert length(edges) == 1
+      [edge] = edges
+      assert edge.v1.name == :add
+      assert edge.v2.name == :subtract
+    end
+
+    test "preserves shared invokable nodes used by other components" do
+      # Two rules that share the same condition function
+      condition = Runic.condition(fn x -> x > 0 end, name: :positive_check)
+
+      step_a = Runic.step(fn _x -> :from_a end, name: :reaction_a)
+      step_b = Runic.step(fn _x -> :from_b end, name: :reaction_b)
+
+      workflow =
+        Workflow.new()
+        |> Workflow.add(condition)
+        |> Workflow.add(step_a, to: :positive_check)
+        |> Workflow.add(step_b, to: :positive_check)
+
+      # Remove step_a — the condition should remain because step_b depends on it
+      workflow = Workflow.remove_component(workflow, :reaction_a)
+
+      assert is_nil(Workflow.get_component(workflow, :reaction_a))
+      assert Workflow.get_component(workflow, :positive_check) != nil
+      assert Workflow.get_component(workflow, :reaction_b) != nil
+
+      result =
+        workflow
+        |> Workflow.react_until_satisfied(5)
+        |> Workflow.raw_productions(:reaction_b)
+
+      assert result == [:from_b]
+    end
+  end
+
   describe "connected_components/1" do
     test "returns a graph with component-to-component edges for a linear pipeline" do
       step1 = Runic.step(fn x -> x + 1 end, name: :add)

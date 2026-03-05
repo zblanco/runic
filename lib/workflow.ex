@@ -176,6 +176,7 @@ defmodule Runic.Workflow do
   alias Runic.Workflow.Join
   alias Runic.Workflow.Invokable
   alias Runic.Workflow.ComponentAdded
+  alias Runic.Workflow.ComponentRemoved
   alias Runic.Workflow.ReactionOccurred
   alias Runic.Workflow.Runnable
   alias Runic.Workflow.SchedulerPolicy
@@ -1030,6 +1031,9 @@ defmodule Runic.Workflow do
 
       %RunnableFailed{} = event, wrk ->
         %{wrk | runnable_events: wrk.runnable_events ++ [event]}
+
+      %ComponentRemoved{name: name}, wrk ->
+        remove_component(wrk, name)
     end)
   end
 
@@ -1475,11 +1479,150 @@ defmodule Runic.Workflow do
 
   def apply_hook_fns(%__MODULE__{} = workflow, nil), do: workflow
 
-  # def remove_component(%__MODULE__{} = workflow, component_name) do
-  #   component = get_component(workflow, component_name)
+  @doc """
+  Removes a component and its owned invokable nodes from the workflow.
 
-  #   Component.remove(component, workflow)
-  # end
+  Invokable nodes that are shared with other components (due to content-addressable
+  hashing) are preserved. Downstream nodes of the removed component are rewired
+  to the removed component's upstream parents so the rest of the workflow stays
+  connected.
+
+  Also removes any `:connects_to` edges involving the component and appends
+  a `%ComponentRemoved{}` event to the build log.
+
+  ## Example
+
+      require Runic
+      alias Runic.Workflow
+
+      step1 = Runic.step(fn x -> x + 1 end, name: :add)
+      step2 = Runic.step(fn x -> x * 2 end, name: :double)
+      step3 = Runic.step(fn x -> x - 1 end, name: :subtract)
+
+      workflow = Workflow.new()
+        |> Workflow.add(step1)
+        |> Workflow.add(step2, to: :add)
+        |> Workflow.add(step3, to: :double)
+
+      workflow = Workflow.remove_component(workflow, :double)
+      # :add now flows directly to :subtract
+  """
+  def remove_component(%__MODULE__{} = workflow, component_name) do
+    component = get_component(workflow, component_name)
+
+    if is_nil(component) do
+      workflow
+    else
+      do_remove_component(workflow, component, component_name)
+    end
+  end
+
+  defp do_remove_component(workflow, component, component_name) do
+    # 1. Find all invokable nodes owned by this component via :component_of edges
+    owned_edges = Graph.out_edges(workflow.graph, component, by: :component_of)
+    owned_nodes = Enum.map(owned_edges, & &1.v2)
+
+    # Include the component itself if it's also an invokable node (e.g. Step, Condition, Accumulator)
+    all_owned =
+      if component in owned_nodes do
+        owned_nodes
+      else
+        [component | owned_nodes]
+      end
+      |> Enum.uniq_by(& &1.hash)
+
+    # 2. Determine which nodes are safe to remove (not owned by another component)
+    {safe_to_remove, _shared} =
+      Enum.split_with(all_owned, fn node ->
+        owners =
+          Graph.in_edges(workflow.graph, node, by: :component_of)
+          |> Enum.map(& &1.v1)
+          |> Enum.reject(&(&1 == component))
+
+        owners == []
+      end)
+
+    safe_hashes = MapSet.new(safe_to_remove, & &1.hash)
+
+    # 3. Find upstream parents and downstream children for rewiring
+    #    Upstream: :flow in-edges into any safe-to-remove node from nodes NOT being removed
+    #    Downstream: :flow out-edges from any safe-to-remove node to nodes NOT being removed
+    upstream_parents =
+      safe_to_remove
+      |> Enum.flat_map(fn node ->
+        Graph.in_edges(workflow.graph, node, by: :flow)
+        |> Enum.reject(fn edge ->
+          case edge.v1 do
+            %Root{} -> false
+            node -> MapSet.member?(safe_hashes, node.hash)
+          end
+        end)
+        |> Enum.map(& &1.v1)
+      end)
+      |> Enum.uniq_by(fn
+        %Root{} -> :root
+        node -> node.hash
+      end)
+
+    downstream_children =
+      safe_to_remove
+      |> Enum.flat_map(fn node ->
+        Graph.out_edges(workflow.graph, node, by: :flow)
+        |> Enum.reject(fn edge -> MapSet.member?(safe_hashes, edge.v2.hash) end)
+        |> Enum.map(& &1.v2)
+      end)
+      |> Enum.uniq_by(& &1.hash)
+
+    # 4. Rewire: connect each upstream parent to each downstream child
+    #    Add both :flow edges (for runtime) and :connects_to edges (for component graph)
+    graph =
+      Enum.reduce(upstream_parents, workflow.graph, fn parent, g ->
+        Enum.reduce(downstream_children, g, fn child, g ->
+          g = Graph.add_edge(g, parent, child, label: :flow, weight: 0)
+
+          # Find the owning components for the parent/child to add :connects_to edges
+          temp_wrk = %{workflow | graph: g}
+          parent_component = find_owning_component(temp_wrk, parent)
+          child_component = find_owning_component(temp_wrk, child)
+
+          if parent_component && child_component && parent_component != child_component do
+            Graph.add_edge(g, parent_component, child_component, label: :connects_to)
+          else
+            g
+          end
+        end)
+      end)
+
+    # 5. Delete the safe-to-remove vertices (also removes all their edges)
+    graph = Graph.delete_vertices(graph, safe_to_remove)
+
+    # 6. Remove from components registry (including any sub-component entries like {name, :kind})
+    components =
+      Enum.reject(workflow.components, fn
+        {^component_name, _hash} -> true
+        {{^component_name, _kind}, _hash} -> true
+        _ -> false
+      end)
+      |> Map.new()
+
+    # 7. Clean up hooks
+    component_hash = Component.hash(component)
+
+    before_hooks = Map.delete(workflow.before_hooks, component_hash)
+    after_hooks = Map.delete(workflow.after_hooks, component_hash)
+
+    # 8. Append ComponentRemoved event to build log
+    event = %ComponentRemoved{name: component_name, hash: component_hash}
+
+    %__MODULE__{
+      workflow
+      | graph: graph,
+        components: components,
+        before_hooks: before_hooks,
+        after_hooks: after_hooks,
+        build_log: workflow.build_log ++ [event]
+    }
+  end
 
   defp get_by_hash(%__MODULE__{graph: g}, %{hash: hash}) do
     Map.get(g.vertices, hash)
