@@ -465,7 +465,10 @@ defmodule Runic.Workflow do
           transmuted = Transmutable.to_component(component)
           do_add_component(workflow, transmuted, parent, opts)
         else
-          workflow = Component.connect(component, parent, workflow)
+          workflow =
+            component
+            |> Component.connect(parent, workflow)
+            |> maybe_draw_connects_to(component, parent)
 
           if should_log do
             append_build_log(workflow, component, parent)
@@ -477,6 +480,40 @@ defmodule Runic.Workflow do
       _otherwise ->
         transmuted = Transmutable.to_component(component)
         do_add_component(workflow, transmuted, parent, opts)
+    end
+  end
+
+  defp maybe_draw_connects_to(workflow, component, parents) when is_list(parents) do
+    Enum.reduce(parents, workflow, fn parent, wrk ->
+      maybe_draw_connects_to(wrk, component, parent)
+    end)
+  end
+
+  defp maybe_draw_connects_to(workflow, _component, %Root{}), do: workflow
+
+  defp maybe_draw_connects_to(workflow, component, parent) do
+    parent_component = find_owning_component(workflow, parent)
+
+    if parent_component do
+      Private.draw_connection(workflow, parent_component, component, :connects_to)
+    else
+      workflow
+    end
+  end
+
+  defp find_owning_component(%__MODULE__{components: components, graph: g}, node) do
+    node_hash = if is_map(node) and Map.has_key?(node, :hash), do: node.hash, else: nil
+
+    case Enum.find(components, fn {_name, hash} -> hash == node_hash end) do
+      {_name, hash} ->
+        Map.get(g.vertices, hash)
+
+      nil ->
+        # The node might be a sub-component; find the component that owns it via :component_of
+        case Graph.in_edges(g, node, by: :component_of) do
+          [%{v1: owner} | _] -> owner
+          _ -> nil
+        end
     end
   end
 
@@ -1195,6 +1232,50 @@ defmodule Runic.Workflow do
   def components(%__MODULE__{} = workflow) do
     Map.new(workflow.components, fn {name, hash} ->
       {name, Map.get(workflow.graph.vertices, hash)}
+    end)
+  end
+
+  @doc """
+  Returns a graph containing only the registered components as vertices
+  and `:connects_to` edges showing how components are connected to each other.
+
+  This provides a high-level projected view of the workflow suitable for
+  visualization in no-code builders or canvas UIs, without exposing the
+  internal invokable nodes (Steps, Conditions, Joins, etc.).
+
+  ## Example
+
+      require Runic
+      alias Runic.Workflow
+
+      step1 = Runic.step(fn x -> x + 1 end, name: :add)
+      step2 = Runic.step(fn x -> x * 2 end, name: :double)
+
+      workflow = Workflow.new()
+        |> Workflow.add(step1)
+        |> Workflow.add(step2, to: :add)
+
+      component_graph = Workflow.connected_components(workflow)
+      # => Graph with :add and :double vertices, edge :add -> :double
+  """
+  def connected_components(%__MODULE__{graph: g, components: components}) do
+    component_vertices =
+      Map.new(components, fn {_name, hash} ->
+        {hash, Map.get(g.vertices, hash)}
+      end)
+
+    component_edges = Graph.edges(g, by: :connects_to)
+
+    Enum.reduce(component_edges, Graph.new(type: :directed), fn edge, cg ->
+      v1 = Map.get(component_vertices, edge.v1.hash, edge.v1)
+      v2 = Map.get(component_vertices, edge.v2.hash, edge.v2)
+      Graph.add_edge(cg, v1, v2, label: :connects_to)
+    end)
+    |> then(fn cg ->
+      # Ensure all registered components appear as vertices, even if unconnected
+      Enum.reduce(component_vertices, cg, fn {_hash, vertex}, acc ->
+        if vertex, do: Graph.add_vertex(acc, vertex), else: acc
+      end)
     end)
   end
 

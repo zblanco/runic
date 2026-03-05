@@ -2419,4 +2419,127 @@ defmodule WorkflowTest do
       assert per_item_map == %{1 => "chapter_1", 2 => "chapter_2", 3 => "chapter_3"}
     end
   end
+
+  describe "connected_components/1" do
+    test "returns a graph with component-to-component edges for a linear pipeline" do
+      step1 = Runic.step(fn x -> x + 1 end, name: :add)
+      step2 = Runic.step(fn x -> x * 2 end, name: :double)
+      step3 = Runic.step(fn x -> x - 1 end, name: :subtract)
+
+      workflow =
+        Workflow.new()
+        |> Workflow.add(step1)
+        |> Workflow.add(step2, to: :add)
+        |> Workflow.add(step3, to: :double)
+
+      cg = Workflow.connected_components(workflow)
+
+      vertices = Graph.vertices(cg)
+      edges = Graph.edges(cg)
+
+      assert length(vertices) == 3
+      assert Enum.all?(vertices, fn v -> v.name in [:add, :double, :subtract] end)
+
+      assert length(edges) == 2
+
+      assert Enum.any?(edges, fn e -> e.v1.name == :add and e.v2.name == :double end)
+      assert Enum.any?(edges, fn e -> e.v1.name == :double and e.v2.name == :subtract end)
+
+      assert Enum.all?(edges, fn e -> e.label == :connects_to end)
+    end
+
+    test "returns a graph with branching component connections" do
+      root_step = Runic.step(fn x -> x end, name: :root)
+      branch_a = Runic.step(fn x -> x + 1 end, name: :branch_a)
+      branch_b = Runic.step(fn x -> x * 2 end, name: :branch_b)
+
+      workflow =
+        Workflow.new()
+        |> Workflow.add(root_step)
+        |> Workflow.add(branch_a, to: :root)
+        |> Workflow.add(branch_b, to: :root)
+
+      cg = Workflow.connected_components(workflow)
+
+      vertices = Graph.vertices(cg)
+      edges = Graph.edges(cg)
+
+      assert length(vertices) == 3
+      assert length(edges) == 2
+
+      assert Enum.any?(edges, fn e -> e.v1.name == :root and e.v2.name == :branch_a end)
+      assert Enum.any?(edges, fn e -> e.v1.name == :root and e.v2.name == :branch_b end)
+    end
+
+    test "includes isolated root-level components with no connections" do
+      step1 = Runic.step(fn x -> x + 1 end, name: :alone)
+
+      workflow =
+        Workflow.new()
+        |> Workflow.add(step1)
+
+      cg = Workflow.connected_components(workflow)
+
+      vertices = Graph.vertices(cg)
+      edges = Graph.edges(cg)
+
+      assert length(vertices) == 1
+      assert List.first(vertices).name == :alone
+      assert edges == []
+    end
+
+    test "multiple root-level components appear as isolated vertices" do
+      step1 = Runic.step(fn x -> x + 1 end, name: :a)
+      step2 = Runic.step(fn x -> x * 2 end, name: :b)
+
+      workflow =
+        Workflow.new()
+        |> Workflow.add(step1)
+        |> Workflow.add(step2)
+
+      cg = Workflow.connected_components(workflow)
+
+      vertices = Graph.vertices(cg)
+      edges = Graph.edges(cg)
+
+      assert length(vertices) == 2
+      assert edges == []
+    end
+
+    test "rule connected to a step shows component-level connection" do
+      step = Runic.step(fn x -> x + 1 end, name: :increment)
+      rule = Runic.rule(fn x when x > 0 -> :positive end, name: :classify)
+
+      workflow =
+        Workflow.new()
+        |> Workflow.add(step)
+        |> Workflow.add(rule, to: :increment)
+
+      cg = Workflow.connected_components(workflow)
+
+      vertices = Graph.vertices(cg)
+      edges = Graph.edges(cg)
+
+      vertex_names = Enum.map(vertices, & &1.name) |> Enum.sort()
+      assert vertex_names == [:classify, :increment]
+
+      assert length(edges) == 1
+      [edge] = edges
+      assert edge.v1.name == :increment
+      assert edge.v2.name == :classify
+    end
+
+    test "does not affect workflow execution" do
+      step1 = Runic.step(fn x -> x + 1 end, name: :add)
+      step2 = Runic.step(fn x -> x * 2 end, name: :double)
+
+      workflow =
+        Workflow.new()
+        |> Workflow.add(step1)
+        |> Workflow.add(step2, to: :add)
+
+      result = workflow |> Workflow.react_until_satisfied(5) |> Workflow.raw_productions(:double)
+      assert result == [12]
+    end
+  end
 end

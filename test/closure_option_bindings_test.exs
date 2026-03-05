@@ -19,7 +19,7 @@ defmodule Runic.ClosureOptionBindingsTest do
       # building steps dynamically with runtime-computed names and pinned body vars
       tool_name = :attack
       args = %{target: "goblin"}
-      step_name = :"tool_abc123"
+      step_name = :tool_abc123
 
       step =
         Runic.step(
@@ -53,7 +53,12 @@ defmodule Runic.ClosureOptionBindingsTest do
       # This is the exact pattern from WorkflowComposer.compose/1
       tool_calls = [
         %{"id" => "tc1", "tool" => "look", "args" => %{}},
-        %{"id" => "tc2", "tool" => "move", "args" => %{"direction" => "north"}, "depends_on" => "tc1"}
+        %{
+          "id" => "tc2",
+          "tool" => "move",
+          "args" => %{"direction" => "north"},
+          "depends_on" => "tc1"
+        }
       ]
 
       {workflow, _added} =
@@ -115,6 +120,7 @@ defmodule Runic.ClosureOptionBindingsTest do
 
       # The closure should include step_name in its bindings
       assert step.closure != nil
+
       assert Map.has_key?(step.closure.bindings, :step_name),
              "Expected step_name in closure bindings, got: #{inspect(Map.keys(step.closure.bindings))}"
     end
