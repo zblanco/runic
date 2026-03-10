@@ -13,6 +13,17 @@ defmodule Runic.Workflow.Step do
 
   During the prepare phase, these edges are traversed to populate `meta_context` in
   the `CausalContext`, making the referenced state available during execution.
+
+  ## Runtime Context
+
+  Steps can also reference external runtime values via `context/1` expressions:
+
+      step = Runic.step(fn _x -> context(:api_key) end, name: :call_llm)
+      step = Runic.step(fn x -> x + context(:offset) end, name: :compute)
+
+  When `context/1` is detected, the step's work function is rewritten to arity-2
+  `(input, meta_ctx)` and `meta_refs` are populated with `kind: :context` entries.
+  Values are resolved from the workflow's `run_context` during the prepare phase.
   """
 
   alias Runic.Workflow.Step

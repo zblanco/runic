@@ -414,9 +414,6 @@ defmodule Runic.Workflow.Private do
         %Runic.Workflow.Accumulator{} = acc ->
           get_accumulator_state(workflow, acc)
 
-        %{state_hash: _, init: _} = stateful_node ->
-          last_known_state(workflow, stateful_node)
-
         _ ->
           nil
       end
@@ -564,50 +561,50 @@ defmodule Runic.Workflow.Private do
         _ -> node
       end
 
-    graph
-    |> Graph.out_edges(node_vertex, by: :meta_ref)
-    |> Enum.reduce(%{}, fn edge, acc ->
-      properties = edge.properties || %{}
-      getter_fn = Map.get(properties, :getter_fn)
-      context_key = Map.get(properties, :context_key)
-      target = edge.v2
+    # Resolve graph-based meta_refs via :meta_ref edges
+    graph_context =
+      graph
+      |> Graph.out_edges(node_vertex, by: :meta_ref)
+      |> Enum.reduce(%{}, fn edge, acc ->
+        properties = edge.properties || %{}
+        getter_fn = Map.get(properties, :getter_fn)
+        context_key = Map.get(properties, :context_key)
+        target = edge.v2
 
-      if getter_fn && context_key do
-        value = getter_fn.(workflow, target)
-        Map.put(acc, context_key, value)
-      else
-        acc
-      end
-    end)
+        if getter_fn && context_key do
+          value = getter_fn.(workflow, target)
+          Map.put(acc, context_key, value)
+        else
+          acc
+        end
+      end)
+
+    # Resolve :context-kind refs from run_context
+    external_context = resolve_context_refs(workflow, node)
+
+    # Graph context overrides external (more specific wins)
+    Map.merge(external_context, graph_context)
   end
 
-  # =============================================================================
-  # last_known_state
-  # =============================================================================
+  defp resolve_context_refs(%Workflow{} = workflow, node) do
+    meta_refs = Map.get(node, :meta_refs, [])
 
-  def last_known_state(%Workflow{} = workflow, state_reaction) do
-    accumulator = Map.get(workflow.graph.vertices, state_reaction.state_hash)
+    meta_refs
+    |> Enum.filter(fn ref -> ref.kind == :context end)
+    |> Enum.reduce(%{}, fn ref, acc ->
+      component_ctx = Workflow.get_run_context(workflow, node.name)
+      value = Map.get(component_ctx, ref.target)
 
-    state_from_memory =
-      for edge <- Graph.out_edges(workflow.graph, accumulator),
-          edge.label == :state_produced do
-        edge
-      end
-      |> List.first(%{})
-      |> Map.get(:v2)
+      resolved =
+        case {value, Map.get(ref, :default)} do
+          {nil, nil} -> nil
+          {nil, default} when is_function(default) -> default.()
+          {nil, default} -> default
+          {value, _} -> value
+        end
 
-    init_state =
-      workflow.graph.vertices
-      |> Map.get(state_reaction.state_hash)
-      |> Map.get(:init)
-
-    unless is_nil(state_from_memory) do
-      state_from_memory
-      |> Map.get(:value)
-      |> invoke_init()
-    else
-      invoke_init(init_state)
-    end
+      Map.put(acc, ref.context_key, resolved)
+    end)
   end
 
   # =============================================================================

@@ -81,6 +81,46 @@ defmodule Runic.Workflow do
   - `apply_runnable/2` - Applies a completed runnable back to the workflow
   - `Invokable.execute/2` - Executes a runnable in isolation (no workflow access)
 
+  ## Runtime Context
+
+  Runtime context provides a way to inject external, runtime-scoped values (API keys,
+  database connections, tenant IDs, feature flags) into workflow components without
+  baking them into closures or the workflow graph.
+
+  Components declare their context dependencies using `context/1` expressions in the
+  `Runic` DSL:
+
+      step = Runic.step(fn _x -> context(:api_key) end, name: :call_llm)
+
+      rule = Runic.rule name: :gated do
+        given(val: v)
+        where(v > context(:threshold))
+        then(fn %{val: v} -> {:ok, v} end)
+      end
+
+  Context is provided at runtime via `put_run_context/2` or the `:run_context` option:
+
+      # Set context directly
+      workflow = Workflow.put_run_context(workflow, %{
+        call_llm: %{api_key: "sk-..."},
+        _global: %{workspace_id: "ws1"}
+      })
+
+      # Or pass via options
+      Workflow.react_until_satisfied(workflow, input,
+        run_context: %{call_llm: %{api_key: "sk-..."}}
+      )
+
+  Context values are:
+
+  - **Scoped by component name** with an optional `_global` key for shared values
+  - **Not part of the workflow hash** — two workflows with different contexts are structurally identical
+  - **Not serialized** in the event log or fact graph
+  - **Resolved during the prepare phase** of the three-phase execution model
+
+  Use `required_context_keys/1` and `validate_run_context/2` to introspect and validate
+  context requirements before execution.
+
   ## Workflow Composition
 
   Workflows can be composed together using `merge/2` or by adding components with `add/3`:
@@ -215,7 +255,9 @@ defmodule Runic.Workflow do
           # accumulated runnable lifecycle events for durable execution
           runnable_events: list(),
           # when true, apply_runnable/2 buffers events into uncommitted_events
-          emit_events: boolean()
+          emit_events: boolean(),
+          # runtime-scoped external values (secrets, tenant IDs, etc.) keyed by component name
+          run_context: map()
         }
 
   @type runnable() :: {fun(), term()}
@@ -232,7 +274,8 @@ defmodule Runic.Workflow do
             scheduler_policies: [],
             runnable_events: [],
             emit_events: false,
-            uncommitted_events: []
+            uncommitted_events: [],
+            run_context: %{}
 
   @doc """
   Creates an empty workflow with no components.
@@ -307,6 +350,146 @@ defmodule Runic.Workflow do
   @spec append_scheduler_policy(t(), term(), map()) :: t()
   def append_scheduler_policy(%__MODULE__{} = workflow, matcher, policy) when is_map(policy) do
     %{workflow | scheduler_policies: workflow.scheduler_policies ++ [{matcher, policy}]}
+  end
+
+  @doc """
+  Merges the given context map into the workflow's run context.
+
+  Run context provides external, runtime-scoped values (secrets, tenant IDs,
+  database connections) to components during execution. Values are keyed by
+  component name for scoped access, with an optional `:_global` key for
+  values available to all components.
+
+  Run context is NOT part of the workflow's content hash, NOT serialized
+  in the event log, and NOT visible in the fact graph.
+
+  ## Example
+
+      workflow = Workflow.put_run_context(workflow, %{
+        call_llm: %{api_key: "sk-..."},
+        _global: %{workspace_id: "ws1"}
+      })
+  """
+  @spec put_run_context(t(), map()) :: t()
+  def put_run_context(%__MODULE__{} = workflow, context) when is_map(context) do
+    %{workflow | run_context: Map.merge(workflow.run_context, context)}
+  end
+
+  @doc """
+  Returns the full run context map.
+
+  ## Example
+
+      Workflow.get_run_context(workflow)
+      # => %{call_llm: %{api_key: "sk-..."}, _global: %{workspace_id: "ws1"}}
+  """
+  @spec get_run_context(t()) :: map()
+  def get_run_context(%__MODULE__{run_context: ctx}), do: ctx
+
+  @doc """
+  Returns the resolved run context for a specific component.
+
+  Merges `_global` context (if any) with the component-specific context.
+  Component-specific keys take precedence over global keys.
+
+  ## Example
+
+      Workflow.get_run_context(workflow, :call_llm)
+      # => %{workspace_id: "ws1", api_key: "sk-..."}
+  """
+  @spec get_run_context(t(), atom() | String.t()) :: map()
+  def get_run_context(%__MODULE__{run_context: ctx}, component_name) do
+    global = Map.get(ctx, :_global, %{})
+    component = Map.get(ctx, component_name, %{})
+    Map.merge(global, component)
+  end
+
+  @doc """
+  Returns a map of component names to their context key requirements.
+
+  Only includes components that use `context/1` or `context/2` meta expressions.
+  Components without context requirements are omitted.
+
+  Keys are annotated with whether they have defaults:
+
+  ## Example
+
+      Workflow.required_context_keys(workflow)
+      # => %{call_llm: [api_key: :required, model: {:optional, "gpt-4"}]}
+  """
+  @spec required_context_keys(t()) :: %{atom() => keyword()}
+  def required_context_keys(%__MODULE__{graph: graph} = workflow) do
+    for {_hash, vertex} <- graph.vertices,
+        is_map_key(vertex, :meta_refs),
+        refs = vertex.meta_refs,
+        refs != [],
+        context_refs = Enum.filter(refs, &(&1.kind == :context)),
+        context_refs != [],
+        name = resolve_component_name(workflow, vertex),
+        not is_nil(name),
+        reduce: %{} do
+      acc ->
+        entries =
+          Enum.map(context_refs, fn ref ->
+            case Map.get(ref, :default) do
+              nil -> {ref.context_key, :required}
+              default -> {ref.context_key, {:optional, default}}
+            end
+          end)
+
+        existing = Map.get(acc, name, [])
+        merged = Enum.uniq_by(existing ++ entries, &elem(&1, 0))
+        Map.put(acc, name, merged)
+    end
+  end
+
+  defp resolve_component_name(_workflow, %{name: name}) when not is_nil(name), do: name
+
+  defp resolve_component_name(%__MODULE__{graph: graph}, vertex) do
+    (Graph.in_edges(graph, vertex, by: :flow) ++
+       Graph.in_edges(graph, vertex, by: :component_of))
+    |> Enum.find_value(fn edge ->
+      case edge.v1 do
+        %Rule{name: name} -> name
+        _ -> nil
+      end
+    end)
+  end
+
+  @doc """
+  Validates that the given run_context satisfies all `context/1` references
+  in the workflow.
+
+  Returns `:ok` if all required keys are present, or `{:error, missing}` with
+  a map of component names to their missing context keys. Keys with defaults
+  (from `context/2`) are not reported as missing.
+
+  ## Example
+
+      Workflow.validate_run_context(workflow, %{call_llm: %{api_key: "sk-..."}})
+      # => :ok
+
+      Workflow.validate_run_context(workflow, %{})
+      # => {:error, %{call_llm: [:api_key], db_query: [:repo, :tenant_id]}}
+  """
+  @spec validate_run_context(t(), map()) :: :ok | {:error, %{atom() => [atom()]}}
+  def validate_run_context(%__MODULE__{} = workflow, context) when is_map(context) do
+    required = required_context_keys(workflow)
+    global = Map.get(context, :_global, %{})
+
+    missing =
+      for {component_name, entries} <- required,
+          component_ctx = Map.get(context, component_name, %{}),
+          available = Map.merge(global, component_ctx),
+          # Only check keys marked as :required (no default)
+          required_keys =
+            for({k, :required} <- entries, !Map.has_key?(available, k), do: k),
+          required_keys != [],
+          into: %{} do
+        {component_name, required_keys}
+      end
+
+    if map_size(missing) == 0, do: :ok, else: {:error, missing}
   end
 
   @doc """
@@ -2355,10 +2538,13 @@ defmodule Runic.Workflow do
   - `:async` - When `true`, executes runnables in parallel. Default: `false`
   - `:max_concurrency` - Maximum parallel tasks when `async: true`
   - `:timeout` - Timeout for each task when `async: true`
+  - `:run_context` - A map of external values for `context/1` expressions.
+    See `put_run_context/2` and `react_until_satisfied/3`.
   """
   @spec react(t(), Fact.t() | term(), keyword()) :: t()
   def react(%__MODULE__{} = wrk, %Fact{ancestry: nil} = fact, opts) do
     wrk
+    |> maybe_apply_run_context(opts)
     |> invoke(root(), fact)
     |> react(opts)
   end
@@ -2419,6 +2605,13 @@ defmodule Runic.Workflow do
     end
   end
 
+  defp maybe_apply_run_context(workflow, opts) do
+    case Keyword.get(opts, :run_context) do
+      nil -> workflow
+      ctx when is_map(ctx) -> put_run_context(workflow, ctx)
+    end
+  end
+
   defp resolve_effective_policies(workflow, opts) do
     runtime = Keyword.get(opts, :scheduler_policies)
     mode = Keyword.get(opts, :scheduler_policies_mode, :merge)
@@ -2461,6 +2654,9 @@ defmodule Runic.Workflow do
     deadline is reached. Converted to an absolute `deadline_at` monotonic time internally.
   - `:checkpoint` - A 1-arity function called after each react cycle with the updated workflow.
     Useful for persisting intermediate state in long-running durable workflows.
+  - `:run_context` - A map of external values keyed by component name, made available
+    to components that use `context/1` expressions. Supports a `:_global` key for
+    values available to all components. See `put_run_context/2`.
 
   ## Warning
 
@@ -2483,11 +2679,13 @@ defmodule Runic.Workflow do
 
   def react_until_satisfied(%__MODULE__{} = workflow, nil, opts) do
     opts = maybe_convert_deadline(opts)
+    workflow = maybe_apply_run_context(workflow, opts)
     do_react_until_satisfied(workflow, is_runnable?(workflow), opts)
   end
 
   def react_until_satisfied(%__MODULE__{} = wrk, %Fact{ancestry: nil} = fact, opts) do
     opts = maybe_convert_deadline(opts)
+    wrk = maybe_apply_run_context(wrk, opts)
 
     wrk
     |> react(fact, opts)
@@ -2942,63 +3140,7 @@ defmodule Runic.Workflow do
   @doc false
   def log_fact(workflow, fact), do: Private.log_fact(workflow, fact)
 
-  defp maybe_prepare_next_generation_from_state_accumulations(
-         %__MODULE__{graph: graph} = workflow
-       ) do
-    # Find all state_produced facts by walking :state_produced edges from accumulators
-    state_produced_facts_by_ancestor =
-      for edge <- Graph.edges(graph, by: :state_produced) do
-        edge.v2
-      end
-      |> Enum.reduce(%{}, fn %{ancestry: {accumulator_hash, _}} = state_produced_fact, acc ->
-        # Keep the latest state fact for each accumulator
-        existing = Map.get(acc, accumulator_hash)
-
-        if is_nil(existing) or
-             ancestry_depth(workflow, state_produced_fact) > ancestry_depth(workflow, existing) do
-          Map.put(acc, accumulator_hash, state_produced_fact)
-        else
-          acc
-        end
-      end)
-
-    stateful_matching_impls = stateful_matching_impls()
-    state_produced_fact_ancestors = Map.keys(state_produced_facts_by_ancestor)
-
-    unless Enum.empty?(state_produced_facts_by_ancestor) do
-      Graph.Reducers.Bfs.reduce(graph, workflow, fn
-        node, wrk ->
-          if is_struct(node) and node.__struct__ in stateful_matching_impls do
-            state_hash = Runic.Workflow.StatefulMatching.matches_on(node)
-
-            if state_hash in state_produced_fact_ancestors do
-              relevant_state_produced_fact = Map.get(state_produced_facts_by_ancestor, state_hash)
-
-              {:next,
-               Private.draw_connection(
-                 wrk,
-                 relevant_state_produced_fact,
-                 node.hash,
-                 Private.connection_for_activatable(node)
-               )}
-            else
-              {:next, wrk}
-            end
-          else
-            {:next, wrk}
-          end
-      end)
-    else
-      workflow
-    end
-  end
-
-  defp stateful_matching_impls do
-    case Runic.Workflow.StatefulMatching.__protocol__(:impls) do
-      {:consolidated, impls} -> impls
-      :not_consolidated -> []
-    end
-  end
+  defp maybe_prepare_next_generation_from_state_accumulations(workflow), do: workflow
 
   @doc false
   @deprecated "Generation counters removed; use ancestry_depth/2 for causal ordering"
@@ -3019,10 +3161,6 @@ defmodule Runic.Workflow do
   @doc false
   def prepare_next_runnables(workflow, node, fact),
     do: Private.prepare_next_runnables(workflow, node, fact)
-
-  @doc false
-  def last_known_state(workflow, state_reaction),
-    do: Private.last_known_state(workflow, state_reaction)
 
   @doc """
   Computes the causal depth of a fact by walking its ancestry chain.

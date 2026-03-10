@@ -176,7 +176,7 @@ text_processing_workflow
 ]
 ```
 
-Beyond steps, Runic has support for Rules, Joins, and State Machines for more complex control flow and stateful evaluation.
+Beyond steps, Runic has support for Rules, Joins, State Machines, FSMs, Aggregates, Sagas, and ProcessManagers for more complex control flow and stateful evaluation.
 
 The `Runic.Workflow.Invokable` protocol is what allows for extension of Runic's runtime supporting nodes with different execution properties and evaluation. 
 
@@ -300,6 +300,39 @@ If the runtime modification of a workflow or complex parallel dataflow evaluatio
 
 Runic Workflows are essentially a dataflow based virtual machine running within Elixir and will not be faster than compiled Elixir code. If you know the flow of the program upfront during development you might not need Runic.
 
+### Runtime Context
+
+Components can declare dependencies on external runtime values using `context/1`:
+
+```elixir
+# Steps can reference external values
+step = Runic.step(fn _x -> context(:api_key) end, name: :call_llm)
+
+# Rules can use context in conditions
+rule = Runic.rule name: :gated do
+  given(val: v)
+  where(v > context(:threshold))
+  then(fn %{val: v} -> {:ok, v} end)
+end
+
+# Accumulators, map, and reduce also support context/1
+acc = Runic.accumulator(0, fn x, s -> s + x * context(:factor) end, name: :scaled)
+map = Runic.map(fn x -> x * context(:multiplier) end, name: :mult_map)
+
+# Provide defaults for optional context keys
+step = Runic.step(fn _x -> context(:model, default: "gpt-4") end, name: :call_llm)
+
+# Provide values at runtime
+workflow
+|> Workflow.put_run_context(%{
+  call_llm: %{api_key: "sk-..."},
+  _global: %{workspace_id: "ws1"}
+})
+|> Workflow.react_until_satisfied(input)
+```
+
+Context values are scoped by component name, not part of the workflow hash, and not serialized — making them safe for secrets and connection handles. Keys with defaults are satisfied without explicit `run_context` entries. See `Workflow.required_context_keys/1` and `Workflow.validate_run_context/2` for introspection.
+
 ## Scheduler Policies
 
 Runic workflows support declarative per-node scheduling policies for retries, timeouts, backoff, fallbacks, and failure handling — without modifying the `Invokable` protocol or existing component structs.
@@ -366,4 +399,5 @@ For quick reference and best practices:
 - [**Protocols**](guides/protocols.md) - Extending Runic with custom components and execution behavior
 - [**Building a Workflow Scheduler**](guides/scheduling.md) - From simple spawned processes to production GenServer schedulers
 - [**Durable Execution**](guides/durable-execution.md) - Persistence, crash recovery, and checkpointing with the Runner
+- [**State-Based Components**](guides/state-based-components.md) - FSMs, Aggregates, Sagas, ProcessManagers and when to use each
 

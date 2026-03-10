@@ -13,6 +13,20 @@ defmodule Runic.Workflow.Condition do
 
   During the prepare phase, these edges are traversed to populate `meta_context` in
   the `CausalContext`, making the referenced state available during execution.
+
+  ## Runtime Context
+
+  Conditions can also reference external runtime values via `context/1` expressions,
+  commonly used in rule `where` clauses:
+
+      Runic.rule name: :gated do
+        given(val: v)
+        where(v > context(:threshold))
+        then(fn %{val: v} -> {:ok, v} end)
+      end
+
+  The condition's work function is rewritten to arity-2 when `context/1` is detected,
+  and values are resolved from the workflow's `run_context` during the prepare phase.
   """
 
   alias Runic.Workflow.Components
@@ -112,6 +126,22 @@ defmodule Runic.Workflow.Condition do
   receiving `(input, meta_context)`.
   """
   @spec check_with_meta_context(t(), term(), map()) :: boolean()
+  def check_with_meta_context(
+        %__MODULE__{work: work, arity: 2} = _condition,
+        %Runic.Workflow.Fact{} = fact,
+        meta_context
+      )
+      when is_map(meta_context) do
+    try do
+      work.(fact.value, meta_context)
+    rescue
+      FunctionClauseError -> false
+      BadArityError -> false
+    catch
+      _ -> false
+    end
+  end
+
   def check_with_meta_context(%__MODULE__{work: work, arity: 2} = _condition, value, meta_context)
       when is_map(meta_context) do
     try do

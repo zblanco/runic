@@ -250,12 +250,53 @@ defimpl Runic.Transmutable, for: Runic.Workflow.Condition do
   def to_component(condition), do: condition
 end
 
+defimpl Runic.Transmutable, for: Runic.Workflow.Aggregate do
+  def transmute(aggregate), do: to_workflow(aggregate)
+
+  def to_workflow(%Runic.Workflow.Aggregate{} = aggregate) do
+    aggregate.workflow
+    |> Map.put(:components, Map.put(aggregate.workflow.components, aggregate.name, aggregate))
+  end
+
+  def to_component(aggregate), do: aggregate
+end
+
 defimpl Runic.Transmutable, for: Runic.Workflow.StateMachine do
+  def transmute(sm), do: to_workflow(sm)
+
+  def to_workflow(%Runic.Workflow.StateMachine{} = sm) do
+    sm.workflow |> Map.put(:components, Map.put(sm.workflow.components, sm.name, sm))
+  end
+
+  def to_component(sm), do: sm
+end
+
+defimpl Runic.Transmutable, for: Runic.Workflow.Saga do
+  def transmute(saga), do: to_workflow(saga)
+
+  def to_workflow(%Runic.Workflow.Saga{} = saga) do
+    saga.workflow |> Map.put(:components, Map.put(saga.workflow.components, saga.name, saga))
+  end
+
+  def to_component(saga), do: saga
+end
+
+defimpl Runic.Transmutable, for: Runic.Workflow.FSM do
   def transmute(fsm), do: to_workflow(fsm)
 
-  def to_workflow(%Runic.Workflow.StateMachine{} = fsm) do
+  def to_workflow(%Runic.Workflow.FSM{} = fsm) do
     fsm.workflow |> Map.put(:components, Map.put(fsm.workflow.components, fsm.name, fsm))
   end
 
   def to_component(fsm), do: fsm
+end
+
+defimpl Runic.Transmutable, for: Runic.Workflow.ProcessManager do
+  def transmute(pm), do: to_workflow(pm)
+
+  def to_workflow(%Runic.Workflow.ProcessManager{} = pm) do
+    pm.workflow |> Map.put(:components, Map.put(pm.workflow.components, pm.name, pm))
+  end
+
+  def to_component(pm), do: pm
 end

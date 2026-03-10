@@ -426,3 +426,54 @@ end
 ```
 
 The critical contract: the executor must arrange for the calling process to receive `{handle, result}` on success and `{:DOWN, handle, :process, pid, reason}` on failure. This matches `Task.Supervisor.async_nolink` semantics.
+
+## Runtime Context in Runners
+
+When using the `Runic.Runner`, you can provide runtime context values via the `:run_context` option in `Runner.run/4`:
+
+```elixir
+Runic.Runner.run(runner, :my_workflow, input,
+  run_context: %{
+    call_llm: %{api_key: "sk-..."},
+    _global: %{workspace_id: "ws1"}
+  }
+)
+```
+
+The Worker applies `run_context` before `plan_eagerly`, making context values available to all components during the prepare → execute cycle.
+
+For workflows using `react_until_satisfied/3` directly (without Runner), pass `:run_context` in the options:
+
+```elixir
+Workflow.react_until_satisfied(workflow, input,
+  run_context: %{call_llm: %{api_key: "sk-..."}}
+)
+```
+
+Context values are resolved during the prepare phase and merged into the `CausalContext`, so they are available in both serial and parallel execution modes, including when using custom schedulers and executors.
+
+### Supported Component Types
+
+`context/1` is supported in all workflow component types:
+
+- **Steps** — `Runic.step(fn x -> x + context(:offset) end)`
+- **Conditions** — `Runic.condition(fn x -> x > context(:threshold) end)`
+- **Rules** — `context/1` in `where` and `then` clauses
+- **Accumulators** — `Runic.accumulator(0, fn x, s -> s + x * context(:factor) end)`
+- **Map pipelines** — `Runic.map(fn x -> x * context(:multiplier) end)`
+- **Reduce** — `Runic.reduce(0, fn x, acc -> acc + x * context(:weight) end)`
+- **State Machines** — internal state conditions and reactions support `context/1`
+
+### Default Values
+
+Use `context/2` to provide defaults when `run_context` doesn't supply a key:
+
+```elixir
+# Literal default
+step = Runic.step(fn _x -> context(:model, default: "gpt-4") end, name: :call_llm)
+
+# Function default — called lazily when key is missing
+step = Runic.step(fn _x -> context(:api_key, default: fn -> System.get_env("KEY") end) end, name: :call_llm)
+```
+
+Keys with defaults are not reported as missing by `Workflow.validate_run_context/2`. Use `Workflow.required_context_keys/1` to see which keys are `:required` vs `{:optional, default}`.

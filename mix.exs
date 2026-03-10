@@ -29,7 +29,8 @@ defmodule Runic.MixProject do
         "guides/protocols.md",
         "guides/scheduling.md",
         "guides/durable-execution.md",
-        "guides/execution-strategies.md"
+        "guides/execution-strategies.md",
+        "guides/state-based-components.md"
       ],
       groups_for_extras: [
         Guides: ~r/guides\/.*/
@@ -41,6 +42,10 @@ defmodule Runic.MixProject do
           Runic.Workflow.Rule,
           Runic.Workflow.Condition,
           Runic.Workflow.StateMachine,
+          Runic.Workflow.FSM,
+          Runic.Workflow.Aggregate,
+          Runic.Workflow.Saga,
+          Runic.Workflow.ProcessManager,
           Runic.Workflow.Accumulator,
           Runic.Workflow.Map,
           Runic.Workflow.Reduce,

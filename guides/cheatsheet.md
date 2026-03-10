@@ -117,6 +117,94 @@ counter = Runic.state_machine(
 )
 ```
 
+### FSM (Finite State Machine)
+
+```elixir
+fsm = Runic.fsm name: :traffic_light do
+  initial_state :red
+
+  state :red do
+    on :timer, to: :green
+    on_entry fn -> {:notify, :stopped} end
+  end
+
+  state :green do
+    on :timer, to: :yellow
+  end
+
+  state :yellow do
+    on :timer, to: :red
+  end
+end
+```
+
+### Aggregate
+
+```elixir
+agg = Runic.aggregate name: :counter do
+  state 0
+
+  command :increment do
+    emit fn _state -> {:incremented, 1} end
+  end
+
+  command :decrement do
+    where fn state -> state > 0 end
+    emit fn _state -> {:decremented, 1} end
+  end
+
+  event {:incremented, n}, state do
+    state + n
+  end
+
+  event {:decremented, n}, state do
+    state - n
+  end
+end
+```
+
+### Saga
+
+```elixir
+saga = Runic.saga name: :fulfillment do
+  transaction :reserve do
+    fn _input -> {:ok, :reserved} end
+  end
+  compensate :reserve do
+    fn _ -> :released end
+  end
+
+  transaction :charge do
+    fn %{reserve: _} -> {:ok, :charged} end
+  end
+  compensate :charge do
+    fn _ -> :refunded end
+  end
+
+  on_complete fn results -> {:done, results} end
+  on_abort fn reason, compensated -> {:failed, reason, compensated} end
+end
+```
+
+### ProcessManager
+
+```elixir
+pm = Runic.process_manager name: :order_flow do
+  state %{paid: false, shipped: false}
+
+  on :payment_received do
+    update %{paid: true}
+    emit {:ship_order, 123}
+  end
+
+  on :shipment_created do
+    update %{shipped: true}
+  end
+
+  complete? fn state -> state.shipped end
+end
+```
+
 ### Map
 
 Fan-out transformation over enumerables:
@@ -178,6 +266,57 @@ workflow = Workflow.react_until_satisfied(workflow, input,
   max_concurrency: 8,
   timeout: :infinity
 )
+```
+
+### Runtime Context
+
+Inject external values (secrets, config, feature flags) into components:
+
+```elixir
+# Declare context dependencies with context/1
+step = Runic.step(fn _x -> context(:api_key) end, name: :call_llm)
+
+# With defaults — used when run_context doesn't provide the key
+step = Runic.step(fn _x -> context(:api_key, default: "test-key") end, name: :call_llm)
+
+# Default function — called lazily when key is missing
+step = Runic.step(fn _x -> context(:api_key, default: fn -> System.get_env("KEY") end) end, name: :call_llm)
+
+# In rules
+rule = Runic.rule name: :gated do
+  given(val: v)
+  where(v > context(:threshold, default: 100))
+  then(fn %{val: v} -> {:ok, v} end)
+end
+
+# In accumulators
+acc = Runic.accumulator(0, fn x, s -> s + x * context(:factor, default: 1) end, name: :scaled)
+
+# In map pipelines
+map = Runic.map(fn x -> x * context(:multiplier) end, name: :mult_map)
+
+# In reduce
+red = Runic.reduce(0, fn x, acc -> acc + x * context(:weight) end, name: :weighted_sum)
+
+# Provide at runtime
+workflow
+|> Workflow.put_run_context(%{
+  call_llm: %{api_key: "sk-..."},
+  _global: %{workspace_id: "ws1"}
+})
+|> Workflow.react_until_satisfied(input)
+
+# Or via options
+Workflow.react_until_satisfied(workflow, input,
+  run_context: %{call_llm: %{api_key: "sk-..."}}
+)
+
+# Introspect and validate
+Workflow.required_context_keys(workflow)
+# => %{call_llm: [api_key: :required, model: {:optional, "gpt-4"}]}
+
+Workflow.validate_run_context(workflow, %{call_llm: %{api_key: "sk-..."}})
+# => :ok (keys with defaults are not reported as missing)
 ```
 
 ### Three-Phase Execution (Custom Schedulers)
@@ -319,3 +458,11 @@ Workflow.add(workflow, merge_step, to: [:a, :b, :c])
 | Serialize | `Workflow.build_log(workflow)` |
 | Deserialize | `Workflow.from_log(log)` |
 | Visualize | `Workflow.to_mermaid(workflow)` |
+| Set runtime context | `Workflow.put_run_context(workflow, %{name: %{key: val}})` |
+| Validate context | `Workflow.validate_run_context(workflow, context)` |
+| Context with default | `context(:key, default: "fallback")` |
+| Create FSM | `Runic.fsm name: :name do ... end` |
+| Create aggregate | `Runic.aggregate name: :name do ... end` |
+| Create saga | `Runic.saga name: :name do ... end` |
+| Create process manager | `Runic.process_manager name: :name do ... end` |
+| Access sub-component | `Workflow.get_component(wf, {:name, :kind})` |

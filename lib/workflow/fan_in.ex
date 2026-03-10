@@ -8,8 +8,20 @@ defmodule Runic.Workflow.FanIn do
   - `:mergeable` - When `true`, indicates this fan-in's reducer has CRDT-like
     properties (commutative, idempotent, associative) and is safe for parallel merge
     without ordering guarantees. Defaults to `false`.
+
+  ## Runtime Context
+
+  FanIn supports `meta_refs` for `context/1` when used as part of a reduce
+  operation. The `has_meta_refs?/1` function indicates whether context
+  references are present.
   """
-  defstruct [:hash, :init, :reducer, :map, mergeable: false]
+  defstruct [:hash, :init, :reducer, :map, :name, mergeable: false, meta_refs: []]
+
+  @doc """
+  Returns whether this FanIn has meta references (e.g., `context/1`)
+  that need to be resolved during the prepare phase.
+  """
+  def has_meta_refs?(%__MODULE__{meta_refs: meta_refs}), do: meta_refs != []
 end
 
 defimpl Runic.Workflow.Coordinator, for: Runic.Workflow.FanIn do

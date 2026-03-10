@@ -18,10 +18,11 @@ defmodule Runic.Workflow.CausalContext do
 
   - **Step**: `fan_out_context` for mapped pipeline tracking
   - **Condition/Conjunction**: `satisfied_conditions` for gate logic
-  - **StateReaction/Accumulator**: `last_known_state` for stateful operations
+  - **Accumulator**: `last_known_state` for stateful operations
   - **Join**: `join_context` with satisfaction tracking
   - **FanOut**: `fan_out_context` with reduce tracking
   - **FanIn**: `fan_in_context` with readiness and sister values
+  - **All nodes**: `meta_context` for graph-resolved meta expression values, `run_context` for external runtime values from `context/1` expressions
   """
 
   alias Runic.Workflow.Fact
@@ -38,7 +39,8 @@ defmodule Runic.Workflow.CausalContext do
           fan_out_context: map() | nil,
           fan_in_context: map() | nil,
           mergeable: boolean(),
-          meta_context: map()
+          meta_context: map(),
+          run_context: map()
         }
 
   defstruct [
@@ -53,7 +55,8 @@ defmodule Runic.Workflow.CausalContext do
     fan_out_context: nil,
     fan_in_context: nil,
     mergeable: false,
-    meta_context: %{}
+    meta_context: %{},
+    run_context: %{}
   ]
 
   @doc """
@@ -183,4 +186,34 @@ defmodule Runic.Workflow.CausalContext do
   @spec has_meta_context?(t()) :: boolean()
   def has_meta_context?(%__MODULE__{meta_context: meta_context}),
     do: meta_context != %{}
+
+  @doc """
+  Adds run context for external runtime value injection.
+
+  Run context contains runtime-scoped values (secrets, tenant IDs, database
+  connections) resolved for a specific component during the prepare phase.
+  Available during execution without requiring workflow access.
+
+  ## Example
+
+      context = CausalContext.new()
+      |> CausalContext.with_run_context(%{api_key: "sk-...", model: "gpt-4"})
+  """
+  @spec with_run_context(t(), map()) :: t()
+  def with_run_context(%__MODULE__{} = ctx, run_context) when is_map(run_context) do
+    %{ctx | run_context: run_context}
+  end
+
+  @doc """
+  Returns the run context map from the context.
+  """
+  @spec run_context(t()) :: map()
+  def run_context(%__MODULE__{run_context: run_context}), do: run_context
+
+  @doc """
+  Returns whether this context has any run context populated.
+  """
+  @spec has_run_context?(t()) :: boolean()
+  def has_run_context?(%__MODULE__{run_context: run_context}),
+    do: run_context != %{}
 end

@@ -206,6 +206,7 @@ defmodule Runic.Runner.Worker do
     workflow =
       state.workflow
       |> maybe_set_policies(policies, state.workflow.scheduler_policies)
+      |> maybe_apply_run_context(opts)
       |> Workflow.plan_eagerly(input)
 
     state = %{state | workflow: workflow, status: :running}
@@ -1110,6 +1111,13 @@ defmodule Runic.Runner.Worker do
 
   defp maybe_set_policies(workflow, policies, _current),
     do: Workflow.set_scheduler_policies(workflow, policies)
+
+  defp maybe_apply_run_context(workflow, opts) do
+    case Keyword.get(opts, :run_context) do
+      nil -> workflow
+      ctx when is_map(ctx) -> Workflow.put_run_context(workflow, ctx)
+    end
+  end
 
   # --- Hooks ---
 

@@ -733,40 +733,48 @@ defimpl Runic.Component, for: Runic.Workflow.Rule do
        })
        when is_list(meta_refs) and meta_refs != [] do
     Enum.reduce(meta_refs, workflow, fn meta_ref, wrk ->
-      target = meta_ref.target
-
-      target_component =
-        case target do
-          name when is_atom(name) ->
-            Workflow.get_component(wrk, name)
-
-          hash when is_integer(hash) ->
-            Map.get(wrk.graph.vertices, hash)
-
-          {_parent, _subcomponent} = tuple_ref ->
-            # get_component/2 already handles tuple refs
-            case Workflow.get_component(wrk, tuple_ref) do
-              [component | _] -> component
-              [] -> nil
-              component -> component
-            end
-
-          _ ->
-            nil
-        end
-
-      if target_component do
-        Workflow.draw_meta_ref_edge(wrk, node_hash, target_component.hash, meta_ref)
+      # context/1 refs are resolved from run_context at runtime, not from workflow components
+      if meta_ref.kind == :context do
+        wrk
       else
-        raise Runic.UnresolvedReferenceError,
-          component_name: component_name,
-          reference_kind: meta_ref.kind,
-          target: target
+        create_meta_ref_edge(wrk, component_name, node_hash, meta_ref)
       end
     end)
   end
 
   defp create_meta_ref_edges_for_node(workflow, _component_name, _node), do: workflow
+
+  defp create_meta_ref_edge(wrk, component_name, node_hash, meta_ref) do
+    target = meta_ref.target
+
+    target_component =
+      case target do
+        name when is_atom(name) ->
+          Workflow.get_component(wrk, name)
+
+        hash when is_integer(hash) ->
+          Map.get(wrk.graph.vertices, hash)
+
+        {_parent, _subcomponent} = tuple_ref ->
+          case Workflow.get_component(wrk, tuple_ref) do
+            [component | _] -> component
+            [] -> nil
+            component -> component
+          end
+
+        _ ->
+          nil
+      end
+
+    if target_component do
+      Workflow.draw_meta_ref_edge(wrk, node_hash, target_component.hash, meta_ref)
+    else
+      raise Runic.UnresolvedReferenceError,
+        component_name: component_name,
+        reference_kind: meta_ref.kind,
+        target: target
+    end
+  end
 
   defp resolve_condition_refs(workflow, %{condition_refs: []}), do: workflow
 
@@ -900,76 +908,196 @@ defimpl Runic.Component, for: Runic.Workflow.Rule do
   end
 end
 
-defimpl Runic.Component, for: Runic.Workflow.StateMachine do
-  alias Runic.Workflow.MemoryAssertion
+defimpl Runic.Component, for: Runic.Workflow.Aggregate do
   alias Runic.Workflow
-  alias Runic.Workflow.Accumulator
-  alias Runic.Workflow.Step
+  alias Runic.Workflow.Root
+
+  def connect(aggregate, %Root{}, workflow) do
+    connect_aggregate(aggregate, workflow, nil)
+  end
+
+  def connect(aggregate, to, workflow) do
+    connect_aggregate(aggregate, workflow, to)
+  end
+
+  defp connect_aggregate(aggregate, workflow, parent) do
+    accumulator = aggregate.accumulator
+    command_rules = aggregate.command_rules || []
+
+    # Accumulator connected from parent/root to initialize state
+    wrk =
+      if parent do
+        Workflow.add_step(workflow, parent, accumulator)
+      else
+        Workflow.add_step(workflow, accumulator)
+      end
+
+    wrk =
+      wrk
+      |> Workflow.register_component(aggregate)
+      |> Workflow.register_component(accumulator)
+      |> Workflow.draw_connection(aggregate, accumulator, :component_of,
+        properties: %{kind: :accumulator}
+      )
+
+    Enum.reduce(command_rules, wrk, fn rule, wrk ->
+      connect_command_rule(wrk, aggregate, rule, accumulator, parent)
+    end)
+  end
+
+  defp connect_command_rule(workflow, aggregate, rule, accumulator, parent) do
+    condition = Map.get(rule.workflow.graph.vertices, rule.condition_hash)
+    reaction = Map.get(rule.workflow.graph.vertices, rule.reaction_hash)
+
+    # Topology: [Parent →] Condition → Reaction → Accumulator
+    # Condition also connected from parent/root for command input
+    wrk =
+      if parent do
+        Workflow.add_step(workflow, parent, condition)
+      else
+        Workflow.add_step(workflow, condition)
+      end
+
+    wrk
+    |> Workflow.add_step(condition, reaction)
+    |> Workflow.add_step(reaction, accumulator)
+    |> Workflow.register_component(rule)
+    |> Workflow.draw_connection(rule, reaction, :component_of, properties: %{kind: :reaction})
+    |> Workflow.draw_connection(rule, condition, :component_of, properties: %{kind: :condition})
+    |> Workflow.draw_connection(aggregate, rule, :component_of,
+      properties: %{kind: :command_handler}
+    )
+    |> create_meta_ref_edges_for_accumulator(condition, accumulator)
+    |> create_meta_ref_edges_for_accumulator(reaction, accumulator)
+  end
+
+  defp create_meta_ref_edges_for_accumulator(
+         workflow,
+         %{meta_refs: meta_refs, hash: node_hash},
+         accumulator
+       )
+       when is_list(meta_refs) and meta_refs != [] do
+    Enum.reduce(meta_refs, workflow, fn meta_ref, wrk ->
+      if meta_ref.kind == :context do
+        wrk
+      else
+        Workflow.draw_meta_ref_edge(wrk, node_hash, accumulator.hash, meta_ref)
+      end
+    end)
+  end
+
+  defp create_meta_ref_edges_for_accumulator(workflow, _node, _accumulator), do: workflow
+
+  def connectable?(aggregate, other_component) do
+    producer_outputs = outputs(aggregate)
+    consumer_inputs = Runic.Component.inputs(other_component)
+    Runic.Component.TypeCompatibility.schemas_compatible?(producer_outputs, consumer_inputs)
+  end
+
+  def source(aggregate), do: aggregate.source
+  def hash(aggregate), do: aggregate.hash
+
+  def inputs(%Runic.Workflow.Aggregate{inputs: nil}) do
+    [commands: [type: :any, doc: "Commands to be validated and processed by the aggregate"]]
+  end
+
+  def inputs(%Runic.Workflow.Aggregate{inputs: user_inputs}), do: user_inputs
+
+  def outputs(%Runic.Workflow.Aggregate{outputs: nil}) do
+    [
+      accumulator: [type: :any, doc: "Current aggregate state"],
+      events: [type: :any, doc: "Domain events produced by command handlers"]
+    ]
+  end
+
+  def outputs(%Runic.Workflow.Aggregate{outputs: user_outputs}), do: user_outputs
+end
+
+defimpl Runic.Component, for: Runic.Workflow.StateMachine do
+  alias Runic.Workflow
   alias Runic.Workflow.Root
 
   def connect(state_machine, %Root{}, workflow) do
-    accumulator =
-      state_machine.workflow.graph
-      |> Graph.vertices()
-      |> Enum.find(&match?(%Accumulator{}, &1))
+    accumulator = state_machine.accumulator
+    reactor_rules = state_machine.reactor_rules || []
 
-    state_machine.workflow.graph
-    |> Graph.edges(by: :flow)
-    |> Enum.reduce(workflow, fn edge, wrk ->
-      %Workflow{wrk | graph: Graph.add_edge(wrk.graph, edge)}
+    wrk =
+      workflow
+      |> Workflow.add_step(accumulator)
+      |> Workflow.register_component(state_machine)
+      |> Workflow.register_component(accumulator)
+      |> Workflow.draw_connection(state_machine, accumulator, :component_of,
+        properties: %{kind: :accumulator}
+      )
+
+    Enum.reduce(reactor_rules, wrk, fn rule, wrk ->
+      connect_reactor_rule(wrk, state_machine, rule, accumulator)
     end)
-    |> Map.put(:components, Map.merge(state_machine.workflow.components, workflow.components))
-    |> Workflow.register_component(state_machine)
-    |> Workflow.draw_connection(state_machine, accumulator, :component_of,
-      properties: %{kind: :accumulator}
-    )
   end
 
   def connect(state_machine, to, workflow) do
-    accumulator =
-      state_machine.workflow.graph
-      |> Graph.vertices()
-      |> Enum.find(&match?(%Accumulator{}, &1))
+    accumulator = state_machine.accumulator
+    reactor_rules = state_machine.reactor_rules || []
 
-    wrk = Workflow.add_step(workflow, to, accumulator)
+    wrk =
+      workflow
+      |> Workflow.add_step(to, accumulator)
+      |> Workflow.register_component(state_machine)
+      |> Workflow.register_component(accumulator)
+      |> Workflow.draw_connection(state_machine, accumulator, :component_of,
+        properties: %{kind: :accumulator}
+      )
 
-    state_machine.workflow.graph
-    |> Graph.edges(by: :flow)
-    |> Enum.reduce(wrk, fn edge, wrk ->
-      case edge do
-        %{v2: v2, v1: v1} = edge
-        when is_struct(v2, StateReaction) or is_struct(v2, MemoryAssertion) or
-               (is_struct(v1, StateReaction) or is_struct(v1, MemoryAssertion)) ->
-          %Workflow{wrk | graph: Graph.add_edge(wrk.graph, edge)}
+    Enum.reduce(reactor_rules, wrk, fn rule, wrk ->
+      connect_reactor_rule(wrk, state_machine, rule, accumulator)
+    end)
+  end
 
-        _otherwise ->
-          wrk
+  defp connect_reactor_rule(workflow, state_machine, rule, accumulator) do
+    condition = Map.get(rule.workflow.graph.vertices, rule.condition_hash)
+    reaction = Map.get(rule.workflow.graph.vertices, rule.reaction_hash)
+
+    workflow
+    |> Workflow.add_step(accumulator, condition)
+    |> Workflow.add_step(condition, reaction)
+    |> Workflow.register_component(rule)
+    |> Workflow.draw_connection(rule, reaction, :component_of, properties: %{kind: :reaction})
+    |> Workflow.draw_connection(rule, condition, :component_of, properties: %{kind: :condition})
+    |> Workflow.draw_connection(state_machine, rule, :component_of, properties: %{kind: :reactor})
+    |> create_meta_ref_edges_for_accumulator(condition, accumulator)
+    |> create_meta_ref_edges_for_accumulator(reaction, accumulator)
+  end
+
+  defp create_meta_ref_edges_for_accumulator(
+         workflow,
+         %{meta_refs: meta_refs, hash: node_hash},
+         accumulator
+       )
+       when is_list(meta_refs) and meta_refs != [] do
+    Enum.reduce(meta_refs, workflow, fn meta_ref, wrk ->
+      if meta_ref.kind == :context do
+        wrk
+      else
+        Workflow.draw_meta_ref_edge(wrk, node_hash, accumulator.hash, meta_ref)
       end
     end)
-    |> Workflow.register_component(state_machine)
-    |> Workflow.draw_connection(state_machine, accumulator, :component_of,
-      properties: %{kind: :accumulator}
-    )
   end
 
-  def get_component(state_machine, :reducer) do
-    state_machine.workflow.graph
-    |> Graph.vertices()
-    |> Enum.filter(&match?(%Runic.Workflow.Accumulator{}, &1))
-    |> List.first()
-  end
+  defp create_meta_ref_edges_for_accumulator(workflow, _node, _accumulator), do: workflow
+
+  def get_component(state_machine, :reducer), do: state_machine.accumulator
+  def get_component(state_machine, :accumulator), do: state_machine.accumulator
 
   def components(state_machine) do
-    vertices = state_machine.workflow.graph |> Graph.vertices()
+    reactor_rules = state_machine.reactor_rules || []
 
     [
-      reactors: vertices |> Enum.filter(&match?(%Step{}, &1)),
-      accumulator: vertices |> Enum.filter(&match?(%Accumulator{}, &1)) |> List.first()
+      accumulator: state_machine.accumulator,
+      reactor_rules: reactor_rules
     ]
   end
 
   def connectables(state_machine, other_component) do
-    # Filter components based on compatibility
     state_machine
     |> components()
     |> Enum.filter(fn {_name, component} ->
@@ -978,7 +1106,6 @@ defimpl Runic.Component, for: Runic.Workflow.StateMachine do
   end
 
   def connectable?(state_machine, other_component) do
-    # Use schema-based compatibility checking
     producer_outputs = outputs(state_machine)
     consumer_inputs = Runic.Component.inputs(other_component)
 
@@ -994,7 +1121,6 @@ defimpl Runic.Component, for: Runic.Workflow.StateMachine do
   end
 
   def inputs(%Runic.Workflow.StateMachine{inputs: nil}) do
-    # Default schema for state machines without user-defined inputs
     [
       reactors: [
         type: {:list, :any},
@@ -1008,7 +1134,6 @@ defimpl Runic.Component, for: Runic.Workflow.StateMachine do
   end
 
   def outputs(%Runic.Workflow.StateMachine{outputs: nil}) do
-    # Default schema for state machines without user-defined outputs
     [
       accumulator: [
         type: :any,
@@ -1020,6 +1145,366 @@ defimpl Runic.Component, for: Runic.Workflow.StateMachine do
   def outputs(%Runic.Workflow.StateMachine{outputs: user_outputs}) do
     user_outputs
   end
+end
+
+defimpl Runic.Component, for: Runic.Workflow.Saga do
+  alias Runic.Workflow
+  alias Runic.Workflow.Root
+
+  def connect(saga, %Root{}, workflow) do
+    connect_saga(saga, workflow, fn wrk, acc -> Workflow.add_step(wrk, acc) end)
+  end
+
+  def connect(saga, to, workflow) do
+    connect_saga(saga, workflow, fn wrk, acc -> Workflow.add_step(wrk, to, acc) end)
+  end
+
+  defp connect_saga(saga, workflow, add_accumulator_fn) do
+    accumulator = saga.accumulator
+    forward_rules = saga.forward_rules || []
+    compensation_rules = saga.compensation_rules || []
+
+    wrk =
+      workflow
+      |> add_accumulator_fn.(accumulator)
+      |> Workflow.register_component(saga)
+      |> Workflow.register_component(accumulator)
+      |> Workflow.draw_connection(saga, accumulator, :component_of,
+        properties: %{kind: :accumulator}
+      )
+
+    wrk =
+      Enum.reduce(forward_rules, wrk, fn rule, wrk ->
+        connect_saga_rule(wrk, saga, rule, accumulator, :transaction)
+      end)
+
+    Enum.reduce(compensation_rules, wrk, fn rule, wrk ->
+      connect_saga_rule(wrk, saga, rule, accumulator, :compensation)
+    end)
+  end
+
+  defp connect_saga_rule(workflow, saga, rule, accumulator, kind) do
+    condition = Map.get(rule.workflow.graph.vertices, rule.condition_hash)
+    reaction = Map.get(rule.workflow.graph.vertices, rule.reaction_hash)
+
+    workflow
+    |> Workflow.add_step(accumulator, condition)
+    |> Workflow.add_step(condition, reaction)
+    |> Workflow.register_component(rule)
+    |> Workflow.draw_connection(rule, reaction, :component_of, properties: %{kind: :reaction})
+    |> Workflow.draw_connection(rule, condition, :component_of, properties: %{kind: :condition})
+    |> Workflow.draw_connection(saga, rule, :component_of, properties: %{kind: kind})
+    |> create_meta_ref_edges_for_accumulator(condition, accumulator)
+    |> create_meta_ref_edges_for_accumulator(reaction, accumulator)
+  end
+
+  defp create_meta_ref_edges_for_accumulator(
+         workflow,
+         %{meta_refs: meta_refs, hash: node_hash},
+         accumulator
+       )
+       when is_list(meta_refs) and meta_refs != [] do
+    Enum.reduce(meta_refs, workflow, fn meta_ref, wrk ->
+      if meta_ref.kind == :context do
+        wrk
+      else
+        Workflow.draw_meta_ref_edge(wrk, node_hash, accumulator.hash, meta_ref)
+      end
+    end)
+  end
+
+  defp create_meta_ref_edges_for_accumulator(workflow, _node, _accumulator), do: workflow
+
+  def connectable?(saga, other_component) do
+    producer_outputs = outputs(saga)
+    consumer_inputs = Runic.Component.inputs(other_component)
+    Runic.Component.TypeCompatibility.schemas_compatible?(producer_outputs, consumer_inputs)
+  end
+
+  def source(saga), do: saga.source
+
+  def hash(saga), do: saga.hash
+
+  def inputs(%Runic.Workflow.Saga{inputs: nil}) do
+    [trigger: [type: :any, doc: "Input that triggers the saga execution"]]
+  end
+
+  def inputs(%Runic.Workflow.Saga{inputs: user_inputs}), do: user_inputs
+
+  def outputs(%Runic.Workflow.Saga{outputs: nil}) do
+    [
+      accumulator: [type: :any, doc: "Current saga state (status, results, etc.)"],
+      result: [type: :any, doc: "Final saga result (completed or aborted)"]
+    ]
+  end
+
+  def outputs(%Runic.Workflow.Saga{outputs: user_outputs}), do: user_outputs
+end
+
+defimpl Runic.Component, for: Runic.Workflow.FSM do
+  alias Runic.Workflow
+  alias Runic.Workflow.Root
+
+  def connect(fsm, %Root{}, workflow) do
+    connect_fsm(fsm, workflow, fn wrk, acc -> Workflow.add_step(wrk, acc) end)
+  end
+
+  def connect(fsm, to, workflow) do
+    connect_fsm(fsm, workflow, fn wrk, acc -> Workflow.add_step(wrk, to, acc) end)
+  end
+
+  defp connect_fsm(fsm, workflow, add_accumulator_fn) do
+    accumulator = fsm.accumulator
+    transition_rules = fsm.transition_rules || []
+    entry_rules = fsm.entry_rules || []
+
+    wrk =
+      workflow
+      |> add_accumulator_fn.(accumulator)
+      |> Workflow.register_component(fsm)
+      |> Workflow.register_component(accumulator)
+      |> Workflow.draw_connection(fsm, accumulator, :component_of,
+        properties: %{kind: :accumulator}
+      )
+
+    # Transition rule conditions receive events from root (not from accumulator),
+    # but use meta_ref edges to read the accumulator's state via state_of().
+    # Their reactions produce {event, target} tuples that feed into the accumulator.
+    wrk =
+      Enum.reduce(transition_rules, wrk, fn rule, wrk ->
+        connect_transition_rule(wrk, fsm, rule, accumulator)
+      end)
+
+    # Entry rules observe the accumulator's state (downstream of accumulator)
+    Enum.reduce(entry_rules, wrk, fn rule, wrk ->
+      connect_entry_rule(wrk, fsm, rule, accumulator)
+    end)
+  end
+
+  defp connect_transition_rule(workflow, fsm, rule, accumulator) do
+    condition = Map.get(rule.workflow.graph.vertices, rule.condition_hash)
+    reaction = Map.get(rule.workflow.graph.vertices, rule.reaction_hash)
+
+    # Conditions receive events from root (same level as accumulator),
+    # and reactions feed into the accumulator
+    workflow
+    |> Workflow.add_step(condition)
+    |> Workflow.add_step(condition, reaction)
+    |> Workflow.add_step(reaction, accumulator)
+    |> Workflow.register_component(rule)
+    |> Workflow.draw_connection(rule, reaction, :component_of, properties: %{kind: :reaction})
+    |> Workflow.draw_connection(rule, condition, :component_of, properties: %{kind: :condition})
+    |> Workflow.draw_connection(fsm, rule, :component_of, properties: %{kind: :transition})
+    |> create_meta_ref_edges_for_accumulator(condition, accumulator)
+    |> create_meta_ref_edges_for_accumulator(reaction, accumulator)
+  end
+
+  defp connect_entry_rule(workflow, fsm, rule, accumulator) do
+    condition = Map.get(rule.workflow.graph.vertices, rule.condition_hash)
+    reaction = Map.get(rule.workflow.graph.vertices, rule.reaction_hash)
+
+    # Entry rules observe accumulator output (fire when state matches)
+    workflow
+    |> Workflow.add_step(accumulator, condition)
+    |> Workflow.add_step(condition, reaction)
+    |> Workflow.register_component(rule)
+    |> Workflow.draw_connection(rule, reaction, :component_of, properties: %{kind: :reaction})
+    |> Workflow.draw_connection(rule, condition, :component_of, properties: %{kind: :condition})
+    |> Workflow.draw_connection(fsm, rule, :component_of, properties: %{kind: :entry_action})
+    |> create_meta_ref_edges_for_accumulator(condition, accumulator)
+    |> create_meta_ref_edges_for_accumulator(reaction, accumulator)
+  end
+
+  defp create_meta_ref_edges_for_accumulator(
+         workflow,
+         %{meta_refs: meta_refs, hash: node_hash},
+         accumulator
+       )
+       when is_list(meta_refs) and meta_refs != [] do
+    Enum.reduce(meta_refs, workflow, fn meta_ref, wrk ->
+      if meta_ref.kind == :context do
+        wrk
+      else
+        Workflow.draw_meta_ref_edge(wrk, node_hash, accumulator.hash, meta_ref)
+      end
+    end)
+  end
+
+  defp create_meta_ref_edges_for_accumulator(workflow, _node, _accumulator), do: workflow
+
+  def get_component(fsm, :accumulator), do: fsm.accumulator
+
+  def components(fsm) do
+    transition_rules = fsm.transition_rules || []
+    entry_rules = fsm.entry_rules || []
+
+    [
+      accumulator: fsm.accumulator,
+      transition_rules: transition_rules,
+      entry_rules: entry_rules
+    ]
+  end
+
+  def connectables(fsm, other_component) do
+    fsm
+    |> components()
+    |> Enum.filter(fn {_name, component} ->
+      connectable?(component, other_component)
+    end)
+  end
+
+  def connectable?(fsm, other_component) do
+    producer_outputs = outputs(fsm)
+    consumer_inputs = Runic.Component.inputs(other_component)
+
+    Runic.Component.TypeCompatibility.schemas_compatible?(producer_outputs, consumer_inputs)
+  end
+
+  def source(fsm), do: fsm.source
+
+  def hash(fsm), do: fsm.hash
+
+  def inputs(%Runic.Workflow.FSM{inputs: nil}) do
+    [events: [type: :any, doc: "Events that trigger FSM state transitions"]]
+  end
+
+  def inputs(%Runic.Workflow.FSM{inputs: user_inputs}), do: user_inputs
+
+  def outputs(%Runic.Workflow.FSM{outputs: nil}) do
+    [
+      accumulator: [type: :any, doc: "Current state atom of the FSM"],
+      transition: [type: :any, doc: "Transition output facts"]
+    ]
+  end
+
+  def outputs(%Runic.Workflow.FSM{outputs: user_outputs}), do: user_outputs
+end
+
+defimpl Runic.Component, for: Runic.Workflow.ProcessManager do
+  alias Runic.Workflow
+  alias Runic.Workflow.Root
+
+  def connect(pm, %Root{}, workflow) do
+    connect_pm(pm, workflow, nil)
+  end
+
+  def connect(pm, to, workflow) do
+    connect_pm(pm, workflow, to)
+  end
+
+  defp connect_pm(pm, workflow, parent) do
+    accumulator = pm.accumulator
+    event_rules = pm.event_rules || []
+    completion_rule = pm.completion_rule
+
+    wrk =
+      if parent do
+        Workflow.add_step(workflow, parent, accumulator)
+      else
+        Workflow.add_step(workflow, accumulator)
+      end
+
+    wrk =
+      wrk
+      |> Workflow.register_component(pm)
+      |> Workflow.register_component(accumulator)
+      |> Workflow.draw_connection(pm, accumulator, :component_of,
+        properties: %{kind: :accumulator}
+      )
+
+    # Wire event handler rules: conditions receive events from root/parent,
+    # reactions produce command facts
+    wrk =
+      Enum.reduce(event_rules, wrk, fn rule, wrk ->
+        connect_event_rule(wrk, pm, rule, accumulator, parent)
+      end)
+
+    # Wire completion rule if present
+    if completion_rule do
+      connect_completion_rule(wrk, pm, completion_rule, accumulator)
+    else
+      wrk
+    end
+  end
+
+  defp connect_event_rule(workflow, pm, rule, accumulator, parent) do
+    condition = Map.get(rule.workflow.graph.vertices, rule.condition_hash)
+    reaction = Map.get(rule.workflow.graph.vertices, rule.reaction_hash)
+
+    # Conditions receive events from root/parent (same level as accumulator)
+    wrk =
+      if parent do
+        Workflow.add_step(workflow, parent, condition)
+      else
+        Workflow.add_step(workflow, condition)
+      end
+
+    wrk
+    |> Workflow.add_step(condition, reaction)
+    |> Workflow.register_component(rule)
+    |> Workflow.draw_connection(rule, reaction, :component_of, properties: %{kind: :reaction})
+    |> Workflow.draw_connection(rule, condition, :component_of, properties: %{kind: :condition})
+    |> Workflow.draw_connection(pm, rule, :component_of, properties: %{kind: :event_handler})
+    |> create_meta_ref_edges_for_accumulator(condition, accumulator)
+    |> create_meta_ref_edges_for_accumulator(reaction, accumulator)
+  end
+
+  defp connect_completion_rule(workflow, pm, rule, accumulator) do
+    condition = Map.get(rule.workflow.graph.vertices, rule.condition_hash)
+    reaction = Map.get(rule.workflow.graph.vertices, rule.reaction_hash)
+
+    # Completion rule observes accumulator output
+    workflow
+    |> Workflow.add_step(accumulator, condition)
+    |> Workflow.add_step(condition, reaction)
+    |> Workflow.register_component(rule)
+    |> Workflow.draw_connection(rule, reaction, :component_of, properties: %{kind: :reaction})
+    |> Workflow.draw_connection(rule, condition, :component_of, properties: %{kind: :condition})
+    |> Workflow.draw_connection(pm, rule, :component_of, properties: %{kind: :completion})
+    |> create_meta_ref_edges_for_accumulator(condition, accumulator)
+    |> create_meta_ref_edges_for_accumulator(reaction, accumulator)
+  end
+
+  defp create_meta_ref_edges_for_accumulator(
+         workflow,
+         %{meta_refs: meta_refs, hash: node_hash},
+         accumulator
+       )
+       when is_list(meta_refs) and meta_refs != [] do
+    Enum.reduce(meta_refs, workflow, fn meta_ref, wrk ->
+      if meta_ref.kind == :context do
+        wrk
+      else
+        Workflow.draw_meta_ref_edge(wrk, node_hash, accumulator.hash, meta_ref)
+      end
+    end)
+  end
+
+  defp create_meta_ref_edges_for_accumulator(workflow, _node, _accumulator), do: workflow
+
+  def connectable?(pm, other_component) do
+    producer_outputs = outputs(pm)
+    consumer_inputs = Runic.Component.inputs(other_component)
+    Runic.Component.TypeCompatibility.schemas_compatible?(producer_outputs, consumer_inputs)
+  end
+
+  def source(pm), do: pm.source
+  def hash(pm), do: pm.hash
+
+  def inputs(%Runic.Workflow.ProcessManager{inputs: nil}) do
+    [events: [type: :any, doc: "Domain events that drive the process manager"]]
+  end
+
+  def inputs(%Runic.Workflow.ProcessManager{inputs: user_inputs}), do: user_inputs
+
+  def outputs(%Runic.Workflow.ProcessManager{outputs: nil}) do
+    [
+      accumulator: [type: :any, doc: "Current coordination state"],
+      commands: [type: :any, doc: "Commands emitted by event handlers"]
+    ]
+  end
+
+  def outputs(%Runic.Workflow.ProcessManager{outputs: user_outputs}), do: user_outputs
 end
 
 defimpl Runic.Component, for: Runic.Workflow.Accumulator do
@@ -1050,7 +1535,37 @@ defimpl Runic.Component, for: Runic.Workflow.Accumulator do
       properties: %{kind: :accumulator}
     )
     |> Workflow.register_component(accumulator)
+    |> create_meta_ref_edges(accumulator)
   end
+
+  defp create_meta_ref_edges(workflow, %{meta_refs: meta_refs, hash: node_hash, name: name})
+       when is_list(meta_refs) and meta_refs != [] do
+    Enum.reduce(meta_refs, workflow, fn meta_ref, wrk ->
+      if meta_ref.kind == :context do
+        wrk
+      else
+        target = meta_ref.target
+
+        target_component =
+          case target do
+            name when is_atom(name) -> Workflow.get_component(wrk, name)
+            hash when is_integer(hash) -> Map.get(wrk.graph.vertices, hash)
+            _ -> nil
+          end
+
+        if target_component do
+          Workflow.draw_meta_ref_edge(wrk, node_hash, target_component.hash, meta_ref)
+        else
+          raise Runic.UnresolvedReferenceError,
+            component_name: name,
+            reference_kind: meta_ref.kind,
+            target: target
+        end
+      end
+    end)
+  end
+
+  defp create_meta_ref_edges(workflow, _accumulator), do: workflow
 
   def get_component(accumulator, _kind) do
     accumulator

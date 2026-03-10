@@ -5,11 +5,12 @@ defmodule Runic do
   alias Runic.Closure
   alias Runic.ClosureMetadata
   alias Runic.Workflow.CompilationUtils
-  alias Runic.Workflow.StateCondition
   alias Runic.Workflow.Accumulator
+  alias Runic.Workflow.Aggregate
   alias Runic.Workflow.StateMachine
-  alias Runic.Workflow.StateReaction
-  alias Runic.Workflow.MemoryAssertion
+  alias Runic.Workflow.Saga
+  alias Runic.Workflow.FSM
+  alias Runic.Workflow.ProcessManager
   alias Runic.Workflow
   alias Runic.Workflow.Step
   alias Runic.Workflow.Condition
@@ -129,6 +130,10 @@ defmodule Runic do
 
     {rewritten_work, work_bindings} = traverse_expression(work, __CALLER__)
 
+    # Detect context/1 meta expressions and rewrite if found
+    {final_work, meta_refs} = maybe_compile_meta_work(work, rewritten_work, __CALLER__)
+    escaped_meta_refs = escape_meta_refs(meta_refs)
+
     variable_bindings =
       work_bindings
       |> Enum.uniq()
@@ -150,13 +155,14 @@ defmodule Runic do
 
       quote do
         Step.new(
-          work: unquote(rewritten_work),
+          work: unquote(final_work),
           closure: unquote(closure),
           name: unquote(default_component_name("step", step_hash)),
           hash: unquote(step_hash),
           work_hash: unquote(work_hash),
           inputs: nil,
-          outputs: nil
+          outputs: nil,
+          meta_refs: unquote(escaped_meta_refs)
         )
       end
     else
@@ -172,13 +178,14 @@ defmodule Runic do
           Components.fact_hash({unquote(Macro.escape(normalized_work)), closure.bindings})
 
         Step.new(
-          work: unquote(rewritten_work),
+          work: unquote(final_work),
           closure: closure,
           name: unquote(default_component_name("step", "_")) <> "_#{step_hash}",
           hash: step_hash,
           work_hash: work_hash,
           inputs: nil,
-          outputs: nil
+          outputs: nil,
+          meta_refs: unquote(escaped_meta_refs)
         )
       end
     end
@@ -223,6 +230,10 @@ defmodule Runic do
 
     {rewritten_work, work_bindings} = traverse_expression(work, __CALLER__)
 
+    # Detect context/1 meta expressions and rewrite if found
+    {final_work, meta_refs} = maybe_compile_meta_work(work, rewritten_work, __CALLER__)
+    escaped_meta_refs = escape_meta_refs(meta_refs)
+
     variable_bindings =
       (work_bindings ++ opts_bindings)
       |> Enum.uniq()
@@ -244,13 +255,14 @@ defmodule Runic do
 
       quote do
         Step.new(
-          work: unquote(rewritten_work),
+          work: unquote(final_work),
           closure: unquote(closure),
           name: unquote(step_name),
           hash: unquote(step_hash),
           work_hash: unquote(work_hash),
           inputs: unquote(rewritten_opts[:inputs]),
-          outputs: unquote(rewritten_opts[:outputs])
+          outputs: unquote(rewritten_opts[:outputs]),
+          meta_refs: unquote(escaped_meta_refs)
         )
       end
     else
@@ -272,13 +284,14 @@ defmodule Runic do
           end
 
         Step.new(
-          work: unquote(rewritten_work),
+          work: unquote(final_work),
           closure: closure,
           name: step_name,
           hash: step_hash,
           work_hash: work_hash,
           inputs: unquote(rewritten_opts[:inputs]),
-          outputs: unquote(rewritten_opts[:outputs])
+          outputs: unquote(rewritten_opts[:outputs]),
+          meta_refs: unquote(escaped_meta_refs)
         )
       end
     end
@@ -294,6 +307,10 @@ defmodule Runic do
       end
 
     {rewritten_work, work_bindings} = traverse_expression(work, __CALLER__)
+
+    # Detect context/1 meta expressions and rewrite if found
+    {final_work, meta_refs} = maybe_compile_meta_work(work, rewritten_work, __CALLER__)
+    escaped_meta_refs = escape_meta_refs(meta_refs)
 
     variable_bindings =
       (work_bindings ++ opts_bindings)
@@ -316,13 +333,14 @@ defmodule Runic do
 
       quote do
         Step.new(
-          work: unquote(rewritten_work),
+          work: unquote(final_work),
           closure: unquote(closure),
           name: unquote(step_name),
           hash: unquote(step_hash),
           work_hash: unquote(work_hash),
           inputs: unquote(rewritten_opts[:inputs]),
-          outputs: unquote(rewritten_opts[:outputs])
+          outputs: unquote(rewritten_opts[:outputs]),
+          meta_refs: unquote(escaped_meta_refs)
         )
       end
     else
@@ -344,13 +362,14 @@ defmodule Runic do
           end
 
         Step.new(
-          work: unquote(rewritten_work),
+          work: unquote(final_work),
           closure: closure,
           name: step_name,
           hash: step_hash,
           work_hash: work_hash,
           inputs: unquote(rewritten_opts[:inputs]),
-          outputs: unquote(rewritten_opts[:outputs])
+          outputs: unquote(rewritten_opts[:outputs]),
+          meta_refs: unquote(escaped_meta_refs)
         )
       end
     end
@@ -415,6 +434,11 @@ defmodule Runic do
 
     {rewritten_work, work_bindings} = traverse_expression(work, __CALLER__)
 
+    # Detect context/1 meta expressions and rewrite if found
+    {final_work, meta_refs} = maybe_compile_meta_work(work, rewritten_work, __CALLER__)
+    escaped_meta_refs = escape_meta_refs(meta_refs)
+    arity = if meta_refs != [], do: 2, else: condition_arity_from_fn_ast(work)
+
     variable_bindings =
       work_bindings
       |> Enum.uniq()
@@ -426,20 +450,19 @@ defmodule Runic do
 
     closure = build_closure(closure_source, variable_bindings, __CALLER__)
 
-    arity = condition_arity_from_fn_ast(work)
-
     if Enum.empty?(variable_bindings) do
       condition_hash = Components.fact_hash(source)
       work_hash = Components.fact_hash(work)
 
       quote do
         Condition.new(
-          work: unquote(rewritten_work),
+          work: unquote(final_work),
           closure: unquote(closure),
           name: unquote(default_component_name("condition", condition_hash)),
           hash: unquote(condition_hash),
           work_hash: unquote(work_hash),
-          arity: unquote(arity)
+          arity: unquote(arity),
+          meta_refs: unquote(escaped_meta_refs)
         )
       end
     else
@@ -453,12 +476,13 @@ defmodule Runic do
           Components.fact_hash({unquote(Macro.escape(normalized_work)), closure.bindings})
 
         Condition.new(
-          work: unquote(rewritten_work),
+          work: unquote(final_work),
           closure: closure,
           name: unquote(default_component_name("condition", "_")) <> "_#{condition_hash}",
           hash: condition_hash,
           work_hash: work_hash,
-          arity: unquote(arity)
+          arity: unquote(arity),
+          meta_refs: unquote(escaped_meta_refs)
         )
       end
     end
@@ -522,6 +546,11 @@ defmodule Runic do
 
         {rewritten_work, work_bindings} = traverse_expression(work, __CALLER__)
 
+        # Detect context/1 meta expressions and rewrite if found
+        {final_work, meta_refs} = maybe_compile_meta_work(work, rewritten_work, __CALLER__)
+        escaped_meta_refs = escape_meta_refs(meta_refs)
+        arity = if meta_refs != [], do: 2, else: condition_arity_from_fn_ast(work)
+
         variable_bindings =
           (work_bindings ++ opts_bindings)
           |> Enum.uniq()
@@ -533,8 +562,6 @@ defmodule Runic do
 
         closure = build_closure(closure_source, variable_bindings, __CALLER__)
 
-        arity = condition_arity_from_fn_ast(work)
-
         if Enum.empty?(variable_bindings) do
           condition_hash = Components.fact_hash(source)
           work_hash = Components.fact_hash(work)
@@ -544,12 +571,13 @@ defmodule Runic do
 
           quote do
             Condition.new(
-              work: unquote(rewritten_work),
+              work: unquote(final_work),
               closure: unquote(closure),
               name: unquote(condition_name),
               hash: unquote(condition_hash),
               work_hash: unquote(work_hash),
-              arity: unquote(arity)
+              arity: unquote(arity),
+              meta_refs: unquote(escaped_meta_refs)
             )
           end
         else
@@ -571,12 +599,13 @@ defmodule Runic do
               end
 
             Condition.new(
-              work: unquote(rewritten_work),
+              work: unquote(final_work),
               closure: closure,
               name: condition_name,
               hash: condition_hash,
               work_hash: work_hash,
-              arity: unquote(arity)
+              arity: unquote(arity),
+              meta_refs: unquote(escaped_meta_refs)
             )
           end
         end
@@ -1435,11 +1464,16 @@ defmodule Runic do
 
     name = rewritten_opts[:name]
 
-    # Validate input/output schemas for known subcomponents
     inputs = validate_component_schema(rewritten_opts[:inputs], "state_machine", [:reactors])
     outputs = validate_component_schema(rewritten_opts[:outputs], "state_machine", [:accumulator])
 
     {rewritten_reducer, reducer_bindings} = traverse_expression(reducer, __CALLER__)
+
+    # Detect meta expressions in reducer for accumulator
+    {final_reducer, reducer_meta_refs} =
+      maybe_compile_meta_reducer(reducer, rewritten_reducer, __CALLER__)
+
+    escaped_reducer_meta_refs = escape_meta_refs(reducer_meta_refs)
 
     variable_bindings =
       (reducer_bindings ++ opts_bindings)
@@ -1450,7 +1484,21 @@ defmodule Runic do
     state_machine_hash = Components.fact_hash({init, rewritten_reducer, reactors})
     state_machine_name = name || default_component_name("state_machine", state_machine_hash)
 
-    workflow = workflow_of_state_machine(init, rewritten_reducer, reactors, state_machine_name)
+    # Build the accumulator AST
+    accumulator_ast =
+      build_state_machine_accumulator(
+        init,
+        final_reducer,
+        state_machine_name,
+        escaped_reducer_meta_refs
+      )
+
+    # Build reactor rules AST
+    reactor_rules_ast = build_reactor_rules(reactors, state_machine_name, __CALLER__)
+
+    # Build derived workflow AST
+    workflow_ast =
+      build_state_machine_workflow(accumulator_ast, reactor_rules_ast, state_machine_name)
 
     source =
       quote do
@@ -1460,18 +1508,1909 @@ defmodule Runic do
     quote do
       unquote_splicing(Enum.reverse(variable_bindings))
 
+      sm_accumulator = unquote(accumulator_ast)
+      sm_reactor_rules = unquote(reactor_rules_ast)
+
       %StateMachine{
         name: unquote(state_machine_name),
         init: unquote(init),
         reducer: unquote(rewritten_reducer),
         reactors: unquote(reactors),
-        workflow: unquote(workflow) |> Map.put(:name, unquote(state_machine_name)),
+        accumulator: sm_accumulator,
+        reactor_rules: sm_reactor_rules,
+        workflow: unquote(workflow_ast),
         source: unquote(Macro.escape(source)),
         hash: unquote(state_machine_hash),
         bindings: unquote(bindings),
         inputs: unquote(inputs),
         outputs: unquote(outputs)
       }
+    end
+  end
+
+  @doc """
+  Creates a `%Saga{}`: a sequence of transaction steps with compensating actions.
+
+  Sagas are explicit forward-then-compensate pipelines. Each transaction step
+  must have a corresponding compensate block. On failure, completed steps are
+  compensated in reverse order.
+
+  Compiles to an Accumulator (tracking saga state), forward Rules (one per
+  transaction step), and compensation Rules (one per compensate block).
+
+  ## Usage
+
+      require Runic
+
+      saga = Runic.saga name: :fulfillment do
+        transaction :reserve_inventory do
+          fn _input -> {:ok, :reserved} end
+        end
+        compensate :reserve_inventory do
+          fn %{reserve_inventory: _} -> :released end
+        end
+
+        transaction :charge_payment do
+          fn %{reserve_inventory: _} -> {:ok, :charged} end
+        end
+        compensate :charge_payment do
+          fn %{charge_payment: _} -> :refunded end
+        end
+
+        on_complete fn results -> {:saga_completed, results} end
+        on_abort fn reason, compensated -> {:saga_aborted, reason, compensated} end
+      end
+  """
+  defmacro saga(opts \\ [], do: block) do
+    {name, opts_rest} = Keyword.pop(opts, :name)
+    inputs = Keyword.get(opts_rest, :inputs)
+    outputs = Keyword.get(opts_rest, :outputs)
+
+    unless name, do: raise(ArgumentError, "Saga requires a :name option")
+
+    {transactions, compensations, on_complete, on_abort} = parse_saga_block(block)
+
+    transaction_names = Enum.map(transactions, fn {n, _} -> n end)
+
+    Enum.each(transaction_names, fn tx_name ->
+      unless Enum.any?(compensations, fn {n, _} -> n == tx_name end) do
+        raise ArgumentError,
+              "Saga #{inspect(name)}: transaction #{inspect(tx_name)} has no corresponding compensate block"
+      end
+    end)
+
+    compensation_names = Enum.map(compensations, fn {n, _} -> n end)
+
+    saga_hash =
+      Components.fact_hash(
+        {name, transaction_names, compensation_names, on_complete != nil, on_abort != nil}
+      )
+
+    step_names = transaction_names
+
+    init_ast = build_saga_init(step_names)
+
+    reducer_ast = build_saga_reducer_with_steps(transactions, compensations, step_names)
+
+    accumulator_ast = build_saga_accumulator(init_ast, reducer_ast, name)
+
+    terminal_rules_ast = build_saga_terminal_rules(on_complete, on_abort, name)
+
+    workflow_ast =
+      build_saga_workflow_simple(accumulator_ast, terminal_rules_ast, name)
+
+    source =
+      quote do
+        Runic.saga(unquote(opts), do: unquote(Macro.escape(block)))
+      end
+
+    quote do
+      saga_accumulator = unquote(accumulator_ast)
+      saga_terminal_rules = unquote(terminal_rules_ast)
+
+      %Saga{
+        name: unquote(name),
+        steps: unquote(Macro.escape(Enum.zip(transactions, compensations))),
+        on_complete: unquote(Macro.escape(on_complete)),
+        on_abort: unquote(Macro.escape(on_abort)),
+        accumulator: saga_accumulator,
+        forward_rules: saga_terminal_rules,
+        compensation_rules: [],
+        workflow: unquote(workflow_ast),
+        source: unquote(Macro.escape(source)),
+        hash: unquote(saga_hash),
+        inputs: unquote(inputs),
+        outputs: unquote(outputs)
+      }
+    end
+  end
+
+  defp parse_saga_block({:__block__, _, exprs}), do: parse_saga_exprs(exprs)
+  defp parse_saga_block(single_expr), do: parse_saga_exprs([single_expr])
+
+  defp parse_saga_exprs(exprs) do
+    transactions =
+      Enum.flat_map(exprs, fn
+        {:transaction, _, [step_name, [do: body]]} -> [{step_name, body}]
+        _ -> []
+      end)
+
+    compensations =
+      Enum.flat_map(exprs, fn
+        {:compensate, _, [step_name, [do: body]]} -> [{step_name, body}]
+        _ -> []
+      end)
+
+    on_complete =
+      Enum.find_value(exprs, fn
+        {:on_complete, _, [fn_ast]} -> fn_ast
+        _ -> nil
+      end)
+
+    on_abort =
+      Enum.find_value(exprs, fn
+        {:on_abort, _, [fn_ast]} -> fn_ast
+        _ -> nil
+      end)
+
+    {transactions, compensations, on_complete, on_abort}
+  end
+
+  defp build_saga_init(step_names) do
+    first_step = List.first(step_names)
+
+    quote do
+      fn ->
+        %{
+          status: :pending,
+          current_step: unquote(first_step),
+          results: %{},
+          failure_reason: nil,
+          compensated: [],
+          step_order: unquote(step_names)
+        }
+      end
+    end
+  end
+
+  defp build_saga_reducer_with_steps(transactions, compensations, _step_names) do
+    tx_map_entries =
+      Enum.map(transactions, fn {step_name, body} ->
+        quote do
+          {unquote(step_name), unquote(body)}
+        end
+      end)
+
+    comp_map_entries =
+      Enum.map(compensations, fn {step_name, body} ->
+        quote do
+          {unquote(step_name), unquote(body)}
+        end
+      end)
+
+    quote generated: true do
+      fn _input, state ->
+        tx_fns = Map.new([unquote_splicing(tx_map_entries)])
+        comp_fns = Map.new([unquote_splicing(comp_map_entries)])
+
+        run_saga_steps = fn run_saga_steps, current_state ->
+          case current_state.status do
+            status when status in [:pending, :running] ->
+              step_name = current_state.current_step
+
+              if step_name == nil do
+                current_state
+              else
+                tx_fn = Map.get(tx_fns, step_name)
+
+                if tx_fn do
+                  result =
+                    try do
+                      tx_fn.(current_state.results)
+                    rescue
+                      e -> {:error, e}
+                    end
+
+                  next_state =
+                    case result do
+                      {:ok, value} ->
+                        new_results = Map.put(current_state.results, step_name, value)
+                        step_order = current_state.step_order
+                        current_idx = Enum.find_index(step_order, &(&1 == step_name))
+                        next_idx = if current_idx, do: current_idx + 1, else: nil
+
+                        if next_idx && next_idx < length(step_order) do
+                          next_step = Enum.at(step_order, next_idx)
+
+                          %{
+                            current_state
+                            | results: new_results,
+                              current_step: next_step,
+                              status: :running
+                          }
+                        else
+                          %{
+                            current_state
+                            | results: new_results,
+                              current_step: nil,
+                              status: :completed
+                          }
+                        end
+
+                      {:error, reason} ->
+                        %{
+                          current_state
+                          | status: :compensating,
+                            failure_reason: {step_name, reason},
+                            current_step: nil
+                        }
+
+                      other ->
+                        new_results = Map.put(current_state.results, step_name, other)
+                        step_order = current_state.step_order
+                        current_idx = Enum.find_index(step_order, &(&1 == step_name))
+                        next_idx = if current_idx, do: current_idx + 1, else: nil
+
+                        if next_idx && next_idx < length(step_order) do
+                          next_step = Enum.at(step_order, next_idx)
+
+                          %{
+                            current_state
+                            | results: new_results,
+                              current_step: next_step,
+                              status: :running
+                          }
+                        else
+                          %{
+                            current_state
+                            | results: new_results,
+                              current_step: nil,
+                              status: :completed
+                          }
+                        end
+                    end
+
+                  run_saga_steps.(run_saga_steps, next_state)
+                else
+                  current_state
+                end
+              end
+
+            :compensating ->
+              completed_step_names = Map.keys(current_state.results)
+
+              to_compensate =
+                Enum.filter(completed_step_names, &(&1 not in current_state.compensated))
+
+              compensated_state =
+                Enum.reduce(to_compensate, current_state, fn sn, acc_state ->
+                  comp_fn = Map.get(comp_fns, sn)
+
+                  if comp_fn do
+                    try do
+                      comp_fn.(acc_state.results)
+                    rescue
+                      _ -> :compensation_error
+                    end
+                  end
+
+                  new_compensated = [sn | acc_state.compensated]
+                  all_done = Enum.all?(completed_step_names, &(&1 in new_compensated))
+
+                  if all_done do
+                    %{acc_state | compensated: new_compensated, status: :aborted}
+                  else
+                    %{acc_state | compensated: new_compensated}
+                  end
+                end)
+
+              compensated_state
+
+            _ ->
+              current_state
+          end
+        end
+
+        run_saga_steps.(run_saga_steps, state)
+      end
+    end
+  end
+
+  defp build_saga_accumulator(init_ast, reducer_ast, saga_name) do
+    acc_hash = Components.fact_hash({init_ast, reducer_ast, saga_name})
+
+    quote generated: true do
+      %Accumulator{
+        init: unquote(init_ast),
+        reducer: unquote(reducer_ast),
+        hash: unquote(acc_hash),
+        name: :"#{unquote(saga_name)}_accumulator",
+        meta_refs: []
+      }
+    end
+  end
+
+  defp build_saga_terminal_rules(on_complete, on_abort, saga_name) do
+    rules = []
+
+    rules =
+      if on_complete do
+        rules ++ [build_saga_on_complete_rule(on_complete, saga_name)]
+      else
+        rules
+      end
+
+    rules =
+      if on_abort do
+        rules ++ [build_saga_on_abort_rule(on_abort, saga_name)]
+      else
+        rules
+      end
+
+    quote do
+      [unquote_splicing(rules)]
+    end
+  end
+
+  defp build_saga_on_complete_rule(on_complete_fn, saga_name) do
+    acc_ref = :__saga_accumulator__
+
+    condition_fn =
+      quote generated: true do
+        fn _input ->
+          saga_state = state_of(unquote(acc_ref))
+          saga_state.status == :completed
+        end
+      end
+
+    condition_meta_refs = detect_meta_expressions(condition_fn)
+    rewritten_condition = rewrite_meta_refs_in_ast(condition_fn, condition_meta_refs)
+    escaped_condition_meta_refs = escape_meta_refs(condition_meta_refs)
+
+    final_condition =
+      quote generated: true do
+        fn input, var!(meta_ctx, Runic) ->
+          _ = var!(meta_ctx, Runic)
+          unquote(rewritten_condition).(input)
+        end
+      end
+
+    condition_hash = Components.fact_hash({condition_fn, saga_name, :on_complete})
+
+    reaction_fn =
+      quote generated: true do
+        fn _input ->
+          saga_state = state_of(unquote(acc_ref))
+          handler = unquote(on_complete_fn)
+          handler.(saga_state.results)
+        end
+      end
+
+    reaction_meta_refs = detect_meta_expressions(reaction_fn)
+    rewritten_reaction = rewrite_meta_refs_in_ast(reaction_fn, reaction_meta_refs)
+    escaped_reaction_meta_refs = escape_meta_refs(reaction_meta_refs)
+
+    final_reaction =
+      quote generated: true do
+        fn input, var!(meta_ctx, Runic) ->
+          _ = var!(meta_ctx, Runic)
+          unquote(rewritten_reaction).(input)
+        end
+      end
+
+    reaction_hash = Components.fact_hash({reaction_fn, saga_name, :on_complete})
+
+    quote generated: true do
+      condition =
+        Condition.new(
+          work: unquote(final_condition),
+          hash: unquote(condition_hash),
+          arity: 2,
+          meta_refs: unquote(escaped_condition_meta_refs)
+        )
+
+      reaction =
+        Step.new(
+          work: unquote(final_reaction),
+          hash: unquote(reaction_hash),
+          meta_refs: unquote(escaped_reaction_meta_refs)
+        )
+
+      rule_name = :"#{unquote(saga_name)}_on_complete"
+
+      rule_workflow =
+        Workflow.new(rule_name)
+        |> Workflow.add_step(condition)
+        |> Workflow.add_step(condition, reaction)
+
+      %Rule{
+        name: rule_name,
+        arity: 1,
+        workflow: rule_workflow,
+        hash: Components.fact_hash({unquote(condition_hash), unquote(reaction_hash)}),
+        condition_hash: condition.hash,
+        reaction_hash: reaction.hash
+      }
+    end
+  end
+
+  defp build_saga_on_abort_rule(on_abort_fn, saga_name) do
+    acc_ref = :__saga_accumulator__
+
+    condition_fn =
+      quote generated: true do
+        fn _input ->
+          saga_state = state_of(unquote(acc_ref))
+          saga_state.status == :aborted
+        end
+      end
+
+    condition_meta_refs = detect_meta_expressions(condition_fn)
+    rewritten_condition = rewrite_meta_refs_in_ast(condition_fn, condition_meta_refs)
+    escaped_condition_meta_refs = escape_meta_refs(condition_meta_refs)
+
+    final_condition =
+      quote generated: true do
+        fn input, var!(meta_ctx, Runic) ->
+          _ = var!(meta_ctx, Runic)
+          unquote(rewritten_condition).(input)
+        end
+      end
+
+    condition_hash = Components.fact_hash({condition_fn, saga_name, :on_abort})
+
+    reaction_fn =
+      quote generated: true do
+        fn _input ->
+          saga_state = state_of(unquote(acc_ref))
+          handler = unquote(on_abort_fn)
+          handler.(saga_state.failure_reason, saga_state.compensated)
+        end
+      end
+
+    reaction_meta_refs = detect_meta_expressions(reaction_fn)
+    rewritten_reaction = rewrite_meta_refs_in_ast(reaction_fn, reaction_meta_refs)
+    escaped_reaction_meta_refs = escape_meta_refs(reaction_meta_refs)
+
+    final_reaction =
+      quote generated: true do
+        fn input, var!(meta_ctx, Runic) ->
+          _ = var!(meta_ctx, Runic)
+          unquote(rewritten_reaction).(input)
+        end
+      end
+
+    reaction_hash = Components.fact_hash({reaction_fn, saga_name, :on_abort})
+
+    quote generated: true do
+      condition =
+        Condition.new(
+          work: unquote(final_condition),
+          hash: unquote(condition_hash),
+          arity: 2,
+          meta_refs: unquote(escaped_condition_meta_refs)
+        )
+
+      reaction =
+        Step.new(
+          work: unquote(final_reaction),
+          hash: unquote(reaction_hash),
+          meta_refs: unquote(escaped_reaction_meta_refs)
+        )
+
+      rule_name = :"#{unquote(saga_name)}_on_abort"
+
+      rule_workflow =
+        Workflow.new(rule_name)
+        |> Workflow.add_step(condition)
+        |> Workflow.add_step(condition, reaction)
+
+      %Rule{
+        name: rule_name,
+        arity: 1,
+        workflow: rule_workflow,
+        hash: Components.fact_hash({unquote(condition_hash), unquote(reaction_hash)}),
+        condition_hash: condition.hash,
+        reaction_hash: reaction.hash
+      }
+    end
+  end
+
+  defp build_saga_workflow_simple(accumulator_ast, terminal_rules_ast, saga_name) do
+    quote generated: true do
+      acc = unquote(accumulator_ast)
+      terminal_rules = unquote(terminal_rules_ast)
+
+      base_wrk =
+        Workflow.new(unquote(saga_name))
+        |> Workflow.add_step(acc)
+        |> Workflow.register_component(acc)
+
+      Enum.reduce(terminal_rules, base_wrk, fn rule, wrk ->
+        condition = Map.get(rule.workflow.graph.vertices, rule.condition_hash)
+        reaction = Map.get(rule.workflow.graph.vertices, rule.reaction_hash)
+
+        wrk =
+          wrk
+          |> Workflow.add_step(acc, condition)
+          |> Workflow.add_step(condition, reaction)
+          |> Workflow.register_component(rule)
+
+        wrk =
+          Enum.reduce(condition.meta_refs || [], wrk, fn meta_ref, w ->
+            Workflow.draw_meta_ref_edge(w, condition.hash, acc.hash, meta_ref)
+          end)
+
+        Enum.reduce(reaction.meta_refs || [], wrk, fn meta_ref, w ->
+          Workflow.draw_meta_ref_edge(w, reaction.hash, acc.hash, meta_ref)
+        end)
+      end)
+    end
+  end
+
+  @doc """
+  Creates an `%Aggregate{}`: a CQRS/ES aggregate that validates commands against
+  current state, produces domain events, and folds events into state.
+
+  Compiles to an Accumulator (event fold) plus Rules (command handlers).
+
+  ## Usage
+
+      require Runic
+
+      agg = Runic.aggregate name: :counter do
+        state 0
+
+        command :increment do
+          emit fn _state -> {:incremented, 1} end
+        end
+
+        command :decrement do
+          where fn state -> state > 0 end
+          emit fn _state -> {:decremented, 1} end
+        end
+
+        event {:incremented, n}, state do
+          state + n
+        end
+
+        event {:decremented, n}, state do
+          state - n
+        end
+      end
+
+  ## Options
+
+  - `:name` - Identifier for the aggregate (required)
+
+  ## DSL
+
+  - `state initial_value` - Sets the initial aggregate state
+  - `command :name do ... end` - Defines a command handler
+    - `where fn state -> bool end` - Optional guard on current state
+    - `emit fn state -> event end` - Produces domain events
+  - `event pattern, state_var do body end` - Defines an event handler (reducer clause)
+  """
+  defmacro aggregate(opts, [{:do, block}]) when is_list(opts) do
+    name = Keyword.get(opts, :name)
+
+    unless name, do: raise(ArgumentError, "Aggregate requires a :name option")
+    unless block, do: raise(ArgumentError, "Aggregate requires a do block")
+
+    {initial_state, command_handlers, event_handlers} = parse_aggregate_block(block)
+
+    # Strip AST metadata for deterministic hashing regardless of source location
+    clean_for_hash = fn ast ->
+      Macro.prewalk(ast, fn
+        {name, _meta, ctx} when is_atom(name) -> {name, [], ctx}
+        other -> other
+      end)
+    end
+
+    clean_cmd_handlers =
+      Enum.map(command_handlers, fn {n, w, e} ->
+        {n, w && clean_for_hash.(w), clean_for_hash.(e)}
+      end)
+
+    clean_evt_handlers =
+      Enum.map(event_handlers, fn {p, s, b} ->
+        {clean_for_hash.(p), clean_for_hash.(s), clean_for_hash.(b)}
+      end)
+
+    agg_hash = Components.fact_hash({name, initial_state, clean_cmd_handlers, clean_evt_handlers})
+
+    reducer_ast = build_aggregate_reducer(event_handlers)
+
+    accumulator_ast = build_aggregate_accumulator(initial_state, reducer_ast, name)
+
+    command_rules_ast = build_aggregate_command_rules(command_handlers, name)
+
+    workflow_ast = build_aggregate_workflow(accumulator_ast, command_rules_ast, name)
+
+    source =
+      quote do
+        Runic.aggregate(unquote(opts), do: unquote(Macro.escape(block)))
+      end
+
+    # Store command/event handler counts for introspection rather than raw AST
+    # (raw AST contains unresolvable variable references)
+    num_command_handlers = length(command_handlers)
+    num_event_handlers = length(event_handlers)
+
+    quote do
+      agg_accumulator = unquote(accumulator_ast)
+      agg_command_rules = unquote(command_rules_ast)
+
+      %Aggregate{
+        name: unquote(name),
+        initial_state: unquote(initial_state),
+        command_handlers: unquote(num_command_handlers),
+        event_handlers: unquote(num_event_handlers),
+        accumulator: agg_accumulator,
+        command_rules: agg_command_rules,
+        workflow: unquote(workflow_ast),
+        source: unquote(Macro.escape(source)),
+        hash: unquote(agg_hash)
+      }
+    end
+  end
+
+  defp parse_aggregate_block({:__block__, _, exprs}), do: parse_aggregate_exprs(exprs)
+  defp parse_aggregate_block(single_expr), do: parse_aggregate_exprs([single_expr])
+
+  defp parse_aggregate_exprs(exprs) do
+    initial_state =
+      Enum.find_value(exprs, fn
+        {:state, _, [value]} -> value
+        _ -> nil
+      end)
+
+    command_handlers =
+      Enum.flat_map(exprs, fn
+        {:command, _, [cmd_name, [do: cmd_block]]} ->
+          [parse_command_block(cmd_name, cmd_block)]
+
+        _ ->
+          []
+      end)
+
+    event_handlers =
+      Enum.flat_map(exprs, fn
+        {:event, _, [pattern, state_var, [do: body]]} ->
+          [{pattern, state_var, body}]
+
+        _ ->
+          []
+      end)
+
+    {initial_state, command_handlers, event_handlers}
+  end
+
+  defp parse_command_block(cmd_name, {:__block__, _, exprs}) do
+    where_fn =
+      Enum.find_value(exprs, fn
+        {:where, _, [fn_ast]} -> fn_ast
+        _ -> nil
+      end)
+
+    emit_fn =
+      Enum.find_value(exprs, fn
+        {:emit, _, [fn_ast]} -> fn_ast
+        _ -> nil
+      end) || raise(ArgumentError, "Command #{cmd_name} requires an `emit` function")
+
+    {cmd_name, where_fn, emit_fn}
+  end
+
+  defp parse_command_block(cmd_name, {:emit, _, [fn_ast]}) do
+    {cmd_name, nil, fn_ast}
+  end
+
+  defp parse_command_block(cmd_name, {:where, _, [_fn_ast]}) do
+    raise ArgumentError, "Command #{cmd_name} has a `where` but no `emit` function"
+  end
+
+  defp build_aggregate_reducer(event_handlers) do
+    # Build case clauses from event handler AST.
+    # Each event handler has {pattern, state_var, body} where pattern and state_var
+    # are raw AST nodes from the caller's context. We must reset variable contexts
+    # so they're resolved in the generated code's scope, not the caller's.
+    # We also normalize 2-element tuple patterns to explicit {:{}, [], [...]} form
+    # to prevent Elixir from interpreting {atom, value} as keyword pairs.
+    event_clauses =
+      Enum.flat_map(event_handlers, fn {pattern, state_var, body} ->
+        clean_pattern = pattern |> normalize_tuple_pattern() |> reset_var_context()
+        clean_state_var = reset_var_context(state_var)
+        clean_body = reset_var_context(body)
+
+        clause_body =
+          quote generated: true do
+            unquote(clean_state_var) = current_state
+            unquote(clean_body)
+          end
+
+        quote generated: true do
+          unquote(clean_pattern) -> unquote(clause_body)
+        end
+      end)
+
+    fallback_clause =
+      quote generated: true do
+        _ -> current_state
+      end
+
+    all_clauses = List.flatten(event_clauses ++ [fallback_clause])
+
+    # Build the case AST manually because unquote_splicing inside `case do`
+    # wraps multiple clauses in {:__block__, ...}, but case expects a plain list.
+    # Use var! to ensure the event_value variable matches the fn parameter.
+    quote generated: true do
+      fn var!(event_value, Runic), current_state ->
+        unquote(
+          {:case, [generated: true],
+           [
+             {:var!, [generated: true], [{:event_value, [generated: true], nil}, Runic]},
+             [do: all_clauses]
+           ]}
+        )
+      end
+    end
+  end
+
+  # Normalize 2-element tuple patterns {atom, value} to explicit {:{}, [], [atom, value]}
+  # AST form to prevent Elixir from treating them as keyword pairs in case clauses.
+  defp normalize_tuple_pattern({atom, value}) when is_atom(atom) do
+    {:{}, [], [atom, normalize_tuple_pattern(value)]}
+  end
+
+  defp normalize_tuple_pattern(other), do: other
+
+  # Reset variable contexts in AST to Runic so they resolve in the generated code scope
+  defp reset_var_context(ast) do
+    Macro.prewalk(ast, fn
+      {name, meta, context} when is_atom(name) and is_atom(context) ->
+        {name, Keyword.put(meta, :generated, true), Runic}
+
+      other ->
+        other
+    end)
+  end
+
+  defp build_aggregate_accumulator(initial_state, reducer_ast, agg_name) do
+    literal_init_ast =
+      quote do
+        fn -> unquote(initial_state) end
+      end
+
+    acc_hash = Components.fact_hash({literal_init_ast, reducer_ast, agg_name})
+
+    quote generated: true do
+      %Accumulator{
+        init: unquote(literal_init_ast),
+        reducer: unquote(reducer_ast),
+        hash: unquote(acc_hash),
+        name: :"#{unquote(agg_name)}_accumulator",
+        meta_refs: []
+      }
+    end
+  end
+
+  defp build_aggregate_command_rules(command_handlers, agg_name) do
+    rule_asts =
+      Enum.map(command_handlers, fn {cmd_name, where_fn, emit_fn} ->
+        build_aggregate_command_rule(cmd_name, where_fn, emit_fn, agg_name)
+      end)
+
+    quote do
+      [unquote_splicing(rule_asts)]
+    end
+  end
+
+  defp build_aggregate_command_rule(cmd_name, where_fn, emit_fn, agg_name) do
+    acc_ref = :__agg_accumulator__
+
+    condition_fn = build_aggregate_condition(cmd_name, where_fn, acc_ref)
+
+    condition_meta_refs = detect_meta_expressions(condition_fn)
+    rewritten_condition = rewrite_meta_refs_in_ast(condition_fn, condition_meta_refs)
+    escaped_condition_meta_refs = escape_meta_refs(condition_meta_refs)
+
+    # Only use arity-2 wrapper if there are actual meta_refs to resolve
+    has_condition_meta_refs = condition_meta_refs != []
+
+    final_condition =
+      if has_condition_meta_refs do
+        quote generated: true do
+          fn input, var!(meta_ctx, Runic) ->
+            _ = var!(meta_ctx, Runic)
+            unquote(rewritten_condition).(input)
+          end
+        end
+      else
+        rewritten_condition
+      end
+
+    condition_arity = if has_condition_meta_refs, do: 2, else: 1
+
+    condition_hash = Components.fact_hash({condition_fn, agg_name, cmd_name})
+
+    reaction_fn = build_aggregate_reaction(cmd_name, emit_fn, acc_ref)
+
+    reaction_meta_refs = detect_meta_expressions(reaction_fn)
+    rewritten_reaction = rewrite_meta_refs_in_ast(reaction_fn, reaction_meta_refs)
+    escaped_reaction_meta_refs = escape_meta_refs(reaction_meta_refs)
+
+    has_reaction_meta_refs = reaction_meta_refs != []
+
+    final_reaction =
+      if has_reaction_meta_refs do
+        quote generated: true do
+          fn input, var!(meta_ctx, Runic) ->
+            _ = var!(meta_ctx, Runic)
+            unquote(rewritten_reaction).(input)
+          end
+        end
+      else
+        rewritten_reaction
+      end
+
+    reaction_hash = Components.fact_hash({reaction_fn, agg_name, cmd_name})
+
+    rule_name =
+      quote do
+        :"#{unquote(agg_name)}_#{unquote(cmd_name)}"
+      end
+
+    quote generated: true do
+      cmd_rule_name = unquote(rule_name)
+
+      condition =
+        Condition.new(
+          work: unquote(final_condition),
+          hash: unquote(condition_hash),
+          arity: unquote(condition_arity),
+          meta_refs: unquote(escaped_condition_meta_refs)
+        )
+
+      reaction =
+        Step.new(
+          work: unquote(final_reaction),
+          hash: unquote(reaction_hash),
+          meta_refs: unquote(escaped_reaction_meta_refs)
+        )
+
+      rule_workflow =
+        Workflow.new(cmd_rule_name)
+        |> Workflow.add_step(condition)
+        |> Workflow.add_step(condition, reaction)
+
+      %Rule{
+        name: cmd_rule_name,
+        arity: 1,
+        workflow: rule_workflow,
+        hash: Components.fact_hash({unquote(condition_hash), unquote(reaction_hash)}),
+        condition_hash: condition.hash,
+        reaction_hash: reaction.hash
+      }
+    end
+  end
+
+  defp build_aggregate_condition(cmd_name, nil, _acc_ref) do
+    quote generated: true do
+      fn input ->
+        case input do
+          unquote(cmd_name) -> true
+          {unquote(cmd_name), _} -> true
+          _ -> false
+        end
+      end
+    end
+  end
+
+  defp build_aggregate_condition(cmd_name, where_fn, acc_ref) do
+    quote generated: true do
+      fn input ->
+        cmd_matches =
+          case input do
+            unquote(cmd_name) -> true
+            {unquote(cmd_name), _} -> true
+            _ -> false
+          end
+
+        if cmd_matches do
+          current_state = state_of(unquote(acc_ref))
+          unquote(where_fn).(current_state)
+        else
+          false
+        end
+      end
+    end
+  end
+
+  defp build_aggregate_reaction(_cmd_name, emit_fn, acc_ref) do
+    quote generated: true do
+      fn input ->
+        current_state = state_of(unquote(acc_ref))
+
+        payload =
+          case input do
+            {_, p} -> p
+            _ -> nil
+          end
+
+        emit_fn = unquote(emit_fn)
+
+        case :erlang.fun_info(emit_fn, :arity) do
+          {_, 1} -> emit_fn.(current_state)
+          {_, 2} -> emit_fn.(current_state, payload)
+          _ -> emit_fn.(current_state)
+        end
+      end
+    end
+  end
+
+  defp build_aggregate_workflow(accumulator_ast, command_rules_ast, agg_name) do
+    quote generated: true do
+      acc = unquote(accumulator_ast)
+      command_rules = unquote(command_rules_ast)
+
+      # Topology:
+      #   Root → Accumulator (receives input, initializes state, ignores non-events)
+      #   Root → Condition → Reaction → Accumulator (command handler pipeline, events fold into state)
+      # The accumulator must also be connected from root so it initializes and its state
+      # is available via state_of() meta_refs for conditions and reactions.
+      base_wrk =
+        Workflow.new(unquote(agg_name))
+        |> Workflow.add_step(acc)
+        |> Workflow.register_component(acc)
+
+      Enum.reduce(command_rules, base_wrk, fn rule, wrk ->
+        condition = Map.get(rule.workflow.graph.vertices, rule.condition_hash)
+        reaction = Map.get(rule.workflow.graph.vertices, rule.reaction_hash)
+
+        wrk =
+          wrk
+          |> Workflow.add_step(condition)
+          |> Workflow.add_step(condition, reaction)
+          |> Workflow.add_step(reaction, acc)
+          |> Workflow.register_component(rule)
+
+        wrk =
+          Enum.reduce(condition.meta_refs || [], wrk, fn meta_ref, w ->
+            Workflow.draw_meta_ref_edge(w, condition.hash, acc.hash, meta_ref)
+          end)
+
+        Enum.reduce(reaction.meta_refs || [], wrk, fn meta_ref, w ->
+          Workflow.draw_meta_ref_edge(w, reaction.hash, acc.hash, meta_ref)
+        end)
+      end)
+    end
+  end
+
+  @doc """
+  Creates a `%ProcessManager{}`: a CQRS-oriented process manager that reacts to
+  domain events, maintains coordination state, and emits commands.
+
+  Unlike Saga, ProcessManagers are event-driven and reactive rather than
+  sequential. They subscribe to event patterns from multiple sources and
+  decide what commands to issue based on accumulated state.
+
+  Compiles to an Accumulator (coordination state) plus Rules (event handlers).
+
+  ## Example
+
+      require Runic
+
+      pm = Runic.process_manager name: :fulfillment do
+        state %{order_id: nil, paid: false, shipped: false}
+
+        on {:order_submitted, order_id} do
+          update %{order_id: order_id}
+          emit {:charge_payment, order_id}
+        end
+
+        on {:payment_received, _} do
+          update %{paid: true}
+        end
+
+        on {:shipment_created, _} do
+          update %{shipped: true}
+        end
+
+        complete? fn state -> state.shipped end
+      end
+
+  ## DSL
+
+  - `state initial_value` - Sets the initial process manager state
+  - `on event_pattern do ... end` - Defines an event handler
+    - `update map` - Merges updates into the process state
+    - `emit value` - Produces a command fact as output
+  - `complete? fn state -> bool end` - Completion check (fires when state satisfies predicate)
+  - `timeout :name, duration do ... end` - Declares a timeout (scheduling is the Runner's responsibility)
+
+  ## Options
+
+  - `:name` - Identifier for the process manager (required)
+  """
+  defmacro process_manager(opts, [{:do, block}]) when is_list(opts) do
+    name = Keyword.get(opts, :name)
+    inputs = Keyword.get(opts, :inputs)
+    outputs = Keyword.get(opts, :outputs)
+
+    unless name, do: raise(ArgumentError, "ProcessManager requires a :name option")
+    unless block, do: raise(ArgumentError, "ProcessManager requires a do block")
+
+    {initial_state, event_handlers, timeout_handlers, completion_check} =
+      parse_pm_block(block)
+
+    unless initial_state do
+      raise ArgumentError, "ProcessManager #{inspect(name)} requires a `state` declaration"
+    end
+
+    # Build deterministic hash from structural properties only (not raw AST)
+    # Strip AST metadata from initial_state for deterministic hashing
+    clean_initial_state =
+      Macro.prewalk(initial_state, fn
+        {name, _meta, ctx} when is_atom(name) -> {name, [], ctx}
+        other -> other
+      end)
+
+    handler_signatures =
+      event_handlers
+      |> Enum.with_index()
+      |> Enum.map(fn {{_pattern, updates, emits}, idx} ->
+        {idx, length(updates), length(emits)}
+      end)
+
+    pm_hash =
+      Components.fact_hash(
+        {name, clean_initial_state, handler_signatures, length(timeout_handlers),
+         completion_check != nil}
+      )
+
+    accumulator_ast = build_pm_accumulator(initial_state, event_handlers, name)
+    event_rules_ast = build_pm_event_rules(event_handlers, name)
+    completion_rule_ast = build_pm_completion_rule(completion_check, name)
+    workflow_ast = build_pm_workflow(accumulator_ast, event_rules_ast, completion_rule_ast, name)
+
+    source =
+      quote do
+        Runic.process_manager(unquote(opts), do: unquote(Macro.escape(block)))
+      end
+
+    num_event_handlers = length(event_handlers)
+    num_timeout_handlers = length(timeout_handlers)
+
+    quote do
+      pm_accumulator = unquote(accumulator_ast)
+      pm_event_rules = unquote(event_rules_ast)
+      pm_completion_rule = unquote(completion_rule_ast)
+
+      %ProcessManager{
+        name: unquote(name),
+        initial_state: unquote(Macro.escape(initial_state)),
+        event_handlers: unquote(num_event_handlers),
+        timeout_handlers: unquote(num_timeout_handlers),
+        completion_check: unquote(completion_check != nil),
+        accumulator: pm_accumulator,
+        event_rules: pm_event_rules,
+        completion_rule: pm_completion_rule,
+        workflow: unquote(workflow_ast),
+        source: unquote(Macro.escape(source)),
+        hash: unquote(pm_hash),
+        inputs: unquote(inputs),
+        outputs: unquote(outputs)
+      }
+    end
+  end
+
+  defp parse_pm_block({:__block__, _, exprs}), do: parse_pm_exprs(exprs)
+  defp parse_pm_block(single_expr), do: parse_pm_exprs([single_expr])
+
+  defp parse_pm_exprs(exprs) do
+    initial_state =
+      Enum.find_value(exprs, fn
+        {:state, _, [value]} -> value
+        _ -> nil
+      end)
+
+    event_handlers =
+      Enum.flat_map(exprs, fn
+        {:on, _, [pattern, [do: handler_block]]} ->
+          [
+            {pattern, parse_pm_handler_updates(handler_block),
+             parse_pm_handler_emits(handler_block)}
+          ]
+
+        _ ->
+          []
+      end)
+
+    timeout_handlers =
+      Enum.flat_map(exprs, fn
+        {:timeout, _, [timeout_name, duration, [do: handler_block]]} ->
+          [{timeout_name, duration, handler_block}]
+
+        _ ->
+          []
+      end)
+
+    completion_check =
+      Enum.find_value(exprs, fn
+        {:complete?, _, [fn_ast]} -> fn_ast
+        _ -> nil
+      end)
+
+    {initial_state, event_handlers, timeout_handlers, completion_check}
+  end
+
+  defp parse_pm_handler_updates({:__block__, _, exprs}) do
+    Enum.flat_map(exprs, fn
+      {:update, _, [update_map]} -> [update_map]
+      _ -> []
+    end)
+  end
+
+  defp parse_pm_handler_updates({:update, _, [update_map]}), do: [update_map]
+  defp parse_pm_handler_updates(_), do: []
+
+  defp parse_pm_handler_emits({:__block__, _, exprs}) do
+    Enum.flat_map(exprs, fn
+      {:emit, _, [value]} -> [value]
+      _ -> []
+    end)
+  end
+
+  defp parse_pm_handler_emits({:emit, _, [value]}), do: [value]
+  defp parse_pm_handler_emits(_), do: []
+
+  # Build the accumulator for ProcessManager.
+  # The reducer merges update maps into state and handles timeout events.
+  defp build_pm_accumulator(initial_state, event_handlers, pm_name) do
+    # Build case clauses for each event handler's pattern → state update
+    event_clauses =
+      Enum.flat_map(event_handlers, fn {pattern, updates, _emits} ->
+        clean_pattern = pattern |> normalize_tuple_pattern() |> reset_var_context()
+
+        if updates == [] do
+          # No state update for this event — just pass through
+          []
+        else
+          # Merge all updates into state
+          merged_update =
+            case updates do
+              [single] ->
+                reset_var_context(single)
+
+              multiple ->
+                raise ArgumentError,
+                      "ProcessManager event handler should have at most one `update` call, got #{length(multiple)}"
+            end
+
+          clause_body =
+            quote generated: true do
+              Map.merge(current_state, unquote(merged_update))
+            end
+
+          quote generated: true do
+            unquote(clean_pattern) -> unquote(clause_body)
+          end
+        end
+      end)
+
+    fallback_clause =
+      quote generated: true do
+        _ -> current_state
+      end
+
+    all_clauses = List.flatten(event_clauses ++ [fallback_clause])
+
+    reducer_ast =
+      quote generated: true do
+        fn var!(event_value, Runic), current_state ->
+          unquote(
+            {:case, [generated: true],
+             [
+               {:var!, [generated: true], [{:event_value, [generated: true], nil}, Runic]},
+               [do: all_clauses]
+             ]}
+          )
+        end
+      end
+
+    literal_init_ast =
+      quote do
+        fn -> unquote(initial_state) end
+      end
+
+    acc_hash = Components.fact_hash({literal_init_ast, reducer_ast, pm_name})
+
+    quote generated: true do
+      %Accumulator{
+        init: unquote(literal_init_ast),
+        reducer: unquote(reducer_ast),
+        hash: unquote(acc_hash),
+        name: :"#{unquote(pm_name)}_accumulator",
+        meta_refs: []
+      }
+    end
+  end
+
+  # Build event handler rules for ProcessManager.
+  # Each `on` block with an `emit` compiles to a Rule that matches the event pattern
+  # and produces command facts.
+  defp build_pm_event_rules(event_handlers, pm_name) do
+    rule_asts =
+      event_handlers
+      |> Enum.with_index()
+      |> Enum.flat_map(fn {{pattern, _updates, emits}, idx} ->
+        if emits == [] do
+          # No commands to emit — no rule needed (state update is handled by accumulator)
+          []
+        else
+          [build_pm_event_rule(pattern, emits, pm_name, idx)]
+        end
+      end)
+
+    quote do
+      [unquote_splicing(rule_asts)]
+    end
+  end
+
+  defp build_pm_event_rule(pattern, emits, pm_name, idx) do
+    acc_ref = :__pm_accumulator__
+    rule_name = :"#{pm_name}_on_#{idx}"
+
+    clean_pattern = pattern |> normalize_tuple_pattern() |> reset_var_context()
+
+    # Condition: match the event pattern
+    condition_fn =
+      quote generated: true do
+        fn input ->
+          case input do
+            unquote(clean_pattern) -> true
+            _ -> false
+          end
+        end
+      end
+
+    condition_hash = Components.fact_hash({condition_fn, pm_name, idx})
+
+    # Reaction: emit commands. Use state_of() for state access in emit expressions.
+    emit_values =
+      case emits do
+        [single] ->
+          reset_var_context(single)
+
+        multiple ->
+          # Multiple emits produce a list
+          reset_var_context(multiple)
+      end
+
+    # Check if any emit references state_of()
+    reaction_fn =
+      quote generated: true do
+        fn _input ->
+          _pm_state = state_of(unquote(acc_ref))
+          unquote(emit_values)
+        end
+      end
+
+    reaction_meta_refs = detect_meta_expressions(reaction_fn)
+    rewritten_reaction = rewrite_meta_refs_in_ast(reaction_fn, reaction_meta_refs)
+    escaped_reaction_meta_refs = escape_meta_refs(reaction_meta_refs)
+
+    final_reaction =
+      if reaction_meta_refs != [] do
+        quote generated: true do
+          fn input, var!(meta_ctx, Runic) ->
+            _ = var!(meta_ctx, Runic)
+            unquote(rewritten_reaction).(input)
+          end
+        end
+      else
+        quote generated: true do
+          fn input ->
+            unquote(rewritten_reaction).(input)
+          end
+        end
+      end
+
+    reaction_hash = Components.fact_hash({reaction_fn, pm_name, idx, :reaction})
+
+    quote generated: true do
+      condition =
+        Condition.new(
+          work: unquote(condition_fn),
+          hash: unquote(condition_hash),
+          arity: 1,
+          meta_refs: []
+        )
+
+      reaction =
+        Step.new(
+          work: unquote(final_reaction),
+          hash: unquote(reaction_hash),
+          meta_refs: unquote(escaped_reaction_meta_refs)
+        )
+
+      rule_workflow =
+        Workflow.new(unquote(rule_name))
+        |> Workflow.add_step(condition)
+        |> Workflow.add_step(condition, reaction)
+
+      %Rule{
+        name: unquote(rule_name),
+        arity: 1,
+        workflow: rule_workflow,
+        hash: Components.fact_hash({unquote(condition_hash), unquote(reaction_hash)}),
+        condition_hash: condition.hash,
+        reaction_hash: reaction.hash
+      }
+    end
+  end
+
+  # Build completion rule for ProcessManager.
+  # Fires when the completion check function returns true for the current state.
+  defp build_pm_completion_rule(nil, _pm_name) do
+    quote do: nil
+  end
+
+  defp build_pm_completion_rule(completion_fn, pm_name) do
+    acc_ref = :__pm_accumulator__
+
+    condition_fn =
+      quote generated: true do
+        fn _input ->
+          pm_state = state_of(unquote(acc_ref))
+          check = unquote(completion_fn)
+          check.(pm_state)
+        end
+      end
+
+    condition_meta_refs = detect_meta_expressions(condition_fn)
+    rewritten_condition = rewrite_meta_refs_in_ast(condition_fn, condition_meta_refs)
+    escaped_condition_meta_refs = escape_meta_refs(condition_meta_refs)
+
+    final_condition =
+      quote generated: true do
+        fn input, var!(meta_ctx, Runic) ->
+          _ = var!(meta_ctx, Runic)
+          unquote(rewritten_condition).(input)
+        end
+      end
+
+    condition_hash = Components.fact_hash({condition_fn, pm_name, :complete})
+
+    reaction_fn =
+      quote generated: true do
+        fn _input ->
+          {:process_completed, unquote(pm_name)}
+        end
+      end
+
+    reaction_hash = Components.fact_hash({reaction_fn, pm_name, :complete_reaction})
+
+    quote generated: true do
+      condition =
+        Condition.new(
+          work: unquote(final_condition),
+          hash: unquote(condition_hash),
+          arity: 2,
+          meta_refs: unquote(escaped_condition_meta_refs)
+        )
+
+      reaction =
+        Step.new(
+          work: unquote(reaction_fn),
+          hash: unquote(reaction_hash),
+          meta_refs: []
+        )
+
+      rule_name = :"#{unquote(pm_name)}_complete"
+
+      rule_workflow =
+        Workflow.new(rule_name)
+        |> Workflow.add_step(condition)
+        |> Workflow.add_step(condition, reaction)
+
+      %Rule{
+        name: rule_name,
+        arity: 1,
+        workflow: rule_workflow,
+        hash: Components.fact_hash({unquote(condition_hash), unquote(reaction_hash)}),
+        condition_hash: condition.hash,
+        reaction_hash: reaction.hash
+      }
+    end
+  end
+
+  defp build_pm_workflow(accumulator_ast, event_rules_ast, completion_rule_ast, pm_name) do
+    quote generated: true do
+      acc = unquote(accumulator_ast)
+      event_rules = unquote(event_rules_ast)
+      completion_rule = unquote(completion_rule_ast)
+
+      base_wrk =
+        Workflow.new(unquote(pm_name))
+        |> Workflow.add_step(acc)
+        |> Workflow.register_component(acc)
+
+      # Wire event handler rules: conditions receive events from root,
+      # reactions produce commands as output facts
+      wrk =
+        Enum.reduce(event_rules, base_wrk, fn rule, wrk ->
+          condition = Map.get(rule.workflow.graph.vertices, rule.condition_hash)
+          reaction = Map.get(rule.workflow.graph.vertices, rule.reaction_hash)
+
+          wrk =
+            wrk
+            |> Workflow.add_step(condition)
+            |> Workflow.add_step(condition, reaction)
+            |> Workflow.register_component(rule)
+
+          wrk =
+            Enum.reduce(condition.meta_refs || [], wrk, fn meta_ref, w ->
+              Workflow.draw_meta_ref_edge(w, condition.hash, acc.hash, meta_ref)
+            end)
+
+          Enum.reduce(reaction.meta_refs || [], wrk, fn meta_ref, w ->
+            Workflow.draw_meta_ref_edge(w, reaction.hash, acc.hash, meta_ref)
+          end)
+        end)
+
+      # Wire completion rule if present
+      if completion_rule do
+        condition =
+          Map.get(completion_rule.workflow.graph.vertices, completion_rule.condition_hash)
+
+        reaction = Map.get(completion_rule.workflow.graph.vertices, completion_rule.reaction_hash)
+
+        wrk =
+          wrk
+          |> Workflow.add_step(acc, condition)
+          |> Workflow.add_step(condition, reaction)
+          |> Workflow.register_component(completion_rule)
+
+        wrk =
+          Enum.reduce(condition.meta_refs || [], wrk, fn meta_ref, w ->
+            Workflow.draw_meta_ref_edge(w, condition.hash, acc.hash, meta_ref)
+          end)
+
+        Enum.reduce(reaction.meta_refs || [], wrk, fn meta_ref, w ->
+          Workflow.draw_meta_ref_edge(w, reaction.hash, acc.hash, meta_ref)
+        end)
+      else
+        wrk
+      end
+    end
+  end
+
+  @doc """
+  Creates a `%FSM{}`: a finite state machine with discrete states and guarded transitions.
+
+  FSMs compile to an Accumulator (holding the current state atom) plus Rules
+  (one per transition, using `state_of()` to gate on current state). Entry actions
+  are additional rules that fire on state changes.
+
+  ## Example
+
+      require Runic
+
+      fsm = Runic.fsm name: :traffic_light do
+        initial_state :red
+
+        state :red do
+          on :timer, to: :green
+          on :emergency, to: :red
+          on_entry fn -> {:notify, :traffic_stopped} end
+        end
+
+        state :green do
+          on :timer, to: :yellow
+          on :emergency, to: :red
+        end
+
+        state :yellow do
+          on :timer, to: :red
+          on :emergency, to: :red
+        end
+      end
+
+  Each transition compiles to a named Rule: `:"fsm_name_from_state_on_event"`.
+  """
+  defmacro fsm(opts \\ [], do: block) do
+    {name, opts_rest} = Keyword.pop(opts, :name)
+    inputs = Keyword.get(opts_rest, :inputs)
+    outputs = Keyword.get(opts_rest, :outputs)
+
+    {initial_state, states} = parse_fsm_block(block)
+
+    state_names = Enum.map(states, fn {name, _} -> name end)
+
+    validate_fsm!(initial_state, states, state_names)
+
+    fsm_name = name || :"fsm_#{Components.fact_hash({initial_state, states})}"
+
+    fsm_hash = Components.fact_hash({initial_state, states})
+
+    accumulator_ast = build_fsm_accumulator(initial_state, fsm_name)
+
+    transition_rules_ast = build_fsm_transition_rules(states, fsm_name)
+
+    entry_rules_ast = build_fsm_entry_rules(states, fsm_name)
+
+    workflow_ast =
+      build_fsm_workflow(accumulator_ast, transition_rules_ast, entry_rules_ast, fsm_name)
+
+    states_map = Macro.escape(Map.new(states))
+
+    source =
+      quote do
+        Runic.fsm(unquote(opts), do: unquote(Macro.escape(block)))
+      end
+
+    quote do
+      fsm_accumulator = unquote(accumulator_ast)
+      fsm_transition_rules = unquote(transition_rules_ast)
+      fsm_entry_rules = unquote(entry_rules_ast)
+
+      %FSM{
+        name: unquote(fsm_name),
+        initial_state: unquote(initial_state),
+        states: unquote(states_map),
+        accumulator: fsm_accumulator,
+        transition_rules: fsm_transition_rules,
+        entry_rules: fsm_entry_rules,
+        workflow: unquote(workflow_ast),
+        source: unquote(Macro.escape(source)),
+        hash: unquote(fsm_hash),
+        inputs: unquote(inputs),
+        outputs: unquote(outputs)
+      }
+    end
+  end
+
+  defp parse_fsm_block({:__block__, _, exprs}) do
+    parse_fsm_exprs(exprs)
+  end
+
+  defp parse_fsm_block(single_expr) do
+    parse_fsm_exprs([single_expr])
+  end
+
+  defp parse_fsm_exprs(exprs) do
+    initial_state =
+      Enum.find_value(exprs, fn
+        {:initial_state, _, [state]} when is_atom(state) -> state
+        _ -> nil
+      end)
+
+    states =
+      Enum.flat_map(exprs, fn
+        {:state, _, [state_name, [do: state_block]]} when is_atom(state_name) ->
+          [{state_name, parse_state_block(state_block)}]
+
+        {:state, _, [state_name]} when is_atom(state_name) ->
+          [{state_name, %{transitions: [], on_entry: nil}}]
+
+        _ ->
+          []
+      end)
+
+    {initial_state, states}
+  end
+
+  defp parse_state_block({:__block__, _, exprs}) do
+    parse_state_exprs(exprs)
+  end
+
+  defp parse_state_block(single_expr) do
+    parse_state_exprs([single_expr])
+  end
+
+  defp parse_state_exprs(exprs) do
+    transitions =
+      Enum.flat_map(exprs, fn
+        {:on, _, [event, opts]} when is_atom(event) and is_list(opts) ->
+          target = Keyword.fetch!(opts, :to)
+          guard = Keyword.get(opts, :guard)
+          [{event, target, guard}]
+
+        _ ->
+          []
+      end)
+
+    on_entry =
+      Enum.find_value(exprs, fn
+        {:on_entry, _, [fn_ast]} -> fn_ast
+        _ -> nil
+      end)
+
+    %{transitions: transitions, on_entry: on_entry}
+  end
+
+  defp validate_fsm!(initial_state, states, state_names) do
+    unless initial_state do
+      raise ArgumentError, "FSM requires an initial_state declaration"
+    end
+
+    unless initial_state in state_names do
+      raise ArgumentError,
+            "initial_state #{inspect(initial_state)} is not a declared state. Declared states: #{inspect(state_names)}"
+    end
+
+    for {state_name, %{transitions: transitions}} <- states,
+        {_event, target, _guard} <- transitions do
+      unless target in state_names do
+        raise ArgumentError,
+              "transition target #{inspect(target)} from state #{inspect(state_name)} is not a declared state. Declared states: #{inspect(state_names)}"
+      end
+    end
+
+    seen = MapSet.new()
+
+    Enum.reduce(states, seen, fn {state_name, %{transitions: transitions}}, seen ->
+      Enum.reduce(transitions, seen, fn {event, _target, _guard}, seen ->
+        key = {state_name, event}
+
+        if MapSet.member?(seen, key) do
+          raise ArgumentError,
+                "Duplicate transition: state #{inspect(state_name)} already has a transition for event #{inspect(event)}"
+        end
+
+        MapSet.put(seen, key)
+      end)
+    end)
+
+    :ok
+  end
+
+  defp build_fsm_accumulator(initial_state, fsm_name) do
+    init_ast =
+      quote do
+        fn -> unquote(initial_state) end
+      end
+
+    reducer_ast =
+      quote do
+        fn
+          {_event, target_state}, _current_state -> target_state
+          _other, current_state -> current_state
+        end
+      end
+
+    acc_hash = Components.fact_hash({init_ast, reducer_ast, fsm_name})
+
+    quote generated: true do
+      %Accumulator{
+        init: unquote(init_ast),
+        reducer: unquote(reducer_ast),
+        hash: unquote(acc_hash),
+        name: :"#{unquote(fsm_name)}_accumulator",
+        meta_refs: []
+      }
+    end
+  end
+
+  defp build_fsm_transition_rules(states, fsm_name) do
+    rule_asts =
+      Enum.flat_map(states, fn {from_state, %{transitions: transitions}} ->
+        Enum.map(transitions, fn {event, target, guard} ->
+          build_fsm_transition_rule(from_state, event, target, guard, fsm_name)
+        end)
+      end)
+
+    quote do
+      [unquote_splicing(rule_asts)]
+    end
+  end
+
+  defp build_fsm_transition_rule(from_state, event, target, guard, fsm_name) do
+    acc_ref = :__fsm_accumulator__
+    rule_name = :"#{fsm_name}_#{from_state}_on_#{event}"
+
+    condition_fn =
+      if guard do
+        quote generated: true do
+          fn input ->
+            state_of(unquote(acc_ref)) == unquote(from_state) and
+              input == unquote(event) and
+              unquote(guard).(input)
+          end
+        end
+      else
+        quote generated: true do
+          fn input ->
+            state_of(unquote(acc_ref)) == unquote(from_state) and
+              input == unquote(event)
+          end
+        end
+      end
+
+    condition_meta_refs = detect_meta_expressions(condition_fn)
+    rewritten_condition = rewrite_meta_refs_in_ast(condition_fn, condition_meta_refs)
+    escaped_condition_meta_refs = escape_meta_refs(condition_meta_refs)
+
+    final_condition =
+      quote generated: true do
+        fn input, var!(meta_ctx, Runic) ->
+          _ = var!(meta_ctx, Runic)
+          unquote(rewritten_condition).(input)
+        end
+      end
+
+    condition_hash = Components.fact_hash({condition_fn, fsm_name, from_state, event})
+
+    reaction_fn =
+      quote generated: true do
+        fn _input -> {unquote(event), unquote(target)} end
+      end
+
+    reaction_hash = Components.fact_hash({reaction_fn, fsm_name, from_state, event, target})
+
+    quote generated: true do
+      condition =
+        Condition.new(
+          work: unquote(final_condition),
+          hash: unquote(condition_hash),
+          arity: 2,
+          meta_refs: unquote(escaped_condition_meta_refs)
+        )
+
+      reaction =
+        Step.new(
+          work: unquote(reaction_fn),
+          hash: unquote(reaction_hash),
+          meta_refs: []
+        )
+
+      rule_workflow =
+        Workflow.new(unquote(rule_name))
+        |> Workflow.add_step(condition)
+        |> Workflow.add_step(condition, reaction)
+
+      %Rule{
+        name: unquote(rule_name),
+        arity: 1,
+        workflow: rule_workflow,
+        hash: Components.fact_hash({unquote(condition_hash), unquote(reaction_hash)}),
+        condition_hash: condition.hash,
+        reaction_hash: reaction.hash
+      }
+    end
+  end
+
+  defp build_fsm_entry_rules(states, fsm_name) do
+    entry_asts =
+      states
+      |> Enum.filter(fn {_name, %{on_entry: on_entry}} -> on_entry != nil end)
+      |> Enum.map(fn {state_name, %{on_entry: on_entry_fn}} ->
+        build_fsm_entry_rule(state_name, on_entry_fn, fsm_name)
+      end)
+
+    quote do
+      [unquote_splicing(entry_asts)]
+    end
+  end
+
+  defp build_fsm_entry_rule(state_name, on_entry_fn, fsm_name) do
+    acc_ref = :__fsm_accumulator__
+    rule_name = :"#{fsm_name}_#{state_name}_entry"
+
+    condition_fn =
+      quote generated: true do
+        fn _input ->
+          state_of(unquote(acc_ref)) == unquote(state_name)
+        end
+      end
+
+    condition_meta_refs = detect_meta_expressions(condition_fn)
+    rewritten_condition = rewrite_meta_refs_in_ast(condition_fn, condition_meta_refs)
+    escaped_condition_meta_refs = escape_meta_refs(condition_meta_refs)
+
+    final_condition =
+      quote generated: true do
+        fn input, var!(meta_ctx, Runic) ->
+          _ = var!(meta_ctx, Runic)
+          unquote(rewritten_condition).(input)
+        end
+      end
+
+    condition_hash = Components.fact_hash({condition_fn, fsm_name, state_name, :entry})
+
+    reaction_fn =
+      quote generated: true do
+        fn _input -> unquote(on_entry_fn).() end
+      end
+
+    reaction_hash = Components.fact_hash({on_entry_fn, fsm_name, state_name, :entry_reaction})
+
+    quote generated: true do
+      entry_condition =
+        Condition.new(
+          work: unquote(final_condition),
+          hash: unquote(condition_hash),
+          arity: 2,
+          meta_refs: unquote(escaped_condition_meta_refs)
+        )
+
+      entry_reaction =
+        Step.new(
+          work: unquote(reaction_fn),
+          hash: unquote(reaction_hash),
+          meta_refs: []
+        )
+
+      entry_rule_workflow =
+        Workflow.new(unquote(rule_name))
+        |> Workflow.add_step(entry_condition)
+        |> Workflow.add_step(entry_condition, entry_reaction)
+
+      %Rule{
+        name: unquote(rule_name),
+        arity: 1,
+        workflow: entry_rule_workflow,
+        hash: Components.fact_hash({unquote(condition_hash), unquote(reaction_hash)}),
+        condition_hash: entry_condition.hash,
+        reaction_hash: entry_reaction.hash
+      }
+    end
+  end
+
+  defp build_fsm_workflow(accumulator_ast, transition_rules_ast, entry_rules_ast, fsm_name) do
+    quote generated: true do
+      acc = unquote(accumulator_ast)
+      transition_rules = unquote(transition_rules_ast)
+      entry_rules = unquote(entry_rules_ast)
+
+      base_wrk =
+        Workflow.new(unquote(fsm_name))
+        |> Workflow.add_step(acc)
+        |> Workflow.register_component(acc)
+
+      wrk =
+        Enum.reduce(transition_rules, base_wrk, fn rule, wrk ->
+          condition = Map.get(rule.workflow.graph.vertices, rule.condition_hash)
+          reaction = Map.get(rule.workflow.graph.vertices, rule.reaction_hash)
+
+          wrk =
+            wrk
+            |> Workflow.add_step(condition)
+            |> Workflow.add_step(condition, reaction)
+            |> Workflow.add_step(reaction, acc)
+            |> Workflow.register_component(rule)
+
+          wrk =
+            Enum.reduce(condition.meta_refs || [], wrk, fn meta_ref, w ->
+              Workflow.draw_meta_ref_edge(w, condition.hash, acc.hash, meta_ref)
+            end)
+
+          Enum.reduce(reaction.meta_refs || [], wrk, fn meta_ref, w ->
+            Workflow.draw_meta_ref_edge(w, reaction.hash, acc.hash, meta_ref)
+          end)
+        end)
+
+      Enum.reduce(entry_rules, wrk, fn rule, wrk ->
+        condition = Map.get(rule.workflow.graph.vertices, rule.condition_hash)
+        reaction = Map.get(rule.workflow.graph.vertices, rule.reaction_hash)
+
+        wrk =
+          wrk
+          |> Workflow.add_step(acc, condition)
+          |> Workflow.add_step(condition, reaction)
+          |> Workflow.register_component(rule)
+
+        wrk =
+          Enum.reduce(condition.meta_refs || [], wrk, fn meta_ref, w ->
+            Workflow.draw_meta_ref_edge(w, condition.hash, acc.hash, meta_ref)
+          end)
+
+        Enum.reduce(reaction.meta_refs || [], wrk, fn meta_ref, w ->
+          Workflow.draw_meta_ref_edge(w, reaction.hash, acc.hash, meta_ref)
+        end)
+      end)
     end
   end
 
@@ -1689,6 +3628,12 @@ defmodule Runic do
 
     {rewritten_reducer_fun, reducer_bindings} = traverse_expression(reducer_fun, __CALLER__)
 
+    # Detect context/1 meta expressions and rewrite if found
+    {final_reducer, meta_refs} =
+      maybe_compile_meta_reducer(reducer_fun, rewritten_reducer_fun, __CALLER__)
+
+    escaped_meta_refs = escape_meta_refs(meta_refs)
+
     variable_bindings =
       (reducer_bindings ++ opts_bindings)
       |> Enum.uniq()
@@ -1717,8 +3662,10 @@ defmodule Runic do
           fan_in: %FanIn{
             map: unquote(map_to_reduce),
             init: fn -> unquote(acc) end,
-            reducer: unquote(rewritten_reducer_fun),
-            hash: unquote(fan_in_hash)
+            reducer: unquote(final_reducer),
+            hash: unquote(fan_in_hash),
+            name: unquote(reduce_name),
+            meta_refs: unquote(escaped_meta_refs)
           },
           closure: unquote(closure),
           inputs: unquote(rewritten_opts[:inputs]),
@@ -1750,8 +3697,10 @@ defmodule Runic do
           fan_in: %FanIn{
             map: unquote(map_to_reduce),
             init: fn -> unquote(acc) end,
-            reducer: unquote(rewritten_reducer_fun),
-            hash: fan_in_hash
+            reducer: unquote(final_reducer),
+            hash: fan_in_hash,
+            name: reduce_name,
+            meta_refs: unquote(escaped_meta_refs)
           },
           closure: closure,
           inputs: unquote(rewritten_opts[:inputs]),
@@ -1822,6 +3771,12 @@ defmodule Runic do
 
     {rewritten_reducer_fun, reducer_bindings} = traverse_expression(reducer_fun, __CALLER__)
 
+    # Detect context/1 meta expressions and rewrite if found
+    {final_reducer, meta_refs} =
+      maybe_compile_meta_reducer(reducer_fun, rewritten_reducer_fun, __CALLER__)
+
+    escaped_meta_refs = escape_meta_refs(meta_refs)
+
     variable_bindings =
       (reducer_bindings ++ opts_bindings)
       |> Enum.uniq()
@@ -1847,12 +3802,13 @@ defmodule Runic do
         %Accumulator{
           name: unquote(accumulator_name),
           init: fn -> unquote(init) end,
-          reducer: unquote(rewritten_reducer_fun),
+          reducer: unquote(final_reducer),
           hash: unquote(accumulator_hash),
           reduce_hash: unquote(reduce_hash),
           closure: unquote(closure),
           inputs: unquote(rewritten_opts[:inputs]),
-          outputs: unquote(rewritten_opts[:outputs])
+          outputs: unquote(rewritten_opts[:outputs]),
+          meta_refs: unquote(escaped_meta_refs)
         }
       end
     else
@@ -1876,12 +3832,13 @@ defmodule Runic do
         %Accumulator{
           name: accumulator_name,
           init: fn -> unquote(init) end,
-          reducer: unquote(rewritten_reducer_fun),
+          reducer: unquote(final_reducer),
           hash: accumulator_hash,
           reduce_hash: reduce_hash,
           closure: closure,
           inputs: unquote(rewritten_opts[:inputs]),
-          outputs: unquote(rewritten_opts[:outputs])
+          outputs: unquote(rewritten_opts[:outputs]),
+          meta_refs: unquote(escaped_meta_refs)
         }
       end
     end
@@ -2063,6 +4020,87 @@ defmodule Runic do
       end
   """
   def all_facts_of(component_name_or_hash), do: doc!([component_name_or_hash])
+
+  @doc """
+  References an external runtime value by key inside Runic macros.
+
+  Used inside `step`, `condition`, `rule`, `accumulator`, `map`, and `reduce`
+  macros to declare a dependency on a value provided via `Workflow.put_run_context/2`
+  or the `:run_context` option on `react_until_satisfied/3`.
+
+  Values are scoped by component name and resolved during the prepare phase.
+  The `_global` key in `run_context` is merged into every component's context.
+
+  Resolves to `nil` when the key is not present in `run_context`.
+  Use `context/2` to provide a default instead.
+
+  ## Examples
+
+      require Runic
+      alias Runic.Workflow
+
+      step = Runic.step(fn _x -> context(:api_key) end, name: :call_llm)
+
+      rule =
+        Runic.rule name: :gated do
+          given(val: v)
+          where(v > context(:threshold))
+          then(fn %{val: v} -> {:ok, v} end)
+        end
+
+      acc = Runic.accumulator(0, fn x, s -> s + x * context(:factor) end, name: :scaled)
+
+      workflow =
+        Workflow.new()
+        |> Workflow.add(step)
+        |> Workflow.put_run_context(%{call_llm: %{api_key: "sk-..."}})
+
+  Dot access is supported for map-valued context keys:
+
+      Runic.step(fn x -> x + context(:config).pool_size end, name: :pooled)
+  """
+  def context(key), do: doc!([key])
+
+  @doc """
+  References an external runtime value by key with a default fallback.
+
+  Behaves like `context/1` but uses the provided default when the key is not
+  present in `run_context`. The default can be a literal value or a zero-arity
+  function that is called lazily when needed.
+
+  Keys with defaults are not reported as missing by `Workflow.validate_run_context/2`
+  and appear as `{:optional, default}` in `Workflow.required_context_keys/1`.
+
+  Defaults are embedded in the compiled closure and participate in content
+  hashing — two components with different defaults produce different hashes.
+
+  ## Examples
+
+      require Runic
+
+      # Literal default
+      step = Runic.step(fn _x -> context(:model, default: "gpt-4") end, name: :call_llm)
+
+      # Function default — called lazily when key is missing
+      step = Runic.step(
+        fn _x -> context(:api_key, default: fn -> System.get_env("API_KEY") end) end,
+        name: :call_llm
+      )
+
+      # In rule where clauses
+      rule =
+        Runic.rule name: :default_rule do
+          given(val: v)
+          where(v > context(:threshold, default: 100))
+          then(fn %{val: v} -> {:over, v} end)
+        end
+
+      # In accumulator reducers
+      acc = Runic.accumulator(0, fn x, s -> s + x * context(:factor, default: 1) end,
+        name: :scaled
+      )
+  """
+  def context(key, opts), do: doc!([key, opts])
 
   defp doc!(_) do
     raise "these Runic meta APIs should not be invoked directly, " <>
@@ -2333,181 +4371,357 @@ defmodule Runic do
     end)
   end
 
-  defp workflow_of_state_machine(init, reducer, reactors, name) do
-    accumulator = accumulator_of_state_machine(init, reducer)
+  # =============================================================================
+  # StateMachine Compilation Helpers
+  # =============================================================================
 
-    workflow_ast =
-      reducer
-      |> build_reducer_workflow_ast(accumulator, name)
-      |> maybe_add_reactors(reactors, accumulator)
+  defp build_state_machine_accumulator({:fn, _, _} = init, reducer, sm_name, meta_refs) do
+    acc_hash = Components.fact_hash({init, reducer, sm_name})
 
     quote generated: true do
-      unquote(workflow_ast)
-    end
-  end
-
-  defp accumulator_of_state_machine({:fn, _, _} = init, reducer) do
-    quote do
       %Accumulator{
         init: unquote(init),
         reducer: unquote(reducer),
-        hash: unquote(Components.fact_hash({init, reducer}))
+        hash: unquote(acc_hash),
+        name: :"#{unquote(sm_name)}_accumulator",
+        meta_refs: unquote(meta_refs)
       }
     end
   end
 
-  defp accumulator_of_state_machine({:&, _, _} = init, reducer) do
-    quote do
+  defp build_state_machine_accumulator({:&, _, _} = init, reducer, sm_name, meta_refs) do
+    acc_hash = Components.fact_hash({init, reducer, sm_name})
+
+    quote generated: true do
       %Accumulator{
         init: unquote(init),
         reducer: unquote(reducer),
-        hash: unquote(Components.fact_hash({init, reducer}))
+        hash: unquote(acc_hash),
+        name: :"#{unquote(sm_name)}_accumulator",
+        meta_refs: unquote(meta_refs)
       }
     end
   end
 
-  defp accumulator_of_state_machine({:{}, _, _} = init, reducer) do
+  defp build_state_machine_accumulator({:{}, _, _} = init, reducer, sm_name, meta_refs) do
     init_fun =
       quote do
         {m, f, a} = unquote(init)
         Function.capture(m, f, a)
       end
 
-    quote do
+    acc_hash = Components.fact_hash({init, reducer, sm_name})
+
+    quote generated: true do
       %Accumulator{
         init: unquote(init_fun),
         reducer: unquote(reducer),
-        hash: unquote(Components.fact_hash({init, reducer}))
+        hash: unquote(acc_hash),
+        name: :"#{unquote(sm_name)}_accumulator",
+        meta_refs: unquote(meta_refs)
       }
     end
   end
 
-  defp accumulator_of_state_machine(literal_init, reducer) do
+  defp build_state_machine_accumulator(literal_init, reducer, sm_name, meta_refs) do
     literal_init_ast =
       quote do
         fn -> unquote(literal_init) end
       end
 
-    quote do
+    acc_hash = Components.fact_hash({literal_init_ast, reducer, sm_name})
+
+    quote generated: true do
       %Accumulator{
         init: unquote(literal_init_ast),
         reducer: unquote(reducer),
-        hash: unquote(Components.fact_hash({literal_init_ast, reducer}))
+        hash: unquote(acc_hash),
+        name: :"#{unquote(sm_name)}_accumulator",
+        meta_refs: unquote(meta_refs)
       }
     end
   end
 
-  defp build_reducer_workflow_ast({:fn, _, clauses} = _reducer, accumulator, name) do
-    Enum.reduce(
-      clauses,
-      quote generated: true do
-        Workflow.new(unquote(name))
-      end,
-      fn
-        {:->, _meta, _} = clause, wrk ->
-          state_cond_fun =
-            case clause do
-              {:->, _, [[{:when, _, _} = lhs], _rhs]} ->
-                quote generated: true do
-                  fn
-                    unquote(lhs) -> true
-                    _, _ -> false
-                  end
-                end
+  defp build_reactor_rules(nil, _sm_name, _env), do: quote(do: [])
 
-              {:->, _meta, [lhs, _rhs]} ->
-                quote generated: true do
-                  fn
-                    unquote_splicing(lhs) -> true
-                    _, _ -> false
-                  end
-                end
-            end
+  defp build_reactor_rules(reactors, sm_name, env) when is_list(reactors) do
+    reactor_asts =
+      reactors
+      |> Enum.with_index()
+      |> Enum.map(fn
+        # Named reactor: {name, fn ... end}
+        {{name, reactor_fn}, _idx} when is_atom(name) ->
+          build_single_reactor_rule(reactor_fn, sm_name, name, env)
 
-          hash_of_ast = Components.fact_hash({state_cond_fun, accumulator})
-
-          state_condition =
-            quote generated: true do
-              StateCondition.new(
-                unquote(state_cond_fun),
-                Map.get(unquote(accumulator), :hash),
-                unquote(hash_of_ast)
-              )
-            end
-
-          # arity_check =
-          #   quote do
-          #     Condition.new(Components.is_of_arity?(1))
-          #   end
-
-          quote generated: true do
-            unquote(wrk)
-            |> Workflow.add_step(unquote(state_condition))
-            # |> Workflow.add_step(unquote(arity_check))
-            # |> Workflow.add_step(unquote(arity_check), unquote(state_condition))
-            |> Workflow.add_step(unquote(state_condition), unquote(accumulator))
-          end
-      end
-    )
-  end
-
-  defp maybe_add_reactors(workflow_ast, nil, _accumulator), do: workflow_ast
-
-  defp maybe_add_reactors(workflow_ast, reactors, accumulator) do
-    Enum.reduce(reactors, workflow_ast, fn
-      {:fn, _meta, [{:->, _, [[lhs], _rhs]}]} = reactor, wrk ->
-        memory_assertion_fun =
-          quote generated: true do
-            fn workflow, _fact ->
-              last_known_state = StateMachine.last_known_state(unquote(accumulator), workflow)
-
-              check = fn
-                unquote(lhs) -> true
-                _ -> false
-              end
-
-              check.(last_known_state)
-            end
-          end
-
-        memory_assertion_ast_hash = Components.fact_hash(memory_assertion_fun)
-
-        memory_assertion =
-          quote generated: true do
-            MemoryAssertion.new(
-              memory_assertion: unquote(memory_assertion_fun),
-              state_hash: Map.get(unquote(accumulator), :hash),
-              hash: unquote(memory_assertion_ast_hash)
-            )
-          end
-
-        state_reaction = reactor_ast_of(reactor, accumulator, Components.arity_of(reactor))
-
-        quote generated: true do
-          unquote(wrk)
-          |> Workflow.add_step(unquote(memory_assertion))
-          |> Workflow.add_step(unquote(memory_assertion), unquote(state_reaction))
-        end
-    end)
-  end
-
-  defp reactor_ast_of({:fn, _meta, [{:->, _, [[lhs], rhs]}]}, accumulator, 1 = _arity) do
-    reactor_ast =
-      quote do
-        fn
-          unquote(lhs) -> unquote(rhs)
-          _otherwise -> {:error, :no_match_of_lhs_in_reactor_fn}
-        end
-      end
+        # Unnamed reactor: fn ... end
+        {reactor_fn, idx} ->
+          build_single_reactor_rule(reactor_fn, sm_name, idx, env)
+      end)
 
     quote do
-      StateReaction.new(
-        work: unquote(reactor_ast),
-        state_hash: Map.get(unquote(accumulator), :hash),
-        hash: unquote(Components.fact_hash(reactor_ast)),
+      [unquote_splicing(reactor_asts)]
+    end
+  end
+
+  defp build_single_reactor_rule(
+         {:fn, _, [{:->, _, [[lhs], rhs]}]},
+         sm_name,
+         rule_name_or_idx,
+         _env
+       ) do
+    # Use a placeholder atom for state_of target; at connect time, the meta_ref
+    # edges will resolve by the accumulator's actual name
+    acc_ref = :__sm_accumulator__
+
+    # Build condition: check state_of(accumulator) matches the reactor's pattern
+    condition_fn =
+      quote generated: true do
+        fn _input ->
+          case state_of(unquote(acc_ref)) do
+            unquote(lhs) -> true
+            _ -> false
+          end
+        end
+      end
+
+    # Detect meta expressions in the condition (state_of)
+    condition_meta_refs = detect_meta_expressions(condition_fn)
+    rewritten_condition = rewrite_meta_refs_in_ast(condition_fn, condition_meta_refs)
+    escaped_condition_meta_refs = escape_meta_refs(condition_meta_refs)
+
+    # Wrap condition to be arity-2 (input, meta_ctx)
+    final_condition =
+      quote generated: true do
+        fn input, var!(meta_ctx, Runic) ->
+          _ = var!(meta_ctx, Runic)
+          unquote(rewritten_condition).(input)
+        end
+      end
+
+    condition_hash = Components.fact_hash({condition_fn, sm_name})
+
+    # Build reaction: run the reactor function with state
+    reaction_fn =
+      quote generated: true do
+        fn _input ->
+          case state_of(unquote(acc_ref)) do
+            unquote(lhs) -> unquote(rhs)
+            _ -> nil
+          end
+        end
+      end
+
+    # Detect meta expressions in the reaction (state_of)
+    reaction_meta_refs = detect_meta_expressions(reaction_fn)
+    rewritten_reaction = rewrite_meta_refs_in_ast(reaction_fn, reaction_meta_refs)
+    escaped_reaction_meta_refs = escape_meta_refs(reaction_meta_refs)
+
+    # Wrap reaction to be arity-2 (input, meta_ctx)
+    final_reaction =
+      quote generated: true do
+        fn input, var!(meta_ctx, Runic) ->
+          _ = var!(meta_ctx, Runic)
+          unquote(rewritten_reaction).(input)
+        end
+      end
+
+    reaction_hash = Components.fact_hash({reaction_fn, sm_name})
+
+    # Build the rule name: atom if given, or derive from sm_name at runtime
+    rule_name_ast = reactor_rule_name_ast(sm_name, rule_name_or_idx)
+
+    # Build condition and step, then assemble rule
+    quote generated: true do
+      sm_rule_name = unquote(rule_name_ast)
+
+      condition =
+        Condition.new(
+          work: unquote(final_condition),
+          hash: unquote(condition_hash),
+          arity: 2,
+          meta_refs: unquote(escaped_condition_meta_refs)
+        )
+
+      reaction =
+        Step.new(
+          work: unquote(final_reaction),
+          hash: unquote(reaction_hash),
+          meta_refs: unquote(escaped_reaction_meta_refs)
+        )
+
+      rule_workflow =
+        Workflow.new(sm_rule_name)
+        |> Workflow.add_step(condition)
+        |> Workflow.add_step(condition, reaction)
+
+      %Rule{
+        name: sm_rule_name,
         arity: 1,
-        ast: unquote(Macro.escape(reactor_ast))
-      )
+        workflow: rule_workflow,
+        hash: Components.fact_hash({unquote(condition_hash), unquote(reaction_hash)}),
+        condition_hash: condition.hash,
+        reaction_hash: reaction.hash
+      }
+    end
+  end
+
+  # Handle multi-clause reactor fns
+  defp build_single_reactor_rule({:fn, _, clauses}, sm_name, rule_name_or_idx, _env)
+       when length(clauses) > 1 do
+    acc_ref = :__sm_accumulator__
+
+    # Build a condition that checks if any clause matches
+    match_clauses =
+      Enum.map(clauses, fn {:->, _, [[lhs], _rhs]} ->
+        quote generated: true do
+          unquote(lhs) -> true
+        end
+      end)
+
+    fallback_clause =
+      quote generated: true do
+        _ -> false
+      end
+
+    all_clauses = List.flatten(match_clauses) ++ [fallback_clause]
+
+    condition_fn =
+      quote generated: true do
+        fn _input ->
+          case state_of(unquote(acc_ref)) do
+            (unquote_splicing(all_clauses))
+          end
+        end
+      end
+
+    condition_meta_refs = detect_meta_expressions(condition_fn)
+    rewritten_condition = rewrite_meta_refs_in_ast(condition_fn, condition_meta_refs)
+    escaped_condition_meta_refs = escape_meta_refs(condition_meta_refs)
+
+    final_condition =
+      quote generated: true do
+        fn input, var!(meta_ctx, Runic) ->
+          _ = var!(meta_ctx, Runic)
+          unquote(rewritten_condition).(input)
+        end
+      end
+
+    condition_hash = Components.fact_hash({condition_fn, sm_name})
+
+    # Build reaction clauses
+    reaction_clauses =
+      Enum.map(clauses, fn {:->, _, [[lhs], rhs]} ->
+        quote generated: true do
+          unquote(lhs) -> unquote(rhs)
+        end
+      end)
+
+    reaction_fallback =
+      quote generated: true do
+        _ -> {:error, :no_match_of_lhs_in_reactor_fn}
+      end
+
+    all_reaction_clauses = List.flatten(reaction_clauses) ++ [reaction_fallback]
+
+    reaction_fn =
+      quote generated: true do
+        fn _input ->
+          case state_of(unquote(acc_ref)) do
+            (unquote_splicing(all_reaction_clauses))
+          end
+        end
+      end
+
+    reaction_meta_refs = detect_meta_expressions(reaction_fn)
+    rewritten_reaction = rewrite_meta_refs_in_ast(reaction_fn, reaction_meta_refs)
+    escaped_reaction_meta_refs = escape_meta_refs(reaction_meta_refs)
+
+    final_reaction =
+      quote generated: true do
+        fn input, var!(meta_ctx, Runic) ->
+          _ = var!(meta_ctx, Runic)
+          unquote(rewritten_reaction).(input)
+        end
+      end
+
+    reaction_hash = Components.fact_hash({reaction_fn, sm_name})
+
+    rule_name_ast = reactor_rule_name_ast(sm_name, rule_name_or_idx)
+
+    quote generated: true do
+      sm_rule_name = unquote(rule_name_ast)
+
+      condition =
+        Condition.new(
+          work: unquote(final_condition),
+          hash: unquote(condition_hash),
+          arity: 2,
+          meta_refs: unquote(escaped_condition_meta_refs)
+        )
+
+      reaction =
+        Step.new(
+          work: unquote(final_reaction),
+          hash: unquote(reaction_hash),
+          meta_refs: unquote(escaped_reaction_meta_refs)
+        )
+
+      rule_workflow =
+        Workflow.new(sm_rule_name)
+        |> Workflow.add_step(condition)
+        |> Workflow.add_step(condition, reaction)
+
+      %Rule{
+        name: sm_rule_name,
+        arity: 1,
+        workflow: rule_workflow,
+        hash: Components.fact_hash({unquote(condition_hash), unquote(reaction_hash)}),
+        condition_hash: condition.hash,
+        reaction_hash: reaction.hash
+      }
+    end
+  end
+
+  # Generates the rule name AST. If rule_name_or_idx is an atom, use it directly.
+  # If it's an integer index, derive the name from sm_name at runtime.
+  defp reactor_rule_name_ast(_sm_name, name) when is_atom(name) do
+    quote do: unquote(name)
+  end
+
+  defp reactor_rule_name_ast(sm_name, idx) when is_integer(idx) do
+    quote do: :"#{unquote(sm_name)}_reactor_#{unquote(idx)}"
+  end
+
+  defp build_state_machine_workflow(accumulator_ast, reactor_rules_ast, sm_name) do
+    quote generated: true do
+      acc = unquote(accumulator_ast)
+      reactor_rules = unquote(reactor_rules_ast)
+
+      base_wrk =
+        Workflow.new(unquote(sm_name))
+        |> Workflow.add_step(acc)
+        |> Workflow.register_component(acc)
+
+      Enum.reduce(reactor_rules, base_wrk, fn rule, wrk ->
+        condition = Map.get(rule.workflow.graph.vertices, rule.condition_hash)
+        reaction = Map.get(rule.workflow.graph.vertices, rule.reaction_hash)
+
+        wrk =
+          wrk
+          |> Workflow.add_step(acc, condition)
+          |> Workflow.add_step(condition, reaction)
+          |> Workflow.register_component(rule)
+
+        # Create meta_ref edges pointing to the accumulator for state_of() resolution
+        wrk =
+          Enum.reduce(condition.meta_refs || [], wrk, fn meta_ref, w ->
+            Workflow.draw_meta_ref_edge(w, condition.hash, acc.hash, meta_ref)
+          end)
+
+        Enum.reduce(reaction.meta_refs || [], wrk, fn meta_ref, w ->
+          Workflow.draw_meta_ref_edge(w, reaction.hash, acc.hash, meta_ref)
+        end)
+      end)
     end
   end
 
@@ -3321,7 +5535,7 @@ defmodule Runic do
          reaction_meta_refs
        ) do
     reaction_ast_hash = Components.fact_hash(reaction)
-    escaped_reaction_meta_refs = Macro.escape(reaction_meta_refs)
+    escaped_reaction_meta_refs = escape_meta_refs(reaction_meta_refs)
 
     reaction_step =
       quote do
@@ -3333,7 +5547,7 @@ defmodule Runic do
       end
 
     condition_ast_hash = Components.fact_hash(condition)
-    escaped_condition_meta_refs = Macro.escape(condition_meta_refs)
+    escaped_condition_meta_refs = escape_meta_refs(condition_meta_refs)
 
     condition_node =
       quote do
@@ -3381,7 +5595,8 @@ defmodule Runic do
     :latest_value_of,
     :latest_fact_of,
     :all_values_of,
-    :all_facts_of
+    :all_facts_of,
+    :context
   ]
 
   @doc false
@@ -3415,6 +5630,29 @@ defmodule Runic do
 
       :not_meta ->
         {node, acc}
+    end
+  end
+
+  # Handle 2-arity context/2 with opts (e.g., context(:key, default: "value"))
+  defp collect_meta_ref({:context, _, [target, opts]} = node, acc)
+       when is_atom(target) and is_list(opts) do
+    existing = find_ref_by_target(acc, target, :context)
+
+    unless existing do
+      context_key = build_context_key(target, :context)
+      default = Keyword.get(opts, :default)
+
+      ref = %{
+        kind: :context,
+        target: target,
+        field_path: [],
+        context_key: context_key,
+        default: default
+      }
+
+      {node, [ref | acc]}
+    else
+      {node, acc}
     end
   end
 
@@ -3470,6 +5708,17 @@ defmodule Runic do
     {:ok, :state_of, target, []}
   end
 
+  # Base case: context(:key)
+  defp extract_meta_expression_with_fields({:context, _, [target]}) do
+    {:ok, :context, target, []}
+  end
+
+  # Base case: context(:key, default: value)
+  defp extract_meta_expression_with_fields({:context, _, [target, opts]})
+       when is_atom(target) and is_list(opts) do
+    {:ok, :context, target, []}
+  end
+
   # For other meta expression kinds (they don't typically have field access, but handle for completeness)
   defp extract_meta_expression_with_fields({kind, _, [target]})
        when kind in @meta_expression_kinds do
@@ -3493,6 +5742,8 @@ defmodule Runic do
       end
     end)
   end
+
+  defp build_context_key(target, :context) when is_atom(target), do: target
 
   defp build_context_key(target, kind) when is_atom(target) do
     suffix =
@@ -3538,6 +5789,29 @@ defmodule Runic do
             node
           end
 
+        # context(:key).field - dot access on context expression
+        {{:., dot_meta, [{:context, _, [target]}, field]}, call_meta, []} ->
+          ref = find_ref_by_target(meta_refs, target, :context)
+
+          if ref do
+            map_get = quote(do: Map.get(unquote(meta_ctx_var), unquote(ref.context_key), %{}))
+            {{:., dot_meta, [map_get, field]}, call_meta, []}
+          else
+            node
+          end
+
+        # context(:key, default: val).field - dot access on context/2 expression
+        {{:., dot_meta, [{:context, _, [target, _opts]}, field]}, call_meta, []}
+        when is_atom(target) ->
+          ref = find_ref_by_target(meta_refs, target, :context)
+
+          if ref do
+            map_get = quote(do: Map.get(unquote(meta_ctx_var), unquote(ref.context_key), %{}))
+            {{:., dot_meta, [map_get, field]}, call_meta, []}
+          else
+            node
+          end
+
         # state_of(:x) without field access
         {:state_of, _, [target]} ->
           ref = find_ref_by_target(meta_refs, target, :state_of)
@@ -3545,6 +5819,28 @@ defmodule Runic do
           if ref do
             # Build: Map.get(meta_ctx, :context_key)
             quote(do: Map.get(unquote(meta_ctx_var), unquote(ref.context_key)))
+          else
+            node
+          end
+
+        # context(:key, default: val) with default — 2-arity form
+        {:context, _, [target, _opts]} when is_atom(target) ->
+          ref = find_ref_by_target(meta_refs, target, :context)
+
+          if ref do
+            value_expr = quote(do: Map.get(unquote(meta_ctx_var), unquote(ref.context_key)))
+            apply_default_expr(value_expr, ref)
+          else
+            node
+          end
+
+        # context(:key) without field access
+        {:context, _, [target]} when is_atom(target) ->
+          ref = find_ref_by_target(meta_refs, target, :context)
+
+          if ref do
+            value_expr = quote(do: Map.get(unquote(meta_ctx_var), unquote(ref.context_key)))
+            apply_default_expr(value_expr, ref)
           else
             node
           end
@@ -3563,6 +5859,107 @@ defmodule Runic do
           other
       end
     end)
+  end
+
+  # Escapes meta_refs for embedding in generated code.
+  # Handles function AST defaults by injecting them directly instead of double-escaping.
+  defp escape_meta_refs(meta_refs) do
+    refs_with_escaped_defaults =
+      Enum.map(meta_refs, fn ref ->
+        case Map.get(ref, :default) do
+          {:fn, _, _} = fn_ast ->
+            escaped_ref = ref |> Map.delete(:default) |> Macro.escape()
+
+            quote generated: true do
+              Map.put(unquote(escaped_ref), :default, unquote(fn_ast))
+            end
+
+          _ ->
+            Macro.escape(ref)
+        end
+      end)
+
+    refs_with_escaped_defaults
+  end
+
+  defp apply_default_expr(value_expr, ref) do
+    default = Map.get(ref, :default)
+
+    case default do
+      nil ->
+        value_expr
+
+      # Function AST: fn -> ... end — inject and call at runtime
+      {:fn, _, _} = fn_ast ->
+        quote generated: true do
+          case unquote(value_expr) do
+            nil -> unquote(fn_ast).()
+            val -> val
+          end
+        end
+
+      # Already-compiled function (e.g., from runtime meta_ref construction)
+      default when is_function(default) ->
+        quote generated: true do
+          case unquote(value_expr) do
+            nil -> unquote(Macro.escape(default)).()
+            val -> val
+          end
+        end
+
+      # Literal value
+      default ->
+        quote generated: true do
+          case unquote(value_expr) do
+            nil -> unquote(Macro.escape(default))
+            val -> val
+          end
+        end
+    end
+  end
+
+  # Detects context/1 meta expressions in a step or condition's work function AST.
+  # If found, rewrites the work function to be arity-2 (input, meta_ctx) with
+  # meta expression references resolved from the meta context map.
+  # Returns {rewritten_work_ast, meta_refs_list}.
+  defp maybe_compile_meta_work(work_ast, rewritten_work, _env) do
+    meta_refs = detect_meta_expressions(work_ast)
+
+    if meta_refs != [] do
+      rewritten = rewrite_meta_refs_in_ast(rewritten_work, meta_refs)
+
+      wrapped =
+        quote generated: true do
+          fn input, var!(meta_ctx, Runic) ->
+            _ = var!(meta_ctx, Runic)
+            unquote(rewritten).(input)
+          end
+        end
+
+      {wrapped, meta_refs}
+    else
+      {rewritten_work, []}
+    end
+  end
+
+  defp maybe_compile_meta_reducer(reducer_ast, rewritten_reducer, _env) do
+    meta_refs = detect_meta_expressions(reducer_ast)
+
+    if meta_refs != [] do
+      rewritten = rewrite_meta_refs_in_ast(rewritten_reducer, meta_refs)
+
+      wrapped =
+        quote generated: true do
+          fn value, acc, var!(meta_ctx, Runic) ->
+            _ = var!(meta_ctx, Runic)
+            unquote(rewritten).(value, acc)
+          end
+        end
+
+      {wrapped, meta_refs}
+    else
+      {rewritten_reducer, []}
+    end
   end
 
   @doc false
@@ -3759,7 +6156,7 @@ defmodule Runic do
          reaction_meta_refs
        ) do
     reaction_ast_hash = Components.fact_hash(reaction_fn)
-    escaped_reaction_meta_refs = Macro.escape(reaction_meta_refs)
+    escaped_reaction_meta_refs = escape_meta_refs(reaction_meta_refs)
 
     reaction_step =
       quote do

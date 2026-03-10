@@ -187,7 +187,6 @@ defmodule Runic.Workflow.Serializers.DOT do
   defp node_style(%Workflow.Reduce{}), do: {"component", "#234e52", "white"}
   defp node_style(%Workflow.StateMachine{}), do: {"cylinder", "#44337a", "white"}
   defp node_style(%Workflow.Conjunction{}), do: {"diamond", "#5a3e1b", "white"}
-  defp node_style(%Workflow.MemoryAssertion{}), do: {"trapezium", "#2d3748", "white"}
   defp node_style(%Workflow.Fact{}), do: {"ellipse", "#1e3a5f", "white"}
   defp node_style(_), do: {"box", "#2d3748", "white"}
 

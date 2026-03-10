@@ -80,6 +80,12 @@ defmodule Runic.Runner do
 
   @doc """
   Feeds input to a running workflow.
+
+  ## Options
+
+  - `:run_context` - A map of external values keyed by component name, made available
+    to components that use `context/1` expressions. Supports a `:_global` key for
+    values available to all components.
   """
   def run(runner, workflow_id, input, opts \\ []) do
     case lookup(runner, workflow_id) do

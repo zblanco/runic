@@ -9,7 +9,7 @@ defprotocol Runic.Workflow.Activator do
   Some node types have non-standard activation patterns:
 
   - **FanOut** emits multiple facts, each activating all downstream nodes
-  - **Condition/Conjunction/StateCondition/MemoryAssertion** activate via
+  - **Condition/Conjunction** activate via
     `prepare_next_runnables` after a satisfied match
 
   Nodes that implement this protocol override the default activation logic.

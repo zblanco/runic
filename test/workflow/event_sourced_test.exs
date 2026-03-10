@@ -286,8 +286,8 @@ defmodule Runic.Workflow.EventSourcedTest do
     end
   end
 
-  describe "StateCondition event-sourced execute" do
-    test "state machine accumulator produces events with StateCondition" do
+  describe "StateMachine event-sourced execute" do
+    test "state machine accumulator produces events" do
       sm =
         Runic.state_machine(
           name: :counter,
@@ -311,7 +311,7 @@ defmodule Runic.Workflow.EventSourcedTest do
       assert ActivationConsumed in event_types
     end
 
-    test "StateCondition produces events at node level" do
+    test "state machine produces events at node level" do
       sm =
         Runic.state_machine(
           name: :counter2,
@@ -321,15 +321,15 @@ defmodule Runic.Workflow.EventSourcedTest do
 
       workflow = Workflow.new() |> Workflow.add(sm)
 
-      # Feed input and first react to activate conditions
+      # Feed input and react - accumulator processes the input
       w = Workflow.react(workflow, 5)
-      # Verify the workflow progressed (accumulator was activated)
-      assert Workflow.is_runnable?(w)
+      # Verify the workflow produced output (accumulator state)
+      assert 5 in Workflow.raw_productions(w)
     end
   end
 
-  describe "StateReaction event-sourced execute" do
-    test "state machine with reactor fires across react cycles" do
+  describe "StateMachine reactor event-sourced execute" do
+    test "state machine with reactor fires when state matches pattern" do
       sm =
         Runic.state_machine(
           name: :potato,
@@ -343,19 +343,19 @@ defmodule Runic.Workflow.EventSourcedTest do
               state
           end,
           reactors: [
-            fn %{state: :locked} -> {:error, :locked} end
+            fn %{state: :unlocked} -> :access_granted end
           ]
         )
 
-      # Use the inner workflow and multi-cycle approach like existing tests
-      w =
-        sm.workflow
-        |> Workflow.plan_eagerly({:unlock, "potato"})
-        |> Workflow.react()
+      # Reactor fires when the state matches the reactor's pattern
+      wrk =
+        Workflow.new()
+        |> Workflow.add(sm)
+        |> Workflow.react_until_satisfied({:unlock, "potato"})
 
-      prods = Workflow.raw_productions(w)
-      # After first cycle: accumulator state updated + locked reactor fires (on initial state)
-      assert {:error, :locked} in prods
+      prods = Workflow.raw_productions(wrk)
+      # After unlock: state becomes :unlocked, reactor matches and fires
+      assert :access_granted in prods
     end
   end
 

@@ -75,9 +75,6 @@ Runic provides `Invokable` implementations for all core node types:
 | `Runic.Workflow.Condition` | `:match` | Boolean predicate check |
 | `Runic.Workflow.Step` | `:execute` | Transform input fact to output fact |
 | `Runic.Workflow.Conjunction` | `:match` | Logical AND of multiple conditions |
-| `Runic.Workflow.MemoryAssertion` | `:match` | Check for facts in workflow memory |
-| `Runic.Workflow.StateCondition` | `:match` | Check accumulator state |
-| `Runic.Workflow.StateReaction` | `:execute` | Produce facts based on accumulator state |
 | `Runic.Workflow.Accumulator` | `:execute` | Stateful reducer across invocations |
 | `Runic.Workflow.Join` | `:execute` | Wait for multiple parent facts before firing |
 | `Runic.Workflow.FanOut` | `:execute` | Spread enumerable into parallel branches |
