@@ -226,6 +226,11 @@ defmodule Runic.Runner.Worker do
     {:reply, {:ok, Workflow.raw_productions(state.workflow)}, state}
   end
 
+  def handle_call({:get_results, opts}, _from, state) do
+    component_names = Keyword.get(opts, :components)
+    {:reply, {:ok, Workflow.results(state.workflow, component_names, opts)}, state}
+  end
+
   def handle_call(:get_workflow, _from, state) do
     {:reply, {:ok, state.workflow}, state}
   end

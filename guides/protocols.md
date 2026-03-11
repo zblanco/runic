@@ -203,8 +203,8 @@ end
 | `connect/3` | Connect this component to a parent in a workflow |
 | `source/1` | Returns the source AST for building/serializing the component |
 | `hash/1` | Returns the content-addressable hash of the component |
-| `inputs/1` | Returns the nimble_options schema for component inputs |
-| `outputs/1` | Returns the nimble_options schema for component outputs |
+| `inputs/1` | Returns port contract for component inputs |
+| `outputs/1` | Returns port contract for component outputs |
 
 ### Built-in Implementations
 
@@ -229,10 +229,10 @@ TypeCompatibility.types_compatible?(:any, :integer)  # => true
 TypeCompatibility.types_compatible?(:string, :integer)  # => false
 TypeCompatibility.types_compatible?({:list, :integer}, {:list, :any})  # => true
 
-# Schema compatibility for connecting components
-producer_outputs = [step: [type: {:list, :integer}]]
-consumer_inputs = [step: [type: {:list, :any}]]
-TypeCompatibility.schemas_compatible?(producer_outputs, consumer_inputs)  # => true
+# Port compatibility for connecting components
+producer_outputs = [out: [type: {:list, :integer}]]
+consumer_inputs = [in: [type: {:list, :any}]]
+TypeCompatibility.ports_compatible?(producer_outputs, consumer_inputs)  # => {:ok, :inferred}
 ```
 
 ### Using Component Protocol
@@ -304,11 +304,11 @@ defimpl Runic.Component, for: MyApp.CustomComponent do
   def hash(component), do: component.hash
 
   def inputs(_component) do
-    [custom: [type: :any, doc: "Input value"]]
+    [in: [type: :any, doc: "Input value"]]
   end
 
   def outputs(_component) do
-    [custom: [type: :any, doc: "Output value"]]
+    [out: [type: :any, doc: "Output value"]]
   end
 
   defp some_internal_step(component) do

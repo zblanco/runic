@@ -99,7 +99,55 @@ workflow = Runic.workflow(
     Runic.rule(fn x when x <= 10 -> :small end)
   ]
 )
+
+# With boundary ports (composable typed workflow)
+workflow = Runic.workflow(
+  name: :pricer,
+  steps: [Runic.step(fn x -> x * 1.1 end, name: :markup)],
+  input_ports: [order: [type: :map, doc: "Order data", to: :markup]],
+  output_ports: [total: [type: :float, doc: "Total price", from: :markup]]
+)
 ```
+
+### Port Contracts
+
+Declare type contracts on component inputs and outputs for connection-time validation:
+
+```elixir
+# Typed step
+step = Runic.step(fn x -> x * 2 end,
+  name: :double,
+  inputs: [in: [type: :integer, doc: "Value to double"]],
+  outputs: [out: [type: :integer, doc: "Doubled value"]]
+)
+
+# Introspect ports
+Runic.Component.inputs(step)   # => [in: [type: :integer, ...]]
+Runic.Component.outputs(step)  # => [out: [type: :integer, ...]]
+
+# Incompatible connections raise at build time
+Workflow.new()
+|> Workflow.add(Runic.step(fn x -> to_string(x) end,
+     name: :to_str, outputs: [out: [type: :string]]))
+|> Workflow.add(step, to: :to_str)
+# ** (Runic.IncompatiblePortError) ...
+
+# Bypass validation during prototyping
+Workflow.add(workflow, step, to: :parent, validate: :off)
+```
+
+Port options: `:type`, `:doc`, `:cardinality` (`:one` | `:many`), `:required` (default `true`).
+
+Default port names by component type:
+
+| Component | Input Ports | Output Ports |
+|-----------|-------------|--------------|
+| Step | `in` | `out` |
+| Rule | `in` | `out` |
+| Map | `items` | `out` |
+| Reduce | `items` | `result` |
+| Accumulator | `in` | `state` |
+| StateMachine | `in` | `state` |
 
 ### State Machine
 
@@ -343,7 +391,21 @@ if Workflow.is_runnable?(workflow), do: # repeat...
 ## Extracting Results
 
 ```elixir
-# All leaf productions (most common)
+# Structured results using output port contract
+Workflow.results(workflow)
+# => %{total: 42.50, valid: true}
+
+# Explicit component selection
+Workflow.results(workflow, [:add, :mult])
+# => %{add: 6, mult: 10}
+
+# With options: full Fact structs, all values
+Workflow.results(workflow, [:price], facts: true)
+# => %{price: %Fact{value: 42.50, ...}}
+Workflow.results(workflow, nil, all: true)
+# => %{total: [42.50, 43.00]}
+
+# Raw values (low-level)
 Workflow.raw_productions(workflow)
 # => [result1, result2, ...]
 
@@ -453,7 +515,9 @@ Workflow.add(workflow, merge_step, to: [:a, :b, :c])
 | Add component | `Workflow.add(workflow, component, to: parent)` |
 | Run one cycle | `Workflow.react(workflow, input)` |
 | Run to completion | `Workflow.react_until_satisfied(workflow, input)` |
-| Get results | `Workflow.raw_productions(workflow)` |
+| Get structured results | `Workflow.results(workflow)` |
+| Get results by name | `Workflow.results(workflow, [:name])` |
+| Get raw results | `Workflow.raw_productions(workflow)` |
 | Check if runnable | `Workflow.is_runnable?(workflow)` |
 | Serialize | `Workflow.build_log(workflow)` |
 | Deserialize | `Workflow.from_log(log)` |

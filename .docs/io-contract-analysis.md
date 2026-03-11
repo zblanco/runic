@@ -505,14 +505,18 @@ Start with a contract wrapper that normalizes existing schemas into port contrac
 4. Propagate port type info into fact metadata when available
 5. Add `{:ref, "type.id"}` to the type vocabulary
 
-### Phase 3: Serialization + Catalogs (Priority: Medium)
+### Phase 3: Serialization + Catalogs (Priority: Deferred)
+
+> **Deferred.** Component catalogs and searchable registries are external consumer concerns — Runic provides the contract data, consumers build the catalog infrastructure. A canonical JSON format can be specified later without breaking changes to the port contract model.
 
 1. Define canonical JSON-serializable contract format
 2. Add `Contract.to_map/1` and `Contract.from_map/1`
 3. Add contract diffing utilities
 4. Build component catalog helpers (search by type, filter by compatibility)
 
-### Phase 4: Advanced Type Features (Priority: Low, On-Demand)
+### Phase 4: Advanced Type Features (Priority: Deferred)
+
+> **Deferred.** Expert system semantics (fact-kind indexing, working-memory typed matching, semantic type identifiers) require concrete production use cases to drive design decisions. These should be revisited post-alpha when KB and expert system integration patterns emerge.
 
 1. Field-level structural schemas for map/struct types
 2. Semantic tags/capabilities on ports

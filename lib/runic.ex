@@ -301,6 +301,9 @@ defmodule Runic do
     {rewritten_opts, opts_bindings} =
       if is_list(opts), do: traverse_options(opts, __CALLER__), else: {opts, []}
 
+    validate_port_schema(rewritten_opts[:inputs], "step")
+    validate_port_schema(rewritten_opts[:outputs], "step")
+
     source =
       quote do
         Runic.step(unquote(work), unquote(opts))
@@ -728,6 +731,8 @@ defmodule Runic do
   - `:rules` - List of conditional rules to add
   - `:before_hooks` - Debug hooks called before step execution
   - `:after_hooks` - Debug hooks called after step execution
+  - `:input_ports` - Port contract for workflow boundary inputs (keyword list of port schemas)
+  - `:output_ports` - Port contract for workflow boundary outputs (keyword list of port schemas)
 
   ## Pipeline Syntax
 
@@ -782,6 +787,34 @@ defmodule Runic do
         ]
       )
 
+  ## Boundary Ports
+
+  Declare input and output ports to make a workflow composable as a typed component.
+  Workflows without ports return empty contracts and are connectable to anything.
+
+      require Runic
+      alias Runic.Workflow
+
+      workflow = Runic.workflow(
+        name: :price_calculator,
+        steps: [
+          {Runic.step(fn order -> order.items end, name: :parse_order),
+           [Runic.step(fn items -> Enum.sum(Enum.map(items, & &1.price)) end, name: :calculate_total)]}
+        ],
+        input_ports: [
+          order: [type: :map, doc: "Order to price", to: :parse_order]
+        ],
+        output_ports: [
+          total: [type: :float, doc: "Calculated total", from: :calculate_total]
+        ]
+      )
+
+      # Ports are surfaced via the Component protocol
+      Runic.Component.inputs(workflow)
+      # => [order: [type: :map, doc: "Order to price", to: :parse_order]]
+
+  Port options: `:type`, `:doc`, `:cardinality`, `:required`, `:to` (input binding), `:from` (output binding).
+  The `:to` and `:from` options reference internal component names and are validated at build time.
   """
   def workflow(opts \\ []) do
     name = opts[:name]
@@ -789,12 +822,54 @@ defmodule Runic do
     rules = opts[:rules]
     before_hooks = opts[:before_hooks]
     after_hooks = opts[:after_hooks]
+    input_ports = opts[:input_ports]
+    output_ports = opts[:output_ports]
 
-    Workflow.new(name)
-    |> Workflow.add_steps(steps)
-    |> Workflow.add_rules(rules)
-    |> Workflow.add_before_hooks(before_hooks)
-    |> Workflow.add_after_hooks(after_hooks)
+    workflow =
+      Workflow.new(name)
+      |> Workflow.add_steps(steps)
+      |> Workflow.add_rules(rules)
+      |> Workflow.add_before_hooks(before_hooks)
+      |> Workflow.add_after_hooks(after_hooks)
+
+    set_boundary_ports(workflow, input_ports, output_ports)
+  end
+
+  defp set_boundary_ports(workflow, nil, nil), do: workflow
+
+  defp set_boundary_ports(workflow, input_ports, output_ports) do
+    workflow = if input_ports, do: %{workflow | input_ports: input_ports}, else: workflow
+    workflow = if output_ports, do: %{workflow | output_ports: output_ports}, else: workflow
+
+    validate_boundary_bindings(workflow)
+  end
+
+  defp validate_boundary_bindings(workflow) do
+    if workflow.input_ports do
+      Enum.each(workflow.input_ports, fn {port_name, port_opts} ->
+        if to = Keyword.get(port_opts, :to) do
+          unless Workflow.get_component(workflow, to) do
+            raise ArgumentError,
+                  "Workflow input port #{inspect(port_name)} references component #{inspect(to)} " <>
+                    "via :to, but no component with that name exists in the workflow"
+          end
+        end
+      end)
+    end
+
+    if workflow.output_ports do
+      Enum.each(workflow.output_ports, fn {port_name, port_opts} ->
+        if from = Keyword.get(port_opts, :from) do
+          unless Workflow.get_component(workflow, from) do
+            raise ArgumentError,
+                  "Workflow output port #{inspect(port_name)} references component #{inspect(from)} " <>
+                    "via :from, but no component with that name exists in the workflow"
+          end
+        end
+      end)
+    end
+
+    workflow
   end
 
   @doc """
@@ -1112,6 +1187,9 @@ defmodule Runic do
   # Original condition/reaction keyword form
   defp compile_condition_reaction_rule(opts, env) do
     {rewritten_opts, opts_bindings} = traverse_options(opts, env)
+
+    validate_port_schema(rewritten_opts[:inputs], "rule")
+    validate_port_schema(rewritten_opts[:outputs], "rule")
 
     name = rewritten_opts[:name]
     condition = rewritten_opts[:condition] || rewritten_opts[:if]
@@ -1514,6 +1592,59 @@ defmodule Runic do
         ]
       )
 
+  ## Block DSL with `handle`/`react` (Form 2)
+
+  For state machines with complex state and event-driven transitions, the
+  block DSL provides a more expressive form. Each `handle` clause bundles
+  an event match, input pattern, state binding, and state transformation
+  into a named, addressable sub-component. `react` clauses observe state
+  without modifying it.
+
+      Runic.state_machine name: :cart, init: %{items: [], total: 0} do
+        handle :add_item, %{item: item}, state do
+          %{state | items: [item | state.items], total: state.total + item.price}
+        end
+
+        handle :checkout, _, state when state.items != [] do
+          %{state | status: :checked_out}
+        end
+
+        react :high_value do
+          fn %{total: t} when t > 1000 -> {:vip_alert, t} end
+        end
+      end
+
+  ### `handle` clause semantics
+
+      handle event_pattern, input_match, state_var [when state_guard] do
+        body  # must return next state
+      end
+
+  - `event_pattern` — atom or pattern matched against the incoming fact's
+    event type discriminator.
+  - `input_match` — pattern match on the event payload / fact value.
+  - `state_var` — binds the current state via `state_of(:sm_name)` meta_ref.
+  - `when state_guard` — optional guard on current state.
+  - `body` — returns the next state value, fed to the accumulator.
+
+  Each `handle` compiles to a named Rule:
+  `:"<sm_name>_<event_pattern>"` (e.g., `:cart_add_item`).
+
+  ### `react` clause semantics
+
+      react name do
+        fn state_pattern -> output end
+      end
+
+  - Name is explicitly required (the atom after `react`).
+  - Compiles to a Rule with a `state_of()` condition and a step that
+    produces an output fact.
+  - Does **not** modify state — observation only.
+
+  Both forms produce identical `%StateMachine{}` structs. The `handle`
+  block is sugar for splitting a multi-clause reducer into individually
+  named rules.
+
   ## Captured Variables
 
   Use `^` for runtime values in reducers and reactors:
@@ -1538,8 +1669,8 @@ defmodule Runic do
 
     name = rewritten_opts[:name]
 
-    inputs = validate_component_schema(rewritten_opts[:inputs], "state_machine", [:reactors])
-    outputs = validate_component_schema(rewritten_opts[:outputs], "state_machine", [:accumulator])
+    inputs = validate_port_schema(rewritten_opts[:inputs], "state_machine")
+    outputs = validate_port_schema(rewritten_opts[:outputs], "state_machine")
 
     {rewritten_reducer, reducer_bindings} = traverse_expression(reducer, __CALLER__)
 
@@ -3549,6 +3680,9 @@ defmodule Runic do
     {rewritten_opts, opts_bindings} =
       if is_list(opts), do: traverse_options(opts, __CALLER__), else: {opts, []}
 
+    validate_port_schema(rewritten_opts[:inputs], "map")
+    validate_port_schema(rewritten_opts[:outputs], "map")
+
     name = rewritten_opts[:name]
 
     {rewritten_expression, expression_bindings} =
@@ -3696,6 +3830,9 @@ defmodule Runic do
   defmacro reduce(acc, reducer_fun, opts \\ []) do
     {rewritten_opts, opts_bindings} =
       if is_list(opts), do: traverse_options(opts, __CALLER__), else: {opts, []}
+
+    validate_port_schema(rewritten_opts[:inputs], "reduce")
+    validate_port_schema(rewritten_opts[:outputs], "reduce")
 
     map_to_reduce = rewritten_opts[:map]
     name = rewritten_opts[:name]
@@ -4182,20 +4319,37 @@ defmodule Runic do
   end
 
   # Schema validation helpers
-  defp validate_component_schema(schema, component_type, known_subcomponents) do
-    if schema do
-      schema_keys = Keyword.keys(schema)
-      invalid_keys = schema_keys -- known_subcomponents
+  @valid_port_options [:type, :doc, :cardinality, :required]
 
-      unless Enum.empty?(invalid_keys) do
+  defp validate_port_schema(nil, _component_type), do: nil
+
+  defp validate_port_schema(schema, component_type) when is_list(schema) do
+    Enum.each(schema, fn {port_name, port_opts} ->
+      unless is_atom(port_name) do
         raise ArgumentError,
-              "Invalid subcomponent keys #{inspect(invalid_keys)} for #{component_type}. " <>
-                "Valid keys are: #{inspect(known_subcomponents)}"
+              "Port name must be an atom, got #{inspect(port_name)} in #{component_type} schema"
       end
-    end
+
+      unless is_list(port_opts) do
+        raise ArgumentError,
+              "Port options for :#{port_name} in #{component_type} must be a keyword list, " <>
+                "got #{inspect(port_opts)}"
+      end
+
+      invalid_opts = Keyword.keys(port_opts) -- @valid_port_options
+
+      unless Enum.empty?(invalid_opts) do
+        raise ArgumentError,
+              "Invalid port options #{inspect(invalid_opts)} for :#{port_name} in #{component_type}. " <>
+                "Valid options are: #{inspect(@valid_port_options)}"
+      end
+    end)
 
     schema
   end
+
+  # When schema is a variable reference (AST node), skip compile-time validation
+  defp validate_port_schema(schema, _component_type), do: schema
 
   # Normalize AST by removing metadata (line numbers, context, etc) for content addressing
   defp normalize_ast(ast) do

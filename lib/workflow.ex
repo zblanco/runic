@@ -158,7 +158,17 @@ defmodule Runic.Workflow do
 
   Extract results after workflow execution:
 
-      # Raw values (most common)
+      # Structured results using output port contract (recommended)
+      Workflow.results(workflow)                       # => %{total: 42.50}
+
+      # Explicit component selection
+      Workflow.results(workflow, [:add, :mult])         # => %{add: 6, mult: 10}
+
+      # With options
+      Workflow.results(workflow, [:price], facts: true) # => %{price: %Fact{}}
+      Workflow.results(workflow, nil, all: true)         # => %{total: [v1, v2]}
+
+      # Raw values (low-level)
       Workflow.raw_productions(workflow)           # All leaf outputs
       Workflow.raw_productions(workflow, :step_name)  # From specific component
 
@@ -250,6 +260,10 @@ defmodule Runic.Workflow do
           mapped: map(),
           # input_fact_hash -> MapSet.new([produced_facts])
           inputs: map(),
+          # port contract for workflow boundary inputs (keyword list or nil)
+          input_ports: keyword() | nil,
+          # port contract for workflow boundary outputs (keyword list or nil)
+          output_ports: keyword() | nil,
           # list of {matcher, policy_map} tuples for scheduler policies
           scheduler_policies: list(),
           # accumulated runnable lifecycle events for durable execution
@@ -271,6 +285,8 @@ defmodule Runic.Workflow do
             mapped: %{},
             build_log: [],
             inputs: %{},
+            input_ports: nil,
+            output_ports: nil,
             scheduler_policies: [],
             runnable_events: [],
             emit_events: false,
@@ -594,6 +610,21 @@ defmodule Runic.Workflow do
       6 in result  # :a produced 5 + 1
       10 in result # :b produced 5 * 2
       16 in result # :sum produced 6 + 10
+
+  ## Port Validation
+
+  By default, `add/3` validates that the producer's output ports are type-compatible
+  with the consumer's input ports. Control this with the `:validate` option:
+
+  - `:error` (default) — raises `Runic.IncompatiblePortError` on type mismatch
+  - `:warn` — logs a warning but allows the connection
+  - `:off` — skips validation entirely (useful for prototyping)
+
+      # Bypass validation during prototyping
+      Workflow.add(workflow, step, to: :parent, validate: :off)
+
+  Untyped components (all ports default to `type: :any`) always pass validation,
+  preserving Runic's gradual typing philosophy.
   """
   def add(%__MODULE__{} = workflow, component, opts \\ []) do
     case opts[:to] do
@@ -649,6 +680,8 @@ defmodule Runic.Workflow do
           transmuted = Transmutable.to_component(component)
           do_add_component(workflow, transmuted, parent, opts)
         else
+          validate_ports(component, parent, opts)
+
           workflow =
             component
             |> Component.connect(parent, workflow)
@@ -666,6 +699,44 @@ defmodule Runic.Workflow do
         do_add_component(workflow, transmuted, parent, opts)
     end
   end
+
+  defp validate_ports(consumer, parents, opts) when is_list(parents) do
+    Enum.each(parents, fn parent -> validate_ports(consumer, parent, opts) end)
+  end
+
+  defp validate_ports(consumer, producer, opts) do
+    validation = Keyword.get(opts, :validate, :error)
+
+    if validation == :off or Component.impl_for(producer) == nil do
+      :ok
+    else
+      producer_outputs = Component.outputs(producer)
+      consumer_inputs = Component.inputs(consumer)
+
+      case Component.TypeCompatibility.ports_compatible?(producer_outputs, consumer_inputs) do
+        {:ok, _} ->
+          :ok
+
+        {:error, reasons} ->
+          case validation do
+            :warn ->
+              Logger.warning(
+                "Port incompatibility connecting #{inspect(component_name(consumer))} to #{inspect(component_name(producer))}: #{inspect(reasons)}"
+              )
+
+            :error ->
+              raise Runic.IncompatiblePortError,
+                producer: producer,
+                consumer: consumer,
+                reasons: reasons
+          end
+      end
+    end
+  end
+
+  defp component_name(%{name: name}) when not is_nil(name), do: name
+  defp component_name(%{hash: hash}), do: hash
+  defp component_name(other), do: inspect(other)
 
   defp maybe_draw_connects_to(workflow, component, parents) when is_list(parents) do
     Enum.reduce(parents, workflow, fn parent, wrk ->
@@ -869,7 +940,7 @@ defmodule Runic.Workflow do
   end
 
   def apply_event(%__MODULE__{} = wf, %FactProduced{} = e) do
-    fact = Fact.new(hash: e.hash, value: e.value, ancestry: e.ancestry)
+    fact = Fact.new(hash: e.hash, value: e.value, ancestry: e.ancestry, meta: e.meta)
     wf = log_fact(wf, fact)
 
     case e.ancestry do
@@ -1530,10 +1601,14 @@ defmodule Runic.Workflow do
   def connectable?(wrk, component, to: component_name) do
     with {:ok, added_to} <- fetch_component(wrk, component_name),
          :ok <- arity_match(component, added_to),
-         true <- Component.connectable?(component, added_to) do
+         {:ok, _} <-
+           Component.TypeCompatibility.ports_compatible?(
+             Component.outputs(added_to),
+             Component.inputs(component)
+           ) do
       :ok
     else
-      false -> {:error, :not_connectable}
+      {:error, reasons} when is_list(reasons) -> {:error, {:incompatible_ports, reasons}}
       otherwise -> otherwise
     end
   end
@@ -2445,6 +2520,112 @@ defmodule Runic.Workflow do
       end
     end)
   end
+
+  @doc """
+  Extracts structured results from a workflow.
+
+  When `component_names` is a list, extracts the last produced value for each
+  named component, independent of output port declarations.
+
+  When `component_names` is `nil` (default) and the workflow declares
+  `output_ports`, returns a map keyed by port name with values extracted
+  according to each port's `:from` binding and `:cardinality`.
+
+  When `component_names` is `nil` and no `output_ports` are declared, falls
+  back to `raw_productions_by_component/1`.
+
+  ## Options
+
+    - `:facts` — when `true`, returns `%Fact{}` structs instead of raw values.
+      Default `false`.
+    - `:all` — when `true`, returns all produced values as a list instead of
+      just the last one, regardless of port cardinality. Default `false`.
+
+  ## Examples
+
+      # With output ports
+      workflow = Runic.workflow(
+        name: :pipeline,
+        steps: [{Runic.step(&parse/1, name: :parse),
+                 [Runic.step(&price/1, name: :price)]}],
+        output_ports: [total: [type: :float, from: :price]]
+      )
+
+      %{total: 42.50} =
+        workflow
+        |> Workflow.react_until_satisfied(order)
+        |> Workflow.results()
+
+      # Explicit component selection
+      %{add: 6, mult: 10} =
+        workflow
+        |> Workflow.react_until_satisfied(5)
+        |> Workflow.results([:add, :mult])
+
+      # With options
+      %{price: [%Fact{}, %Fact{}]} =
+        Workflow.results(workflow, [:price], facts: true, all: true)
+
+      # Use output ports with options
+      %{total: [42.50, 43.00]} =
+        Workflow.results(workflow, nil, all: true)
+  """
+  @spec results(t(), [atom() | binary()] | nil, keyword()) :: map()
+  def results(workflow, component_names \\ nil, opts \\ [])
+
+  # Explicit component selection
+  def results(%__MODULE__{} = workflow, component_names, opts)
+      when is_list(component_names) do
+    return_facts = Keyword.get(opts, :facts, false)
+    return_all = Keyword.get(opts, :all, false)
+
+    Map.new(component_names, fn name ->
+      values = extract_productions(workflow, name, return_facts)
+      {name, select_value(values, :one, return_all)}
+    end)
+  end
+
+  # Port-driven extraction
+  def results(%__MODULE__{output_ports: ports} = workflow, nil, opts)
+      when is_list(ports) do
+    return_facts = Keyword.get(opts, :facts, false)
+    return_all = Keyword.get(opts, :all, false)
+
+    Map.new(ports, fn {port_name, port_opts} ->
+      component_name = Keyword.get(port_opts, :from, port_name)
+      cardinality = Keyword.get(port_opts, :cardinality, :one)
+      values = extract_productions(workflow, component_name, return_facts)
+      {port_name, select_value(values, cardinality, return_all)}
+    end)
+  end
+
+  # Fallback: no ports, no explicit names
+  def results(%__MODULE__{} = workflow, nil, opts) do
+    if Keyword.get(opts, :facts, false) do
+      productions_by_component(workflow)
+    else
+      raw_productions_by_component(workflow)
+    end
+  end
+
+  defp extract_productions(workflow, component_name, return_facts) do
+    case get_component(workflow, component_name) do
+      nil ->
+        []
+
+      component ->
+        if return_facts do
+          productions(workflow, component)
+        else
+          raw_productions(workflow, component)
+        end
+    end
+  end
+
+  defp select_value(values, _cardinality, true = _return_all), do: values
+  defp select_value(values, :many, false = _return_all), do: values
+  defp select_value([], :one, false = _return_all), do: nil
+  defp select_value(values, :one, false = _return_all), do: List.last(values)
 
   @spec facts(Runic.Workflow.t()) :: list(Runic.Workflow.Fact.t())
   @doc """

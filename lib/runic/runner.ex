@@ -14,6 +14,12 @@ defmodule Runic.Runner do
       {:ok, pid} = Runic.Runner.start_workflow(MyApp.Runner, :my_workflow, workflow)
       :ok = Runic.Runner.run(MyApp.Runner, :my_workflow, input)
       {:ok, results} = Runic.Runner.get_results(MyApp.Runner, :my_workflow)
+
+      # Structured results using output port contracts
+      {:ok, %{total: value}} = Runic.Runner.get_results(MyApp.Runner, :my_workflow, [])
+
+      # Select specific components
+      {:ok, %{price: p}} = Runic.Runner.get_results(MyApp.Runner, :id, components: [:price])
   """
 
   use Supervisor
@@ -96,11 +102,41 @@ defmodule Runic.Runner do
 
   @doc """
   Returns the raw productions from a running workflow.
+
+  For structured results using port contracts, use `get_results/3`.
   """
   def get_results(runner, workflow_id) do
     case lookup(runner, workflow_id) do
       nil -> {:error, :not_found}
       pid -> GenServer.call(pid, :get_results)
+    end
+  end
+
+  @doc """
+  Returns structured results from a running workflow.
+
+  ## Options
+
+    - `:components` — list of component names to extract. When `nil` (default),
+      uses the workflow's output port contract.
+    - `:facts` — when `true`, returns `%Fact{}` structs. Default `false`.
+    - `:all` — when `true`, returns all produced values as lists. Default `false`.
+
+  ## Examples
+
+      # Use output port contract
+      {:ok, %{total: 42.50}} = Runner.get_results(runner, :order_pipeline, [])
+
+      # Explicit component selection
+      {:ok, %{price: 42.50}} = Runner.get_results(runner, :order_pipeline, components: [:price])
+
+      # All values as facts
+      {:ok, %{total: [%Fact{}, ...]}} = Runner.get_results(runner, :id, facts: true, all: true)
+  """
+  def get_results(runner, workflow_id, opts) when is_list(opts) do
+    case lookup(runner, workflow_id) do
+      nil -> {:error, :not_found}
+      pid -> GenServer.call(pid, {:get_results, opts})
     end
   end
 

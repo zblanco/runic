@@ -41,10 +41,10 @@ defprotocol Runic.Component do
       TypeCompatibility.types_compatible?(:any, :integer)  # => true
       TypeCompatibility.types_compatible?(:string, :integer)  # => false
 
-      # Schema compatibility for connecting components
-      producer_outputs = [step: [type: {:list, :integer}]]
-      consumer_inputs = [step: [type: {:list, :any}]]
-      TypeCompatibility.schemas_compatible?(producer_outputs, consumer_inputs)  # => true
+      # Port compatibility for connecting components
+      producer_outputs = [out: [type: {:list, :integer}]]
+      consumer_inputs = [in: [type: {:list, :any}]]
+      TypeCompatibility.ports_compatible?(producer_outputs, consumer_inputs)  # => {:ok, :inferred}
 
   ## Usage
 
@@ -90,9 +90,9 @@ defprotocol Runic.Component do
 
         def hash(component), do: component.hash
 
-        def inputs(_component), do: [custom: [type: :any, doc: "Input value"]]
+        def inputs(_component), do: [in: [type: :any, doc: "Input value"]]
 
-        def outputs(_component), do: [custom: [type: :any, doc: "Output value"]]
+        def outputs(_component), do: [out: [type: :any, doc: "Output value"]]
       end
 
   See the [Protocols Guide](protocols.html) for more details and examples.
@@ -133,14 +133,14 @@ defprotocol Runic.Component do
   def hash(component)
 
   @doc """
-  Returns the nimble_options schema for component inputs.
-  Schema is nested within subcomponent keys (e.g., :step, :condition, :fan_out).
+  Returns port contract for component inputs.
+  Each entry is a named port with options like :type, :doc, :cardinality, :required.
   """
   def inputs(component)
 
   @doc """
-  Returns the nimble_options schema for component outputs.
-  Schema is nested within subcomponent keys (e.g., :step, :reaction, :leaf).
+  Returns port contract for component outputs.
+  Each entry is a named port with options like :type, :doc, :cardinality.
   """
   def outputs(component)
 
@@ -201,37 +201,77 @@ defmodule Runic.Component.TypeCompatibility do
       {producer_type, {:one_of, consumer_opts}} ->
         Enum.any?(consumer_opts, fn opt -> types_compatible?(producer_type, opt) end)
 
-      # Custom types - be optimistic and assume compatibility
-      {{:custom, _, _, _}, _} ->
-        true
-
-      {_, {:custom, _, _, _}} ->
-        true
-
       # Default to false for unhandled cases
       _ ->
         false
     end
   end
 
-  def schemas_compatible?(producer_outputs, consumer_inputs) do
-    # Find matching subcomponent keys and check type compatibility
-    producer_keys = Keyword.keys(producer_outputs)
-    consumer_keys = Keyword.keys(consumer_inputs)
-
-    # Look for any matching keys with compatible types
-    Enum.any?(producer_keys, fn p_key ->
-      Enum.any?(consumer_keys, fn c_key ->
-        # For now, keys don't need to match exactly - be lenient
-        p_schema = Keyword.get(producer_outputs, p_key, [])
-        c_schema = Keyword.get(consumer_inputs, c_key, [])
-
+  def ports_compatible?(producer_outputs, consumer_inputs) do
+    case {length(producer_outputs), length(consumer_inputs)} do
+      # Single port on each side — infer connection regardless of names
+      {1, 1} ->
+        [{_p_name, p_schema}] = producer_outputs
+        [{_c_name, c_schema}] = consumer_inputs
         p_type = Keyword.get(p_schema, :type, :any)
         c_type = Keyword.get(c_schema, :type, :any)
 
-        types_compatible?(p_type, c_type)
-      end)
-    end)
+        if types_compatible?(p_type, c_type) do
+          {:ok, :inferred}
+        else
+          {:error, [{:type_mismatch, p_type, c_type}]}
+        end
+
+      # Single consumer port — infer from any compatible producer output
+      {_, 1} ->
+        [{_c_name, c_schema}] = consumer_inputs
+        c_type = Keyword.get(c_schema, :type, :any)
+
+        if Enum.any?(producer_outputs, fn {_p_name, p_schema} ->
+             types_compatible?(Keyword.get(p_schema, :type, :any), c_type)
+           end) do
+          {:ok, :inferred}
+        else
+          producer_types =
+            Enum.map(producer_outputs, fn {name, schema} ->
+              {name, Keyword.get(schema, :type, :any)}
+            end)
+
+          {:error, [{:type_mismatch, producer_types, c_type}]}
+        end
+
+      # Multi-port — match by name
+      _ ->
+        errors =
+          consumer_inputs
+          |> Enum.filter(fn {_name, schema} ->
+            Keyword.get(schema, :required, true)
+          end)
+          |> Enum.reject(fn {c_name, c_schema} ->
+            case Keyword.fetch(producer_outputs, c_name) do
+              {:ok, p_schema} ->
+                types_compatible?(
+                  Keyword.get(p_schema, :type, :any),
+                  Keyword.get(c_schema, :type, :any)
+                )
+
+              :error ->
+                false
+            end
+          end)
+          |> Enum.map(fn {c_name, c_schema} ->
+            {:unmatched_port, c_name, Keyword.get(c_schema, :type, :any)}
+          end)
+
+        if Enum.empty?(errors), do: {:ok, :matched}, else: {:error, errors}
+    end
+  end
+
+  def schemas_compatible?(producer_outputs, consumer_inputs) do
+    case ports_compatible?(producer_outputs, consumer_inputs) do
+      {:ok, _} -> true
+      {:error, _} -> false
+    end
   end
 end
 
@@ -372,11 +412,11 @@ defimpl Runic.Component, for: Runic.Workflow.Map do
   end
 
   def inputs(%Runic.Workflow.Map{inputs: nil}) do
-    # Default schema for maps without user-defined inputs
     [
-      fan_out: [
+      items: [
         type: :any,
-        doc: "Input data to be distributed across the map pipeline"
+        cardinality: :many,
+        doc: "Collection to be processed by the map pipeline"
       ]
     ]
   end
@@ -387,9 +427,10 @@ defimpl Runic.Component, for: Runic.Workflow.Map do
 
   def outputs(%Runic.Workflow.Map{outputs: nil}) do
     [
-      leaf: [
-        type: {:custom, Runic.Components, :enumerable_type, []},
-        doc: "Output result from a Runic map operation, typically a list of processed items"
+      out: [
+        type: :any,
+        cardinality: :many,
+        doc: "Processed items from the map operation"
       ]
     ]
   end
@@ -525,22 +566,9 @@ defimpl Runic.Component, for: Runic.Workflow.Reduce do
   end
 
   def connectable?(reduce, other_component) do
-    # Use schema-based compatibility checking with structural fallback
     producer_outputs = outputs(reduce)
     consumer_inputs = Runic.Component.inputs(other_component)
-
-    schema_compatible =
-      Runic.Component.TypeCompatibility.schemas_compatible?(producer_outputs, consumer_inputs)
-
-    # Fallback to structural compatibility for known component types
-    structural_compatible =
-      case other_component do
-        %Workflow.Map{} -> true
-        %Workflow.Step{} -> true
-        _otherwise -> false
-      end
-
-    schema_compatible or structural_compatible
+    Runic.Component.TypeCompatibility.schemas_compatible?(producer_outputs, consumer_inputs)
   end
 
   def source(%Runic.Workflow.Reduce{closure: %Runic.Closure{} = closure}) do
@@ -556,11 +584,11 @@ defimpl Runic.Component, for: Runic.Workflow.Reduce do
   end
 
   def inputs(%Runic.Workflow.Reduce{inputs: nil}) do
-    # Default schema for reduces without user-defined inputs
     [
-      fan_in: [
-        type: {:custom, Runic.Components, :enumerable_type, []},
-        doc: "Enumerable of values to be reduced"
+      items: [
+        type: :any,
+        cardinality: :many,
+        doc: "Collection of values to be reduced"
       ]
     ]
   end
@@ -570,11 +598,10 @@ defimpl Runic.Component, for: Runic.Workflow.Reduce do
   end
 
   def outputs(%Runic.Workflow.Reduce{outputs: nil}) do
-    # Default schema for reduces without user-defined outputs
     [
-      fan_in: [
+      result: [
         type: :any,
-        doc: "Reduced value produced by the Runic.reduce operation"
+        doc: "Reduced value produced by the reduce operation"
       ]
     ]
   end
@@ -663,9 +690,8 @@ defimpl Runic.Component, for: Runic.Workflow.Step do
   end
 
   def inputs(%Runic.Workflow.Step{inputs: nil}) do
-    # Default schema for steps without user-defined inputs
     [
-      step: [
+      in: [
         type: :any,
         doc: "Input value to be processed by the step function"
       ]
@@ -677,9 +703,8 @@ defimpl Runic.Component, for: Runic.Workflow.Step do
   end
 
   def outputs(%Runic.Workflow.Step{outputs: nil}) do
-    # Default schema for steps without user-defined outputs
     [
-      step: [
+      out: [
         type: :any,
         doc: "Output value produced by the step function"
       ]
@@ -847,24 +872,9 @@ defimpl Runic.Component, for: Runic.Workflow.Rule do
   end
 
   def connectable?(rule, other_component) do
-    # Use schema-based compatibility checking with structural fallback
     producer_outputs = outputs(rule)
     consumer_inputs = Runic.Component.inputs(other_component)
-
-    schema_compatible =
-      Runic.Component.TypeCompatibility.schemas_compatible?(producer_outputs, consumer_inputs)
-
-    # Fallback to structural compatibility for known component types
-    structural_compatible =
-      case other_component do
-        %Step{} -> true
-        %Runic.Workflow.Map{} -> true
-        %Reduce{} -> true
-        %Workflow{} -> true
-        _otherwise -> false
-      end
-
-    schema_compatible or structural_compatible
+    Runic.Component.TypeCompatibility.schemas_compatible?(producer_outputs, consumer_inputs)
   end
 
   def source(%Runic.Workflow.Rule{closure: %Runic.Closure{} = closure}) do
@@ -880,9 +890,8 @@ defimpl Runic.Component, for: Runic.Workflow.Rule do
   end
 
   def inputs(%Runic.Workflow.Rule{inputs: nil}) do
-    # Default schema for rules without user-defined inputs
     [
-      condition: [
+      in: [
         type: :any,
         doc: "Input value to be evaluated by the rule condition"
       ]
@@ -894,9 +903,8 @@ defimpl Runic.Component, for: Runic.Workflow.Rule do
   end
 
   def outputs(%Runic.Workflow.Rule{outputs: nil}) do
-    # Default schema for rules without user-defined outputs
     [
-      reaction: [
+      out: [
         type: :any,
         doc: "Output value produced by the rule reaction when condition matches"
       ]
@@ -998,14 +1006,14 @@ defimpl Runic.Component, for: Runic.Workflow.Aggregate do
   def hash(aggregate), do: aggregate.hash
 
   def inputs(%Runic.Workflow.Aggregate{inputs: nil}) do
-    [commands: [type: :any, doc: "Commands to be validated and processed by the aggregate"]]
+    [command: [type: :any, doc: "Commands to be validated and processed by the aggregate"]]
   end
 
   def inputs(%Runic.Workflow.Aggregate{inputs: user_inputs}), do: user_inputs
 
   def outputs(%Runic.Workflow.Aggregate{outputs: nil}) do
     [
-      accumulator: [type: :any, doc: "Current aggregate state"],
+      state: [type: :any, doc: "Current aggregate state"],
       events: [type: :any, doc: "Domain events produced by command handlers"]
     ]
   end
@@ -1122,8 +1130,8 @@ defimpl Runic.Component, for: Runic.Workflow.StateMachine do
 
   def inputs(%Runic.Workflow.StateMachine{inputs: nil}) do
     [
-      reactors: [
-        type: {:list, :any},
+      in: [
+        type: :any,
         doc: "Input events or data to trigger state transitions"
       ]
     ]
@@ -1135,7 +1143,7 @@ defimpl Runic.Component, for: Runic.Workflow.StateMachine do
 
   def outputs(%Runic.Workflow.StateMachine{outputs: nil}) do
     [
-      accumulator: [
+      state: [
         type: :any,
         doc: "Current state value maintained by the state machine"
       ]
@@ -1226,14 +1234,14 @@ defimpl Runic.Component, for: Runic.Workflow.Saga do
   def hash(saga), do: saga.hash
 
   def inputs(%Runic.Workflow.Saga{inputs: nil}) do
-    [trigger: [type: :any, doc: "Input that triggers the saga execution"]]
+    [in: [type: :any, doc: "Input that triggers the saga execution"]]
   end
 
   def inputs(%Runic.Workflow.Saga{inputs: user_inputs}), do: user_inputs
 
   def outputs(%Runic.Workflow.Saga{outputs: nil}) do
     [
-      accumulator: [type: :any, doc: "Current saga state (status, results, etc.)"],
+      state: [type: :any, doc: "Current saga state (status, results, etc.)"],
       result: [type: :any, doc: "Final saga result (completed or aborted)"]
     ]
   end
@@ -1365,14 +1373,14 @@ defimpl Runic.Component, for: Runic.Workflow.FSM do
   def hash(fsm), do: fsm.hash
 
   def inputs(%Runic.Workflow.FSM{inputs: nil}) do
-    [events: [type: :any, doc: "Events that trigger FSM state transitions"]]
+    [event: [type: :any, doc: "Events that trigger FSM state transitions"]]
   end
 
   def inputs(%Runic.Workflow.FSM{inputs: user_inputs}), do: user_inputs
 
   def outputs(%Runic.Workflow.FSM{outputs: nil}) do
     [
-      accumulator: [type: :any, doc: "Current state atom of the FSM"],
+      state: [type: :any, doc: "Current state atom of the FSM"],
       transition: [type: :any, doc: "Transition output facts"]
     ]
   end
@@ -1492,14 +1500,14 @@ defimpl Runic.Component, for: Runic.Workflow.ProcessManager do
   def hash(pm), do: pm.hash
 
   def inputs(%Runic.Workflow.ProcessManager{inputs: nil}) do
-    [events: [type: :any, doc: "Domain events that drive the process manager"]]
+    [event: [type: :any, doc: "Domain events that drive the process manager"]]
   end
 
   def inputs(%Runic.Workflow.ProcessManager{inputs: user_inputs}), do: user_inputs
 
   def outputs(%Runic.Workflow.ProcessManager{outputs: nil}) do
     [
-      accumulator: [type: :any, doc: "Current coordination state"],
+      state: [type: :any, doc: "Current coordination state"],
       commands: [type: :any, doc: "Commands emitted by event handlers"]
     ]
   end
@@ -1601,9 +1609,8 @@ defimpl Runic.Component, for: Runic.Workflow.Accumulator do
   end
 
   def inputs(%Runic.Workflow.Accumulator{inputs: nil}) do
-    # Default schema for accumulators without user-defined inputs
     [
-      accumulator: [
+      in: [
         type: :any,
         doc: "Input value to be accumulated with the current state"
       ]
@@ -1615,9 +1622,8 @@ defimpl Runic.Component, for: Runic.Workflow.Accumulator do
   end
 
   def outputs(%Runic.Workflow.Accumulator{outputs: nil}) do
-    # Default schema for accumulators without user-defined outputs
     [
-      accumulator: [
+      state: [
         type: :any,
         doc: "Accumulated value after applying the reducer function"
       ]
@@ -1713,7 +1719,7 @@ defimpl Runic.Component, for: Runic.Workflow.Condition do
 
   def inputs(_condition) do
     [
-      condition: [
+      in: [
         type: :any,
         doc: "Input value to evaluate"
       ]
@@ -1722,7 +1728,7 @@ defimpl Runic.Component, for: Runic.Workflow.Condition do
 
   def outputs(_condition) do
     [
-      condition: [
+      out: [
         type: :any,
         doc: "Passthrough value when satisfied"
       ]
@@ -1807,7 +1813,17 @@ defimpl Runic.Component, for: Runic.Workflow do
     components(workflow)
   end
 
-  def connectable?(%Workflow{}, _other_component), do: true
+  def connectable?(%Workflow{output_ports: nil}, _other_component), do: true
+
+  def connectable?(%Workflow{} = wf, other_component) do
+    producer_outputs = outputs(wf)
+    consumer_inputs = Runic.Component.inputs(other_component)
+
+    case Runic.Component.TypeCompatibility.ports_compatible?(producer_outputs, consumer_inputs) do
+      {:ok, _} -> true
+      {:error, _} -> false
+    end
+  end
 
   def source(%Workflow{} = workflow) do
     quote do
@@ -1824,9 +1840,11 @@ defimpl Runic.Component, for: Runic.Workflow do
     Runic.Workflow.Components.fact_hash(workflow)
   end
 
-  def inputs(%Workflow{}), do: []
+  def inputs(%Workflow{input_ports: nil}), do: []
+  def inputs(%Workflow{input_ports: ports}), do: ports
 
-  def outputs(%Workflow{}), do: []
+  def outputs(%Workflow{output_ports: nil}), do: []
+  def outputs(%Workflow{output_ports: ports}), do: ports
 end
 
 defimpl Runic.Component, for: Tuple do

@@ -27,19 +27,19 @@ defmodule Runic.ComponentProtocolTest do
         end
       )
 
-    # Components with user-defined schemas
+    # Components with user-defined schemas (using port names)
     typed_step =
       Runic.step(
         fn x -> x * 3 end,
         name: "tripler",
         inputs: [
-          step: [
+          in: [
             type: :integer,
             doc: "Integer to be tripled"
           ]
         ],
         outputs: [
-          step: [
+          out: [
             type: :integer,
             doc: "Tripled integer value"
           ]
@@ -58,13 +58,13 @@ defmodule Runic.ComponentProtocolTest do
         reaction: fn num -> to_string(num) end,
         name: "integer to string",
         inputs: [
-          condition: [
+          in: [
             type: :integer,
             doc: "Any integer"
           ]
         ],
         outputs: [
-          reaction: [
+          out: [
             type: :string,
             doc: "Integer converted to string"
           ]
@@ -80,13 +80,13 @@ defmodule Runic.ComponentProtocolTest do
           :dec, state -> state - 1
         end,
         inputs: [
-          reactors: [
+          in: [
             type: {:one_of, [:inc, :dec]},
             doc: "Counter increment/decrement commands"
           ]
         ],
         outputs: [
-          accumulator: [
+          state: [
             type: :integer,
             doc: "Current counter value"
           ]
@@ -106,77 +106,78 @@ defmodule Runic.ComponentProtocolTest do
   end
 
   describe "inputs/1" do
-    test "returns nimble_options schema for step inputs", %{step: step} do
+    test "returns port contract for step inputs", %{step: step} do
       schema = Runic.Component.inputs(step)
 
       assert is_list(schema)
-      assert Keyword.has_key?(schema, :step)
+      assert Keyword.has_key?(schema, :in)
 
-      step_schema = Keyword.fetch!(schema, :step)
-      assert is_list(step_schema)
-      # Should define expected input types for the step function
-      assert Keyword.has_key?(step_schema, :type)
-      assert Keyword.get(step_schema, :type) == :any
+      in_schema = Keyword.fetch!(schema, :in)
+      assert is_list(in_schema)
+      assert Keyword.has_key?(in_schema, :type)
+      assert Keyword.get(in_schema, :type) == :any
     end
 
-    test "returns nimble_options schema for map inputs", %{map_step: map_step} do
+    test "returns port contract for map inputs", %{map_step: map_step} do
       schema = Runic.Component.inputs(map_step)
 
       assert is_list(schema)
-      assert Keyword.has_key?(schema, :fan_out)
+      assert Keyword.has_key?(schema, :items)
 
-      fan_out_schema = Keyword.fetch!(schema, :fan_out)
-      assert is_list(fan_out_schema)
-      assert Keyword.has_key?(fan_out_schema, :type)
-      assert Keyword.get(fan_out_schema, :type) == :any
+      items_schema = Keyword.fetch!(schema, :items)
+      assert is_list(items_schema)
+      assert Keyword.has_key?(items_schema, :type)
+      assert Keyword.get(items_schema, :type) == :any
+      assert Keyword.get(items_schema, :cardinality) == :many
     end
 
-    test "returns nimble_options schema for reduce inputs", %{reduce_step: reduce_step} do
+    test "returns port contract for reduce inputs", %{reduce_step: reduce_step} do
       schema = Runic.Component.inputs(reduce_step)
 
       assert is_list(schema)
-      assert Keyword.has_key?(schema, :fan_in)
+      assert Keyword.has_key?(schema, :items)
 
-      fan_in_schema = Keyword.fetch!(schema, :fan_in)
-      assert is_list(fan_in_schema)
-      assert Keyword.has_key?(fan_in_schema, :type)
-      assert {:custom, _, :enumerable_type, _} = Keyword.get(fan_in_schema, :type)
+      items_schema = Keyword.fetch!(schema, :items)
+      assert is_list(items_schema)
+      assert Keyword.has_key?(items_schema, :type)
+      assert Keyword.get(items_schema, :type) == :any
+      assert Keyword.get(items_schema, :cardinality) == :many
     end
 
-    test "returns nimble_options schema for rule inputs", %{rule: rule} do
+    test "returns port contract for rule inputs", %{rule: rule} do
       schema = Runic.Component.inputs(rule)
 
       assert is_list(schema)
-      assert Keyword.has_key?(schema, :condition)
+      assert Keyword.has_key?(schema, :in)
 
-      condition_schema = Keyword.fetch!(schema, :condition)
-      assert is_list(condition_schema)
-      assert Keyword.has_key?(condition_schema, :type)
-      assert Keyword.get(condition_schema, :type) == :any
+      in_schema = Keyword.fetch!(schema, :in)
+      assert is_list(in_schema)
+      assert Keyword.has_key?(in_schema, :type)
+      assert Keyword.get(in_schema, :type) == :any
     end
 
-    test "returns nimble_options schema for state machine inputs", %{state_machine: state_machine} do
+    test "returns port contract for state machine inputs", %{state_machine: state_machine} do
       schema = Runic.Component.inputs(state_machine)
 
       assert is_list(schema)
-      assert Keyword.has_key?(schema, :reactors)
+      assert Keyword.has_key?(schema, :in)
 
-      reactors_schema = Keyword.fetch!(schema, :reactors)
-      assert is_list(reactors_schema)
-      assert Keyword.has_key?(reactors_schema, :type)
-      assert Keyword.get(reactors_schema, :type) == {:list, :any}
+      in_schema = Keyword.fetch!(schema, :in)
+      assert is_list(in_schema)
+      assert Keyword.has_key?(in_schema, :type)
+      assert Keyword.get(in_schema, :type) == :any
     end
 
     test "returns user-defined schema for typed step inputs", %{typed_step: typed_step} do
       schema = Runic.Component.inputs(typed_step)
 
       assert is_list(schema)
-      assert Keyword.has_key?(schema, :step)
+      assert Keyword.has_key?(schema, :in)
 
-      step_schema = Keyword.fetch!(schema, :step)
-      assert is_list(step_schema)
-      assert Keyword.get(step_schema, :type) == :integer
-      assert Keyword.get(step_schema, :doc) == "Integer to be tripled"
+      in_schema = Keyword.fetch!(schema, :in)
+      assert is_list(in_schema)
+      assert Keyword.get(in_schema, :type) == :integer
+      assert Keyword.get(in_schema, :doc) == "Integer to be tripled"
     end
 
     test "returns user-defined schema for typed state machine inputs", %{
@@ -185,93 +186,88 @@ defmodule Runic.ComponentProtocolTest do
       schema = Runic.Component.inputs(typed_state_machine)
 
       assert is_list(schema)
-      assert Keyword.has_key?(schema, :reactors)
+      assert Keyword.has_key?(schema, :in)
 
-      reactors_schema = Keyword.fetch!(schema, :reactors)
-      assert is_list(reactors_schema)
-      assert Keyword.get(reactors_schema, :type) == {:one_of, [:inc, :dec]}
-      assert Keyword.get(reactors_schema, :doc) == "Counter increment/decrement commands"
+      in_schema = Keyword.fetch!(schema, :in)
+      assert is_list(in_schema)
+      assert Keyword.get(in_schema, :type) == {:one_of, [:inc, :dec]}
+      assert Keyword.get(in_schema, :doc) == "Counter increment/decrement commands"
     end
   end
 
   describe "outputs/1" do
-    test "returns nimble_options schema for step outputs", %{step: step} do
+    test "returns port contract for step outputs", %{step: step} do
       schema = Runic.Component.outputs(step)
 
       assert is_list(schema)
-      assert Keyword.has_key?(schema, :step)
+      assert Keyword.has_key?(schema, :out)
 
-      step_schema = Keyword.fetch!(schema, :step)
-      assert is_list(step_schema)
-      assert Keyword.has_key?(step_schema, :type)
-      assert Keyword.get(step_schema, :type) == :any
+      out_schema = Keyword.fetch!(schema, :out)
+      assert is_list(out_schema)
+      assert Keyword.has_key?(out_schema, :type)
+      assert Keyword.get(out_schema, :type) == :any
     end
 
-    test "returns nimble_options schema for map outputs", %{map_step: map_step} do
+    test "returns port contract for map outputs", %{map_step: map_step} do
       schema = Runic.Component.outputs(map_step)
 
       assert is_list(schema)
-      assert Keyword.has_key?(schema, :leaf)
+      assert Keyword.has_key?(schema, :out)
 
-      leaf_schema = Keyword.fetch!(schema, :leaf)
-      assert is_list(leaf_schema)
-      assert Keyword.has_key?(leaf_schema, :type)
-      assert {:custom, _, :enumerable_type, _} = Keyword.get(leaf_schema, :type)
+      out_schema = Keyword.fetch!(schema, :out)
+      assert is_list(out_schema)
+      assert Keyword.has_key?(out_schema, :type)
+      assert Keyword.get(out_schema, :cardinality) == :many
     end
 
-    test "returns nimble_options schema for reduce outputs", %{reduce_step: reduce_step} do
+    test "returns port contract for reduce outputs", %{reduce_step: reduce_step} do
       schema = Runic.Component.outputs(reduce_step)
 
       assert is_list(schema)
-      assert Keyword.has_key?(schema, :fan_in)
+      assert Keyword.has_key?(schema, :result)
 
-      fan_in_schema = Keyword.fetch!(schema, :fan_in)
-      assert is_list(fan_in_schema)
-      assert Keyword.has_key?(fan_in_schema, :type)
-      assert Keyword.get(fan_in_schema, :type) == :any
+      result_schema = Keyword.fetch!(schema, :result)
+      assert is_list(result_schema)
+      assert Keyword.has_key?(result_schema, :type)
+      assert Keyword.get(result_schema, :type) == :any
     end
 
-    test "returns nimble_options schema for typed rule outputs", %{typed_rule: rule} do
+    test "returns port contract for typed rule outputs", %{typed_rule: rule} do
       schema = Runic.Component.outputs(rule)
 
       assert is_list(schema)
-      assert Keyword.has_key?(schema, :reaction)
+      assert Keyword.has_key?(schema, :out)
 
-      # condition_schema = Keyword.fetch!(schema, :condition)
-      # assert is_list(condition_schema)
-      # assert Keyword.has_key?(condition_schema, :type)
-      # assert Keyword.get(condition_schema, :type) == :string
-
-      reaction_schema = Keyword.fetch!(schema, :reaction)
-      assert is_list(reaction_schema)
-      assert Keyword.has_key?(reaction_schema, :type)
-      assert Keyword.get(reaction_schema, :type) == :string
+      out_schema = Keyword.fetch!(schema, :out)
+      assert is_list(out_schema)
+      assert Keyword.has_key?(out_schema, :type)
+      assert Keyword.get(out_schema, :type) == :string
     end
 
-    test "returns nimble_options schema for state machine outputs", %{
+    test "returns port contract for state machine outputs", %{
       state_machine: state_machine
     } do
       schema = Runic.Component.outputs(state_machine)
 
       assert is_list(schema)
-      assert Keyword.has_key?(schema, :accumulator)
+      assert Keyword.has_key?(schema, :state)
 
-      accumulator_schema = Keyword.fetch!(schema, :accumulator)
-      assert is_list(accumulator_schema)
-      assert Keyword.has_key?(accumulator_schema, :type)
-      assert Keyword.get(accumulator_schema, :type) == :any
+      state_schema = Keyword.fetch!(schema, :state)
+      assert is_list(state_schema)
+      assert Keyword.has_key?(state_schema, :type)
+      assert Keyword.get(state_schema, :type) == :any
     end
 
     test "returns user-defined schema for typed step outputs", %{typed_step: typed_step} do
       schema = Runic.Component.outputs(typed_step)
 
       assert is_list(schema)
-      assert Keyword.has_key?(schema, :step)
+      assert Keyword.has_key?(schema, :out)
 
-      step_schema = Keyword.fetch!(schema, :step)
-      assert is_list(step_schema)
-      assert Keyword.get(step_schema, :type) == :integer
-      assert Keyword.get(step_schema, :doc) == "Tripled integer value"
+      out_schema = Keyword.fetch!(schema, :out)
+      assert is_list(out_schema)
+      assert Keyword.get(out_schema, :type) == :integer
+      assert Keyword.get(out_schema, :doc) == "Tripled integer value"
     end
 
     test "returns user-defined schema for typed state machine outputs", %{
@@ -280,12 +276,12 @@ defmodule Runic.ComponentProtocolTest do
       schema = Runic.Component.outputs(typed_state_machine)
 
       assert is_list(schema)
-      assert Keyword.has_key?(schema, :accumulator)
+      assert Keyword.has_key?(schema, :state)
 
-      accumulator_schema = Keyword.fetch!(schema, :accumulator)
-      assert is_list(accumulator_schema)
-      assert Keyword.get(accumulator_schema, :type) == :integer
-      assert Keyword.get(accumulator_schema, :doc) == "Current counter value"
+      state_schema = Keyword.fetch!(schema, :state)
+      assert is_list(state_schema)
+      assert Keyword.get(state_schema, :type) == :integer
+      assert Keyword.get(state_schema, :doc) == "Current counter value"
     end
   end
 
@@ -297,13 +293,13 @@ defmodule Runic.ComponentProtocolTest do
       step1_outputs = Runic.Component.outputs(step1)
       step2_inputs = Runic.Component.inputs(step2)
 
-      # Both should have :step key and compatible types
-      assert Keyword.has_key?(step1_outputs, :step)
-      assert Keyword.has_key?(step2_inputs, :step)
+      # Both should have :out / :in keys
+      assert Keyword.has_key?(step1_outputs, :out)
+      assert Keyword.has_key?(step2_inputs, :in)
 
       # Basic compatibility check (same type)
-      step1_output_type = Keyword.get(step1_outputs[:step], :type)
-      step2_input_type = Keyword.get(step2_inputs[:step], :type)
+      step1_output_type = Keyword.get(step1_outputs[:out], :type)
+      step2_input_type = Keyword.get(step2_inputs[:in], :type)
 
       assert step1_output_type == step2_input_type
     end
@@ -315,7 +311,7 @@ defmodule Runic.ComponentProtocolTest do
           fn x -> x + 10 end,
           name: "adder",
           inputs: [
-            step: [
+            in: [
               type: :integer,
               doc: "Integer to add 10 to"
             ]
@@ -327,18 +323,147 @@ defmodule Runic.ComponentProtocolTest do
       compatible_inputs = Runic.Component.inputs(compatible_step)
 
       # Both specify integer type
-      assert Keyword.get(typed_outputs[:step], :type) == :integer
-      assert Keyword.get(compatible_inputs[:step], :type) == :integer
+      assert Keyword.get(typed_outputs[:out], :type) == :integer
+      assert Keyword.get(compatible_inputs[:in], :type) == :integer
 
       # Compatible components should have matching types
-      assert Keyword.get(typed_outputs[:step], :type) ==
-               Keyword.get(compatible_inputs[:step], :type)
+      assert Keyword.get(typed_outputs[:out], :type) ==
+               Keyword.get(compatible_inputs[:in], :type)
+    end
+
+    test "ports_compatible?/2 infers single-port connections", %{step: step} do
+      rule =
+        Runic.rule(
+          fn :input -> :output end,
+          name: "test_rule"
+        )
+
+      producer_outputs = Runic.Component.outputs(step)
+      consumer_inputs = Runic.Component.inputs(rule)
+
+      assert {:ok, :inferred} =
+               Runic.Component.TypeCompatibility.ports_compatible?(
+                 producer_outputs,
+                 consumer_inputs
+               )
+    end
+
+    test "ports_compatible?/2 rejects type mismatches" do
+      producer_outputs = [out: [type: :string]]
+      consumer_inputs = [in: [type: :integer]]
+
+      assert {:error, [{:type_mismatch, :string, :integer}]} =
+               Runic.Component.TypeCompatibility.ports_compatible?(
+                 producer_outputs,
+                 consumer_inputs
+               )
+    end
+
+    test "ports_compatible?/2 matches multi-port by name" do
+      producer_outputs = [
+        left: [type: :integer],
+        right: [type: :integer]
+      ]
+
+      consumer_inputs = [
+        left: [type: :integer],
+        right: [type: :integer]
+      ]
+
+      assert {:ok, :matched} =
+               Runic.Component.TypeCompatibility.ports_compatible?(
+                 producer_outputs,
+                 consumer_inputs
+               )
+    end
+
+    test "ports_compatible?/2 reports unmatched required ports" do
+      producer_outputs = [left: [type: :integer]]
+
+      consumer_inputs = [
+        left: [type: :integer],
+        right: [type: :integer, required: true]
+      ]
+
+      assert {:error, [{:unmatched_port, :right, :integer}]} =
+               Runic.Component.TypeCompatibility.ports_compatible?(
+                 producer_outputs,
+                 consumer_inputs
+               )
+    end
+
+    test "ports_compatible?/2 skips optional ports" do
+      producer_outputs = [left: [type: :integer]]
+
+      consumer_inputs = [
+        left: [type: :integer],
+        right: [type: :integer, required: false]
+      ]
+
+      assert {:ok, :matched} =
+               Runic.Component.TypeCompatibility.ports_compatible?(
+                 producer_outputs,
+                 consumer_inputs
+               )
     end
   end
 
   describe "schema validation" do
-    test "state machine rejects invalid subcomponent keys in inputs" do
-      # The validation happens at macro expansion time, so we need to test this way
+    test "step rejects invalid port options" do
+      result =
+        try do
+          Code.eval_quoted(
+            quote do
+              require Runic
+
+              Runic.step(fn x -> x end,
+                name: "bad",
+                inputs: [
+                  in: [
+                    type: :any,
+                    bad_option: true
+                  ]
+                ]
+              )
+            end
+          )
+        rescue
+          e in ArgumentError -> e
+        end
+
+      assert %ArgumentError{} = result
+      assert result.message =~ "Invalid port options"
+      assert result.message =~ ":bad_option"
+    end
+
+    test "rule rejects invalid port options" do
+      result =
+        try do
+          Code.eval_quoted(
+            quote do
+              require Runic
+
+              Runic.rule(
+                condition: fn x -> x > 0 end,
+                reaction: fn x -> x end,
+                name: "bad_rule",
+                inputs: [
+                  in: [
+                    invalid_key: true
+                  ]
+                ]
+              )
+            end
+          )
+        rescue
+          e in ArgumentError -> e
+        end
+
+      assert %ArgumentError{} = result
+      assert result.message =~ "Invalid port options"
+    end
+
+    test "state machine rejects invalid port options" do
       result =
         try do
           Code.eval_quoted(
@@ -350,8 +475,8 @@ defmodule Runic.ComponentProtocolTest do
                 init: 0,
                 reducer: fn :inc, state -> state + 1 end,
                 inputs: [
-                  invalid_key: [
-                    type: :any
+                  in: [
+                    bad_opt: :any
                   ]
                 ]
               )
@@ -362,37 +487,10 @@ defmodule Runic.ComponentProtocolTest do
         end
 
       assert %ArgumentError{} = result
-      assert result.message =~ "Invalid subcomponent keys [:invalid_key] for state_machine"
+      assert result.message =~ "Invalid port options"
     end
 
-    test "state machine rejects invalid subcomponent keys in outputs" do
-      result =
-        try do
-          Code.eval_quoted(
-            quote do
-              require Runic
-
-              Runic.state_machine(
-                name: "invalid_state_machine",
-                init: 0,
-                reducer: fn :inc, state -> state + 1 end,
-                outputs: [
-                  bad_output: [
-                    type: :any
-                  ]
-                ]
-              )
-            end
-          )
-        rescue
-          e in ArgumentError -> e
-        end
-
-      assert %ArgumentError{} = result
-      assert result.message =~ "Invalid subcomponent keys [:bad_output] for state_machine"
-    end
-
-    test "state machine accepts valid subcomponent keys" do
+    test "state machine accepts valid port options" do
       # Should not raise
       state_machine =
         Runic.state_machine(
@@ -400,18 +498,63 @@ defmodule Runic.ComponentProtocolTest do
           init: 0,
           reducer: fn :inc, state -> state + 1 end,
           inputs: [
-            reactors: [
+            in: [
               type: {:list, :atom}
             ]
           ],
           outputs: [
-            accumulator: [
+            state: [
               type: :integer
             ]
           ]
         )
 
       assert state_machine.name == "valid_state_machine"
+    end
+
+    test "step accepts all valid port options" do
+      step =
+        Runic.step(fn x -> x end,
+          name: "validated",
+          inputs: [
+            in: [type: :integer, doc: "An integer", cardinality: :one, required: true]
+          ],
+          outputs: [
+            out: [type: :integer, doc: "The same integer"]
+          ]
+        )
+
+      assert step.name == "validated"
+    end
+  end
+
+  describe "fact metadata" do
+    test "fact defaults meta to empty map" do
+      fact = Runic.Workflow.Fact.new(value: 42, ancestry: {1, 2})
+      assert fact.meta == %{}
+    end
+
+    test "fact accepts meta parameter" do
+      fact = Runic.Workflow.Fact.new(value: 42, ancestry: {1, 2}, meta: %{source_port: :out})
+      assert fact.meta == %{source_port: :out}
+    end
+
+    test "fact hash excludes meta" do
+      fact1 = Runic.Workflow.Fact.new(value: 42, ancestry: {1, 2})
+      fact2 = Runic.Workflow.Fact.new(value: 42, ancestry: {1, 2}, meta: %{type: :integer})
+      assert fact1.hash == fact2.hash
+    end
+
+    test "FactProduced event defaults meta to empty map" do
+      event = %Runic.Workflow.Events.FactProduced{
+        hash: 123,
+        value: "test",
+        ancestry: {1, 2},
+        producer_label: :produced,
+        weight: 0
+      }
+
+      assert event.meta == %{}
     end
   end
 end

@@ -14,8 +14,9 @@ defmodule Runic.Workflow.Events.FactProduced do
           value: term(),
           ancestry: {term(), term()} | nil,
           producer_label: atom(),
-          weight: non_neg_integer()
+          weight: non_neg_integer(),
+          meta: map()
         }
 
-  defstruct [:hash, :value, :ancestry, :producer_label, :weight]
+  defstruct [:hash, :value, :ancestry, :producer_label, :weight, meta: %{}]
 end

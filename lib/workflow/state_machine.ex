@@ -77,6 +77,61 @@ defmodule Runic.Workflow.StateMachine do
         ]
       )
 
+  ## Block DSL with `handle`/`react` (Form 2)
+
+  For state machines with complex state and event-driven transitions, the
+  block DSL provides a more expressive form. Each `handle` clause bundles
+  an event match, input pattern, state binding, and state transformation
+  into a named, addressable sub-component. `react` clauses observe state
+  without modifying it.
+
+      Runic.state_machine name: :cart, init: %{items: [], total: 0} do
+        handle :add_item, %{item: item}, state do
+          %{state | items: [item | state.items], total: state.total + item.price}
+        end
+
+        handle :checkout, _, state when state.items != [] do
+          %{state | status: :checked_out}
+        end
+
+        react :high_value do
+          fn %{total: t} when t > 1000 -> {:vip_alert, t} end
+        end
+      end
+
+  ### `handle` clause semantics
+
+      handle event_pattern, input_match, state_var [when state_guard] do
+        body  # must return next state
+      end
+
+  - `event_pattern` — atom or pattern matched against the incoming fact's
+    event type discriminator.
+  - `input_match` — pattern match on the event payload / fact value.
+  - `state_var` — binds the current state via `state_of(:sm_name)` meta_ref.
+  - `when state_guard` — optional guard on current state.
+  - `body` — returns the next state value, fed to the accumulator.
+
+  Each `handle` compiles to a named Rule:
+  `:"<sm_name>_<event_pattern>"` (e.g., `:cart_add_item`).
+
+  ### `react` clause semantics
+
+      react name do
+        fn state_pattern -> output end
+      end
+
+  - Name is explicitly required (the atom after `react`).
+  - Compiles to a Rule with a `state_of()` condition and a step that
+    produces an output fact.
+  - Does **not** modify state — observation only.
+
+  ### Compilation equivalence
+
+  Both the keyword form (Form 1) and the block DSL (Form 2) produce
+  identical `%StateMachine{}` structs. The `handle` block is sugar for
+  splitting a multi-clause reducer into individually named rules.
+
   ## Sub-Component Access
 
   After adding a StateMachine to a workflow, its internal primitives can be
