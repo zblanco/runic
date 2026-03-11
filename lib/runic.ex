@@ -1041,7 +1041,27 @@ defmodule Runic do
       expression_bindings
       |> Enum.uniq()
 
-    {workflow, condition_hash, reaction_hash} = workflow_of_rule(rewritten_expression, arity)
+    # Validate no meta expressions in guard position (not supported in fn-form rules)
+    validate_no_meta_in_fn_guard!(expression, __CALLER__)
+
+    # Detect meta expressions only in the fn body (not guards/patterns)
+    reaction_body = extract_fn_body(expression)
+    reaction_meta_refs = detect_meta_expressions(reaction_body)
+
+    {workflow, condition_hash, reaction_hash} =
+      if reaction_meta_refs != [] do
+        {final_reaction, _refs} =
+          maybe_compile_meta_work(expression, rewritten_expression, __CALLER__)
+
+        workflow_of_rule_fn_with_meta(
+          rewritten_expression,
+          arity,
+          final_reaction,
+          reaction_meta_refs
+        )
+      else
+        workflow_of_rule(rewritten_expression, arity)
+      end
 
     source =
       quote do
@@ -1105,8 +1125,42 @@ defmodule Runic do
       (reaction_bindings ++ opts_bindings)
       |> Enum.uniq()
 
+    # Detect meta expressions in condition and reaction
+    condition_meta_refs = detect_meta_expressions(condition)
+    reaction_meta_refs = detect_meta_expressions(reaction)
+    has_meta = condition_meta_refs != [] or reaction_meta_refs != []
+
+    # If meta expressions found, rewrite work functions to arity-2
+    {final_condition, condition_meta_refs} =
+      if condition_meta_refs != [] do
+        {rewritten, _refs} = maybe_compile_meta_work(condition, condition, env)
+        {rewritten, condition_meta_refs}
+      else
+        {condition, []}
+      end
+
+    {final_reaction, reaction_meta_refs} =
+      if reaction_meta_refs != [] do
+        {rewritten, _refs} = maybe_compile_meta_work(reaction, rewritten_reaction, env)
+        {rewritten, reaction_meta_refs}
+      else
+        {rewritten_reaction, []}
+      end
+
+    condition_arity = if condition_meta_refs != [], do: 2, else: arity
+
     {workflow, condition_hash, reaction_hash} =
-      workflow_of_rule({condition, rewritten_reaction}, arity)
+      if has_meta do
+        workflow_of_rule_with_meta(
+          {final_condition, final_reaction},
+          arity,
+          condition_arity,
+          condition_meta_refs,
+          reaction_meta_refs
+        )
+      else
+        workflow_of_rule({condition, rewritten_reaction}, arity)
+      end
 
     source =
       quote do
@@ -1223,7 +1277,27 @@ defmodule Runic do
       (expression_bindings ++ opts_bindings)
       |> Enum.uniq()
 
-    {workflow, condition_hash, reaction_hash} = workflow_of_rule(rewritten_expression, arity)
+    # Validate no meta expressions in guard position (not supported in fn-form rules)
+    validate_no_meta_in_fn_guard!(expression, __CALLER__)
+
+    # Detect meta expressions only in the fn body (not guards/patterns)
+    reaction_body = extract_fn_body(expression)
+    reaction_meta_refs = detect_meta_expressions(reaction_body)
+
+    {workflow, condition_hash, reaction_hash} =
+      if reaction_meta_refs != [] do
+        {final_reaction, _refs} =
+          maybe_compile_meta_work(expression, rewritten_expression, __CALLER__)
+
+        workflow_of_rule_fn_with_meta(
+          rewritten_expression,
+          arity,
+          final_reaction,
+          reaction_meta_refs
+        )
+      else
+        workflow_of_rule(rewritten_expression, arity)
+      end
 
     source =
       quote do
@@ -5569,6 +5643,228 @@ defmodule Runic do
       end
 
     _ = rule_arity
+
+    {workflow, condition_ast_hash, reaction_ast_hash}
+  end
+
+  # Extracts only the body AST from an fn expression, excluding patterns and guards.
+  # Used to detect meta expressions only in the reaction body of fn-form rules.
+  defp extract_fn_body({:fn, _, [{:->, _, [_args, body]}]}), do: body
+
+  # Extracts the guard AST from an fn expression, if present.
+  # Returns nil for non-guarded fn expressions.
+  defp extract_fn_guard({:fn, _, [{:->, _, [[{:when, _, clauses}], _body]}]}) do
+    List.last(clauses)
+  end
+
+  defp extract_fn_guard({:fn, _, [{:->, _, _}]}), do: nil
+
+  # Validates that no meta expressions (context/1, state_of/1, etc.) appear
+  # in the guard of an fn-form rule. Guards only allow a restricted set of
+  # built-in functions — meta expressions like context/1 compile to Map.get
+  # which is not a valid guard call. Raises a CompileError with guidance to
+  # use the given/where/then DSL form instead.
+  defp validate_no_meta_in_fn_guard!(expression, env) do
+    guard_ast = extract_fn_guard(expression)
+
+    if guard_ast do
+      guard_meta_refs = detect_meta_expressions(guard_ast)
+
+      if guard_meta_refs != [] do
+        kinds = guard_meta_refs |> Enum.map(& &1.kind) |> Enum.uniq()
+
+        kind_names = Enum.map_join(kinds, ", ", &"#{&1}/1")
+
+        raise CompileError,
+          description:
+            "#{kind_names} cannot be used in guard position of fn-form rules. " <>
+              "Guards only allow a restricted set of built-in functions. " <>
+              "Use the rule(given: ..., where: ..., then: ...) DSL form, or the " <>
+              "rule(condition: fn ... end, reaction: fn ... end) form with " <>
+              "#{kind_names} in the condition body instead.",
+          file: env.file,
+          line: env.line
+      end
+    end
+  end
+
+  # Builds a rule workflow from an fn expression where the reaction body
+  # contains meta expressions (context/1 etc.). Derives the condition from
+  # the original expression's pattern/guard (same as workflow_of_rule) but
+  # uses the meta-rewritten reaction fn with meta_refs on the reaction Step.
+  #
+  # `original_expression` - the rewritten fn AST (for condition derivation)
+  # `meta_reaction` - the arity-2 wrapped fn from maybe_compile_meta_work
+  # `reaction_meta_refs` - detected meta refs to attach to the reaction Step
+
+  # Zero-arity: no condition, just a reaction step with meta_refs
+  defp workflow_of_rule_fn_with_meta(
+         {:fn, _, [{:->, _, [[], _rhs]}]} = _original_expression,
+         0 = _arity,
+         meta_reaction,
+         reaction_meta_refs
+       ) do
+    reaction_ast_hash = Components.fact_hash(meta_reaction)
+    escaped_meta_refs = escape_meta_refs(reaction_meta_refs)
+
+    reaction =
+      quote do
+        Step.new(
+          work: unquote(meta_reaction),
+          hash: unquote(reaction_ast_hash),
+          meta_refs: unquote(escaped_meta_refs)
+        )
+      end
+
+    workflow =
+      quote do
+        import Runic
+
+        Workflow.new()
+        |> Workflow.add_step(unquote(reaction))
+      end
+
+    {workflow, nil, reaction_ast_hash}
+  end
+
+  # Guarded fn: condition derived from guard, reaction gets meta_refs
+  defp workflow_of_rule_fn_with_meta(
+         {:fn, _head_meta, [{:->, _clause_meta, [[{:when, _, _clauses} = lhs], _rhs]}]} =
+           _original_expression,
+         arity,
+         meta_reaction,
+         reaction_meta_refs
+       ) do
+    reaction_ast_hash = Components.fact_hash(meta_reaction)
+    escaped_meta_refs = escape_meta_refs(reaction_meta_refs)
+
+    reaction =
+      quote do
+        Step.new(
+          work: unquote(meta_reaction),
+          hash: unquote(reaction_ast_hash),
+          meta_refs: unquote(escaped_meta_refs)
+        )
+      end
+
+    binds = binds_of_guarded_anonymous(lhs, arity)
+
+    condition_fun =
+      quote do
+        fn
+          unquote(lhs) ->
+            true
+
+          unquote_splicing(Enum.map(binds, fn {_bind, meta, cont} -> {:_, meta, cont} end)) ->
+            false
+        end
+      end
+
+    condition_ast_hash = Components.fact_hash(condition_fun)
+
+    condition =
+      quote do
+        Condition.new(
+          work: unquote(condition_fun),
+          hash: unquote(condition_ast_hash),
+          arity: unquote(arity)
+        )
+      end
+
+    quoted_workflow =
+      quote do
+        import Runic
+
+        Workflow.new()
+        |> Workflow.add_step(unquote(condition))
+        |> Workflow.add_step(unquote(condition), unquote(reaction))
+      end
+
+    {quoted_workflow, condition_ast_hash, reaction_ast_hash}
+  end
+
+  # Literal match (true/nil): always-true condition, reaction gets meta_refs
+  defp workflow_of_rule_fn_with_meta(
+         {:fn, _, [{:->, _, [[lhs], _rhs]}]} = _original_expression,
+         1 = _arity,
+         meta_reaction,
+         reaction_meta_refs
+       )
+       when lhs in [true, nil] do
+    condition_fun = fn _lhs -> true end
+    condition_ast_hash = Components.fact_hash(condition_fun)
+
+    condition = quote(do: Condition.new(unquote(condition_fun)))
+
+    reaction_ast_hash = Components.fact_hash(meta_reaction)
+    escaped_meta_refs = escape_meta_refs(reaction_meta_refs)
+
+    reaction =
+      quote do
+        Step.new(
+          work: unquote(meta_reaction),
+          hash: unquote(reaction_ast_hash),
+          meta_refs: unquote(escaped_meta_refs)
+        )
+      end
+
+    workflow =
+      quote do
+        import Runic
+
+        Workflow.new()
+        |> Workflow.add_step(unquote(condition))
+        |> Workflow.add_step(unquote(condition), unquote(reaction))
+      end
+
+    {workflow, condition_ast_hash, reaction_ast_hash}
+  end
+
+  # Simple pattern match: condition from pattern, reaction gets meta_refs
+  defp workflow_of_rule_fn_with_meta(
+         {:fn, head_meta, [{:->, clause_meta, [[lhs], _rhs]}]} = _original_expression,
+         1 = arity,
+         meta_reaction,
+         reaction_meta_refs
+       ) do
+    condition_fun =
+      {:fn, head_meta,
+       [
+         {:->, clause_meta, [[lhs], true]},
+         {:->, clause_meta, [[{:_otherwise, [if_undefined: :apply], Elixir}], false]}
+       ]}
+
+    condition_ast_hash = Components.fact_hash(condition_fun)
+
+    condition =
+      quote do
+        Condition.new(
+          work: unquote(condition_fun),
+          hash: unquote(condition_ast_hash),
+          arity: unquote(arity)
+        )
+      end
+
+    reaction_ast_hash = Components.fact_hash(meta_reaction)
+    escaped_meta_refs = escape_meta_refs(reaction_meta_refs)
+
+    reaction =
+      quote do
+        Step.new(
+          work: unquote(meta_reaction),
+          hash: unquote(reaction_ast_hash),
+          meta_refs: unquote(escaped_meta_refs)
+        )
+      end
+
+    workflow =
+      quote do
+        import Runic
+
+        Workflow.new()
+        |> Workflow.add_step(unquote(condition))
+        |> Workflow.add_step(unquote(condition), unquote(reaction))
+      end
 
     {workflow, condition_ast_hash, reaction_ast_hash}
   end
