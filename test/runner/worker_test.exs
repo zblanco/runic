@@ -1,5 +1,6 @@
 defmodule Runic.Runner.WorkerTest do
   use ExUnit.Case, async: true
+  @moduletag capture_log: true
 
   require Runic
   alias Runic.Workflow

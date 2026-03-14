@@ -28,7 +28,7 @@ defmodule Runic.Runner.DurableExecutionTest do
       assert_workflow_idle(runner, :wf_durable)
 
       {:ok, wf} = Runic.Runner.get_workflow(runner, :wf_durable)
-      log = Workflow.log(wf)
+      log = Workflow.event_log(wf)
 
       dispatched = Enum.filter(log, &match?(%RunnableDispatched{}, &1))
       completed = Enum.filter(log, &match?(%RunnableCompleted{}, &1))
@@ -88,7 +88,7 @@ defmodule Runic.Runner.DurableExecutionTest do
       assert_workflow_idle(runner, :wf_multi_durable)
 
       {:ok, wf} = Runic.Runner.get_workflow(runner, :wf_multi_durable)
-      log = Workflow.log(wf)
+      log = Workflow.event_log(wf)
 
       dispatched = Enum.filter(log, &match?(%RunnableDispatched{}, &1))
       completed = Enum.filter(log, &match?(%RunnableCompleted{}, &1))
@@ -113,7 +113,7 @@ defmodule Runic.Runner.DurableExecutionTest do
       assert_workflow_idle(runner, :wf_durable_fail)
 
       {:ok, wf} = Runic.Runner.get_workflow(runner, :wf_durable_fail)
-      log = Workflow.log(wf)
+      log = Workflow.event_log(wf)
 
       failed = Enum.filter(log, &match?(%RunnableFailed{}, &1))
       assert length(failed) >= 1
@@ -131,7 +131,7 @@ defmodule Runic.Runner.DurableExecutionTest do
       assert_workflow_idle(runner, :wf_sync)
 
       {:ok, wf} = Runic.Runner.get_workflow(runner, :wf_sync)
-      log = Workflow.log(wf)
+      log = Workflow.event_log(wf)
 
       runnable_events =
         Enum.filter(log, fn event ->
@@ -158,7 +158,7 @@ defmodule Runic.Runner.DurableExecutionTest do
       assert_workflow_idle(runner, :wf_stripped)
 
       {:ok, wf} = Runic.Runner.get_workflow(runner, :wf_stripped)
-      log = Workflow.log(wf)
+      log = Workflow.event_log(wf)
 
       dispatched = Enum.filter(log, &match?(%RunnableDispatched{}, &1))
       assert length(dispatched) >= 1

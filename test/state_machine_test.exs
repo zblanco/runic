@@ -3,7 +3,7 @@ defmodule Runic.StateMachineTest do
   require Runic
 
   alias Runic.Workflow
-  alias Runic.Workflow.{StateMachine, Accumulator, Rule, Condition}
+  alias Runic.Workflow.{StateMachine, Accumulator, Rule}
 
   describe "Form 1: keyword-list constructor" do
     test "constructs a StateMachine with accumulator and no reactors" do

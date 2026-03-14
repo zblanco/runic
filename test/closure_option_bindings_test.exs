@@ -197,7 +197,7 @@ defmodule Runic.ClosureOptionBindingsTest do
         )
 
       assert r.name == :dynamic_rule
-      assert r.closure != nil
+      assert not is_nil(r.closure)
       assert Map.has_key?(r.closure.bindings, :rule_name)
       assert Map.has_key?(r.closure.bindings, :multiplier)
 
@@ -225,7 +225,7 @@ defmodule Runic.ClosureOptionBindingsTest do
         )
 
       assert r.name == :kw_rule
-      assert r.closure != nil
+      assert not is_nil(r.closure)
       assert Map.has_key?(r.closure.bindings, :rule_name)
       assert Map.has_key?(r.closure.bindings, :factor)
 
@@ -252,7 +252,7 @@ defmodule Runic.ClosureOptionBindingsTest do
         )
 
       assert m.name == :dynamic_map
-      assert m.closure != nil
+      assert not is_nil(m.closure)
       assert Map.has_key?(m.closure.bindings, :map_name)
       assert Map.has_key?(m.closure.bindings, :offset)
 
@@ -290,7 +290,7 @@ defmodule Runic.ClosureOptionBindingsTest do
         )
 
       assert r.name == :dynamic_reduce
-      assert r.closure != nil
+      assert not is_nil(r.closure)
       assert Map.has_key?(r.closure.bindings, :reduce_name)
       assert Map.has_key?(r.closure.bindings, :offset)
 

@@ -294,7 +294,7 @@ defmodule Runic.Runner do
   defp resume_from_log(runner, workflow_id, store_mod, store_state, opts) do
     case store_mod.load(workflow_id, store_state) do
       {:ok, log} ->
-        workflow = Runic.Workflow.from_log(log)
+        workflow = Runic.Workflow.from_events(log)
         start_workflow(runner, workflow_id, workflow, opts)
 
       {:error, _} = error ->

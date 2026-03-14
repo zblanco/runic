@@ -7,6 +7,7 @@ defmodule Runic.AdvancedPrimitivesTest do
   """
 
   use ExUnit.Case, async: true
+  @moduletag capture_log: true
 
   alias Runic.Workflow
   alias Runic.Workflow.{Step, Fact, CausalContext, Runnable, PolicyDriver, SchedulerPolicy}

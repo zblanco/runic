@@ -1254,7 +1254,7 @@ defmodule Runic.Runner.Worker do
     else
       # Legacy path: save full log
       Telemetry.store_span(:checkpoint, %{workflow_id: id}, fn ->
-        log = Workflow.log(state.workflow)
+        log = Workflow.event_log(state.workflow)
 
         if function_exported?(store_mod, :checkpoint, 3) do
           store_mod.checkpoint(id, log, store_state)
@@ -1302,7 +1302,7 @@ defmodule Runic.Runner.Worker do
     else
       # Legacy: save full log snapshot
       Telemetry.store_span(:save, %{workflow_id: id}, fn ->
-        store_mod.save(id, Workflow.log(state.workflow), store_state)
+        store_mod.save(id, Workflow.event_log(state.workflow), store_state)
       end)
 
       state

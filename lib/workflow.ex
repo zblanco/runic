@@ -948,7 +948,9 @@ defmodule Runic.Workflow do
         producer = Map.get(wf.graph.vertices, producer_hash)
 
         if producer do
-          draw_connection(wf, producer, fact, e.producer_label, weight: e.weight || 0)
+          wf
+          |> draw_connection(producer, fact, e.producer_label, weight: e.weight || 0)
+          |> maybe_track_latest_state_fact(e)
         else
           wf
         end
@@ -1111,7 +1113,9 @@ defmodule Runic.Workflow do
         producer = Map.get(wf.graph.vertices, producer_hash)
 
         if producer do
-          draw_connection(wf, producer, ref, e.producer_label, weight: e.weight || 0)
+          wf
+          |> draw_connection(producer, ref, e.producer_label, weight: e.weight || 0)
+          |> maybe_track_latest_state_fact(e)
         else
           wf
         end
@@ -1124,6 +1128,16 @@ defmodule Runic.Workflow do
   defp apply_event_lean(%__MODULE__{} = wf, %FactProduced{} = e) do
     apply_event(wf, e)
   end
+
+  defp maybe_track_latest_state_fact(%__MODULE__{} = wf, %FactProduced{
+         producer_label: :state_produced,
+         ancestry: {producer_hash, _parent_fact_hash},
+         hash: fact_hash
+       }) do
+    %{wf | mapped: Map.put(wf.mapped, {:latest_state_fact, producer_hash}, fact_hash)}
+  end
+
+  defp maybe_track_latest_state_fact(%__MODULE__{} = wf, _event), do: wf
 
   defp fan_in_mark_completed(%__MODULE__{} = wf, %FanInCompleted{} = e) do
     completed_key = {:fan_in_completed, e.source_fact_hash, e.fan_in_hash}
@@ -1393,21 +1407,12 @@ defmodule Runic.Workflow do
   end
 
   @doc """
-  Returns the complete event log combining `build_log/1` and reaction events.
+  Returns a complete event snapshot for the workflow.
 
   The returned list contains `%ComponentAdded{}` events followed by
   `%ReactionOccurred{}` events, providing a full serializable snapshot of
-  the workflow structure and execution state. Use with `from_log/1` to
+  the workflow structure and execution state. Use with `from_events/2` to
   persist and restore both the workflow definition and its runtime state.
-
-  ## Deprecation
-
-  Prefer `build_log/1` + `uncommitted_events` for the event-sourced model.
-  `log/1` derives events by scanning the full graph (O(total edges)), whereas
-  `uncommitted_events` accumulates events incrementally during execution.
-
-  Use `build_log(workflow) ++ workflow.uncommitted_events` instead, and
-  reconstruct with `Workflow.from_events/2`.
 
   ## Example
 
@@ -1417,12 +1422,24 @@ defmodule Runic.Workflow do
       workflow = Runic.workflow(steps: [Runic.step(fn x -> x + 1 end, name: :add)])
       ran = Workflow.react_until_satisfied(workflow, 5)
 
-      log = Workflow.log(ran)
-      restored = Workflow.from_log(log)
+      events = Workflow.event_log(ran)
+      restored = Workflow.from_events(events)
+  """
+  @spec event_log(t()) :: list()
+  def event_log(wrk) do
+    build_log(wrk) ++ reactions_occurred(wrk) ++ wrk.runnable_events
+  end
+
+  @doc """
+  Returns the complete event log combining `build_log/1` and reaction events.
+
+  Deprecated in favor of `event_log/1` for full snapshots, or
+  `build_log/1 + workflow.uncommitted_events` for incremental event-sourced
+  persistence.
   """
   @deprecated "Use build_log/1 + workflow.uncommitted_events with from_events/2 instead"
   def log(wrk) do
-    build_log(wrk) ++ reactions_occurred(wrk) ++ wrk.runnable_events
+    event_log(wrk)
   end
 
   defp reactions_occurred(%__MODULE__{graph: g}) do
@@ -3956,4 +3973,8 @@ defmodule Runic.Workflow do
   @spec draw_meta_ref_edge(t(), term(), term(), map()) :: t()
   def draw_meta_ref_edge(workflow, from, to, meta_ref),
     do: Private.draw_meta_ref_edge(workflow, from, to, meta_ref)
+
+  @doc false
+  def latest_state_fact(workflow, accumulator),
+    do: Private.latest_state_fact(workflow, accumulator)
 end

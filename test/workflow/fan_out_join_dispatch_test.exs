@@ -23,7 +23,9 @@ defmodule Workflow.FanOutJoinDispatchTest do
      skip_downstream_subgraph to transitively mark all downstream nodes as
      :upstream_failed, so the workflow cleanly reaches fixpoint.
   """
+
   use ExUnit.Case
+  @moduletag capture_log: true
   require Runic
 
   alias Runic.Workflow

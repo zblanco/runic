@@ -282,7 +282,7 @@ defmodule Runic.Runner.Scheduler.ContractTest do
             {units, state} = @scheduler.plan_dispatch(workflow, runnables, state)
 
             for unit <- units do
-              result = @scheduler.on_complete(unit, 100, state)
+              result = apply(@scheduler, :on_complete, [unit, 100, state])
               assert result != nil, "on_complete/3 returned nil"
             end
           end

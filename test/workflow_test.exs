@@ -2007,7 +2007,7 @@ defmodule WorkflowTest do
 
       ran_wrk = Workflow.react_until_satisfied(wrk, 2)
 
-      build_and_execution_log = Workflow.log(ran_wrk)
+      build_and_execution_log = Workflow.event_log(ran_wrk)
 
       refute Enum.empty?(build_and_execution_log)
       assert Enum.any?(build_and_execution_log, &match?(%ReactionOccurred{}, &1))
@@ -2025,9 +2025,9 @@ defmodule WorkflowTest do
 
       ran_wrk = Workflow.react_until_satisfied(wrk, 2)
 
-      build_and_execution_log = Workflow.log(ran_wrk)
+      build_and_execution_log = Workflow.event_log(ran_wrk)
 
-      built_wrk = Workflow.from_log(build_and_execution_log)
+      built_wrk = Workflow.from_events(build_and_execution_log)
 
       assert Enum.any?(build_and_execution_log, &match?(%ReactionOccurred{}, &1))
 

@@ -2,7 +2,6 @@ defmodule Runic.Runner.ResultsTest do
   use ExUnit.Case, async: true
 
   require Runic
-  alias Runic.Workflow
   alias Runic.Workflow.Fact
 
   setup do
@@ -21,7 +20,7 @@ defmodule Runic.Runner.ResultsTest do
 
       {:ok, _pid} = Runic.Runner.start_workflow(runner, :compat, workflow)
       Runic.Runner.run(runner, :compat, 5)
-      Process.sleep(50)
+      assert_workflow_idle(runner, :compat)
 
       {:ok, results} = Runic.Runner.get_results(runner, :compat)
       assert is_list(results)
@@ -40,7 +39,7 @@ defmodule Runic.Runner.ResultsTest do
 
       {:ok, _pid} = Runic.Runner.start_workflow(runner, :ports, workflow)
       Runic.Runner.run(runner, :ports, 5)
-      Process.sleep(50)
+      assert_workflow_idle(runner, :ports)
 
       {:ok, results} = Runic.Runner.get_results(runner, :ports, [])
       assert %{result: 10} = results
@@ -58,7 +57,7 @@ defmodule Runic.Runner.ResultsTest do
 
       {:ok, _pid} = Runic.Runner.start_workflow(runner, :select, workflow)
       Runic.Runner.run(runner, :select, 5)
-      Process.sleep(50)
+      assert_workflow_idle(runner, :select)
 
       {:ok, results} = Runic.Runner.get_results(runner, :select, components: [:add])
       assert %{add: 6} = results
@@ -74,7 +73,7 @@ defmodule Runic.Runner.ResultsTest do
 
       {:ok, _pid} = Runic.Runner.start_workflow(runner, :facts, workflow)
       Runic.Runner.run(runner, :facts, 5)
-      Process.sleep(50)
+      assert_workflow_idle(runner, :facts)
 
       {:ok, results} =
         Runic.Runner.get_results(runner, :facts, components: [:double], facts: true)
@@ -92,7 +91,7 @@ defmodule Runic.Runner.ResultsTest do
 
       {:ok, _pid} = Runic.Runner.start_workflow(runner, :all, workflow)
       Runic.Runner.run(runner, :all, 5)
-      Process.sleep(50)
+      assert_workflow_idle(runner, :all)
 
       {:ok, results} = Runic.Runner.get_results(runner, :all, all: true)
       assert %{result: values} = results
@@ -102,6 +101,33 @@ defmodule Runic.Runner.ResultsTest do
 
     test "not_found returns error", %{runner: runner} do
       assert {:error, :not_found} = Runic.Runner.get_results(runner, :nonexistent, [])
+    end
+  end
+
+  defp assert_workflow_idle(runner, workflow_id, timeout \\ 2000) do
+    deadline = System.monotonic_time(:millisecond) + timeout
+
+    wait_until_idle(runner, workflow_id, deadline)
+  end
+
+  defp wait_until_idle(runner, workflow_id, deadline) do
+    if System.monotonic_time(:millisecond) > deadline do
+      flunk("Workflow #{inspect(workflow_id)} did not reach idle within timeout")
+    end
+
+    case Runic.Runner.lookup(runner, workflow_id) do
+      nil ->
+        flunk("Workflow #{inspect(workflow_id)} not found")
+
+      pid ->
+        state = :sys.get_state(pid)
+
+        if state.status == :idle and map_size(state.active_tasks) == 0 do
+          :ok
+        else
+          Process.sleep(10)
+          wait_until_idle(runner, workflow_id, deadline)
+        end
     end
   end
 end

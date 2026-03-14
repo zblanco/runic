@@ -1,5 +1,6 @@
 defmodule Runic.Runner.Executor.GenStageTest do
   use ExUnit.Case, async: true
+  @moduletag capture_log: true
 
   require Runic
   alias Runic.Runner.Executor.GenStage, as: GenStageExecutor

@@ -16,7 +16,7 @@ defmodule Runic.Workflow.RunContextTest do
   use ExUnit.Case
   require Runic
   alias Runic.Workflow
-  alias Runic.Workflow.{CausalContext, Condition, Step}
+  alias Runic.Workflow.{CausalContext, Condition}
   alias Runic.Component
 
   # =============================================================================
@@ -122,6 +122,28 @@ defmodule Runic.Workflow.RunContextTest do
     test "returns empty map if neither exists" do
       workflow = Workflow.new()
       assert Workflow.get_run_context(workflow, :nonexistent) == %{}
+    end
+
+    test "merges child workflow run_context into parent during workflow merge" do
+      step = Runic.step(fn input -> {context(:token), input} end, name: :ctx_step)
+
+      child_workflow =
+        Workflow.new()
+        |> Workflow.add(step)
+        |> Workflow.put_run_context(%{
+          _global: %{token: "abc123"}
+        })
+
+      [meta_step | _] =
+        child_workflow.graph
+        |> Graph.vertices()
+        |> Enum.filter(fn v -> Map.has_key?(v, :meta_refs) and v.meta_refs != [] end)
+
+      merged_workflow = Workflow.merge(Workflow.new(), child_workflow)
+
+      assert Workflow.get_run_context(child_workflow, meta_step.name) == %{token: "abc123"}
+
+      assert Workflow.get_run_context(merged_workflow, meta_step.name) == %{token: "abc123"}
     end
   end
 
@@ -529,6 +551,22 @@ defmodule Runic.Workflow.RunContextTest do
       wf2 = Workflow.react_until_satisfied(wf1, 4)
       assert Workflow.raw_productions(wf2, :check_both) == [{:triggered, 7}]
     end
+
+    test "accumulator continues from the latest state across sequential reactions" do
+      counter = Runic.accumulator(0, fn x, acc -> acc + x end, name: :counter)
+
+      wf1 =
+        Workflow.new()
+        |> Workflow.add(counter)
+        |> Workflow.react_until_satisfied(3)
+
+      wf2 = Workflow.react_until_satisfied(wf1, 4)
+      wf3 = Workflow.react_until_satisfied(wf2, 5)
+      productions = Workflow.raw_productions(wf3, :counter)
+
+      assert 12 in productions
+      refute 8 in productions
+    end
   end
 
   # =============================================================================
@@ -564,7 +602,6 @@ defmodule Runic.Workflow.RunContextTest do
 
       log = Workflow.build_log(workflow)
 
-      log_binary = :erlang.term_to_binary(log)
       log_string = inspect(log, limit: :infinity)
 
       # The token value "abc" appears as a fact result (that's expected)

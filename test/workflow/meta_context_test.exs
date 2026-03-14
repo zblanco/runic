@@ -707,7 +707,7 @@ defmodule Runic.Workflow.MetaContextTest do
         |> Workflow.add(accumulator)
         |> Workflow.add(rule)
 
-      log = Workflow.log(workflow)
+      log = Workflow.event_log(workflow)
 
       # Find the :meta_ref ReactionOccurred event
       meta_ref_event =
@@ -739,7 +739,7 @@ defmodule Runic.Workflow.MetaContextTest do
         |> Workflow.add(accumulator)
         |> Workflow.add(rule)
 
-      log = Workflow.log(workflow)
+      log = Workflow.event_log(workflow)
 
       # This should NOT raise - getter_fn is stripped
       binary = :erlang.term_to_binary(log)
@@ -765,8 +765,8 @@ defmodule Runic.Workflow.MetaContextTest do
         |> Workflow.add(accumulator)
         |> Workflow.add(rule)
 
-      log = Workflow.log(workflow)
-      restored = Workflow.from_log(log)
+      log = Workflow.event_log(workflow)
+      restored = Workflow.from_events(log)
 
       # Find the condition hash in the restored workflow
       rule_component = Workflow.get_component(restored, :threshold_check)
@@ -809,10 +809,10 @@ defmodule Runic.Workflow.MetaContextTest do
       original_results = Workflow.raw_productions(original)
 
       # Serialize and restore
-      log = Workflow.log(workflow)
+      log = Workflow.event_log(workflow)
       binary = :erlang.term_to_binary(log)
       restored_log = :erlang.binary_to_term(binary)
-      restored = Workflow.from_log(restored_log)
+      restored = Workflow.from_events(restored_log)
 
       # Run the restored workflow with same inputs
       restored_executed =
@@ -844,9 +844,9 @@ defmodule Runic.Workflow.MetaContextTest do
         |> Workflow.add(emit_rule)
 
       # Serialize and restore
-      log = Workflow.log(workflow)
+      log = Workflow.event_log(workflow)
       binary = :erlang.term_to_binary(log)
-      restored = Workflow.from_log(:erlang.binary_to_term(binary))
+      restored = Workflow.from_events(:erlang.binary_to_term(binary))
 
       # Execute restored workflow
       result = Workflow.react_until_satisfied(restored, 10)
@@ -885,9 +885,9 @@ defmodule Runic.Workflow.MetaContextTest do
         |> Workflow.add(multi_rule)
 
       # Serialize, restore, and verify edges
-      log = Workflow.log(workflow)
+      log = Workflow.event_log(workflow)
       binary = :erlang.term_to_binary(log)
-      restored = Workflow.from_log(:erlang.binary_to_term(binary))
+      restored = Workflow.from_events(:erlang.binary_to_term(binary))
 
       # Find the condition and verify both meta_ref edges exist
       rule_component = Workflow.get_component(restored, :multi_check)
@@ -923,9 +923,9 @@ defmodule Runic.Workflow.MetaContextTest do
         |> Workflow.add(rule)
 
       # Serialize and restore
-      log = Workflow.log(workflow)
+      log = Workflow.event_log(workflow)
       binary = :erlang.term_to_binary(log)
-      restored = Workflow.from_log(:erlang.binary_to_term(binary))
+      restored = Workflow.from_events(:erlang.binary_to_term(binary))
 
       # Execute restored workflow - accumulator will add 10 (42 + 10 = 52)
       # Rule runs and accesses state_of(:state) which should be 52
@@ -955,8 +955,8 @@ defmodule Runic.Workflow.MetaContextTest do
         |> Workflow.add(rule)
 
       # Serialize and restore
-      log = Workflow.log(workflow)
-      restored = Workflow.from_log(log)
+      log = Workflow.event_log(workflow)
+      restored = Workflow.from_events(log)
 
       # Get the meta_ref edge
       rule_component = Workflow.get_component(restored, :check_target)
@@ -1000,9 +1000,9 @@ defmodule Runic.Workflow.MetaContextTest do
         |> Workflow.add(rule)
 
       # Serialize and restore
-      log = Workflow.log(workflow)
+      log = Workflow.event_log(workflow)
       binary = :erlang.term_to_binary(log)
-      restored = Workflow.from_log(:erlang.binary_to_term(binary))
+      restored = Workflow.from_events(:erlang.binary_to_term(binary))
 
       # Execute - should multiply by 3
       result =
@@ -1032,9 +1032,9 @@ defmodule Runic.Workflow.MetaContextTest do
         |> Workflow.add(rule)
 
       # Serialize and restore
-      log = Workflow.log(workflow)
+      log = Workflow.event_log(workflow)
       binary = :erlang.term_to_binary(log)
-      restored = Workflow.from_log(:erlang.binary_to_term(binary))
+      restored = Workflow.from_events(:erlang.binary_to_term(binary))
 
       # Execute
       result = Workflow.react_until_satisfied(restored, 5)

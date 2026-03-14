@@ -644,24 +644,32 @@ defmodule Runic.Workflow.Private do
   end
 
   defp get_accumulator_state(
-         %Workflow{graph: graph} = _workflow,
+         %Workflow{} = workflow,
          %Runic.Workflow.Accumulator{} = acc
        ) do
-    state_produced_edges =
-      graph
-      |> Graph.out_edges(acc, by: :state_produced)
+    case latest_state_fact(workflow, acc) do
+      nil -> invoke_init(acc.init)
+      fact -> Map.get(fact, :value)
+    end
+  end
 
-    case state_produced_edges do
-      [] ->
-        invoke_init(acc.init)
-
-      edges ->
-        edges
-        |> Enum.max_by(fn edge -> edge.weight || 0 end, fn -> nil end)
+  def latest_state_fact(
+        %Workflow{graph: graph, mapped: mapped},
+        %Runic.Workflow.Accumulator{} = acc
+      ) do
+    case Map.get(mapped, {:latest_state_fact, acc.hash}) do
+      nil ->
+        graph
+        |> Graph.out_edges(acc, by: :state_produced)
+        |> Enum.with_index()
+        |> Enum.max_by(fn {edge, idx} -> {edge.weight || 0, idx} end, fn -> nil end)
         |> case do
-          nil -> invoke_init(acc.init)
-          edge -> Map.get(edge.v2, :value)
+          nil -> nil
+          {edge, _idx} -> Map.get(edge, :v2)
         end
+
+      fact_hash ->
+        Map.get(graph.vertices, fact_hash)
     end
   end
 

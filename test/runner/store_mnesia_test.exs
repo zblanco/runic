@@ -126,12 +126,12 @@ defmodule Runic.Runner.Store.MnesiaTest do
       workflow = Runic.workflow(steps: [{step_a, [step_b]}])
 
       ran = Workflow.react_until_satisfied(workflow, 5)
-      log = Workflow.log(ran)
+      log = Workflow.event_log(ran)
 
       assert :ok = MnesiaStore.save(:pipeline_wf, log, state)
       {:ok, loaded_log} = MnesiaStore.load(:pipeline_wf, state)
 
-      restored = Workflow.from_log(loaded_log)
+      restored = Workflow.from_events(loaded_log)
       assert Workflow.raw_productions(restored) == Workflow.raw_productions(ran)
     end
   end

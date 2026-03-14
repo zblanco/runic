@@ -895,10 +895,7 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Accumulator do
   end
 
   defp last_known_state(workflow, accumulator) do
-    workflow.graph
-    |> Graph.out_edges(accumulator, by: :state_produced)
-    |> List.first(%{})
-    |> Map.get(:v2)
+    Workflow.latest_state_fact(workflow, accumulator)
   end
 
   defp init_fact(%Accumulator{init: init, hash: hash}) do

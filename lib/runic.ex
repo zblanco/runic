@@ -4697,6 +4697,9 @@ defmodule Runic do
          rule_name_or_idx,
          _env
        ) do
+    lhs = mark_vars_generated(lhs)
+    rhs = mark_vars_generated(rhs)
+
     # Use a placeholder atom for state_of target; at connect time, the meta_ref
     # edges will resolve by the accumulator's actual name
     acc_ref = :__sm_accumulator__
@@ -4801,6 +4804,8 @@ defmodule Runic do
     # Build a condition that checks if any clause matches
     match_clauses =
       Enum.map(clauses, fn {:->, _, [[lhs], _rhs]} ->
+        lhs = mark_vars_generated(lhs)
+
         quote generated: true do
           unquote(lhs) -> true
         end
@@ -4839,6 +4844,9 @@ defmodule Runic do
     # Build reaction clauses
     reaction_clauses =
       Enum.map(clauses, fn {:->, _, [[lhs], rhs]} ->
+        lhs = mark_vars_generated(lhs)
+        rhs = mark_vars_generated(rhs)
+
         quote generated: true do
           unquote(lhs) -> unquote(rhs)
         end

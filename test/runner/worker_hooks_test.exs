@@ -1,8 +1,8 @@
 defmodule Runic.Runner.WorkerHooksTest do
   use ExUnit.Case, async: true
+  @moduletag capture_log: true
 
   require Runic
-  alias Runic.Workflow
 
   setup do
     runner_name = :"test_runner_hooks_#{System.unique_integer([:positive])}"

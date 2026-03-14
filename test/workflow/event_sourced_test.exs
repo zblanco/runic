@@ -646,7 +646,7 @@ defmodule Runic.Workflow.EventSourcedTest do
       w = Workflow.apply_runnable(w, executed_source)
 
       # Now prepare_for_dispatch should yield the FanOut runnable
-      {w, runnables} = Workflow.prepare_for_dispatch(w)
+      {_w, runnables} = Workflow.prepare_for_dispatch(w)
 
       fan_out_runnable =
         Enum.find(runnables, fn r -> is_struct(r.node, Runic.Workflow.FanOut) end)

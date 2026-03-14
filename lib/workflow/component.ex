@@ -1789,6 +1789,11 @@ defimpl Runic.Component, for: Runic.Workflow do
       workflow
       | graph: new_graph,
         mapped: merged_mapped,
+        run_context:
+          Map.merge(workflow.run_context, child_workflow.run_context, fn
+            _key, v1, v2 when is_map(v1) and is_map(v2) -> Map.merge(v1, v2)
+            _key, _v1, v2 -> v2
+          end),
         before_hooks: Map.merge(workflow.before_hooks, child_workflow.before_hooks),
         after_hooks: Map.merge(workflow.after_hooks, child_workflow.after_hooks),
         components: Map.merge(workflow.components, child_workflow.components),

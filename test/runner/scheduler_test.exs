@@ -1,5 +1,6 @@
 defmodule Runic.Runner.SchedulerTest do
   use ExUnit.Case, async: true
+  @moduletag capture_log: true
 
   require Runic
 
