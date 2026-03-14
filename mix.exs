@@ -106,15 +106,13 @@ defmodule Runic.MixProject do
     [
       {:uniq, "~> 0.6.1"},
       {:telemetry, "~> 1.0"},
-      {:libgraph,
-       git: "https://github.com/zblanco/libgraph.git", branch: "zw/multigraph-indexes"},
+      {:libgraph, "~> 0.16.1-mg.1", hex: :multigraph},
       {:ex_doc, "~> 0.34", only: :dev, runtime: false, warn_if_outdated: true},
       {:tidewave, "~> 0.4", only: :dev},
       {:bandit, "~> 1.0", only: :dev},
       {:benchee, "~> 1.3", only: :dev},
       {:gen_stage, "~> 1.2", optional: true},
       {:flow, "~> 1.2", optional: true}
-      # {:libgraph, "~> 0.16.0", path: "~/wrk/oss/libgraph"}
     ]
   end
 
