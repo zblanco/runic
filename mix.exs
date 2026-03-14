@@ -4,7 +4,7 @@ defmodule Runic.MixProject do
   def project do
     [
       app: :runic,
-      version: "0.1.0-alpha.2",
+      version: "0.1.0-alpha.3",
       elixir: "~> 1.18",
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
@@ -28,7 +28,9 @@ defmodule Runic.MixProject do
         "guides/usage-rules.md",
         "guides/protocols.md",
         "guides/scheduling.md",
-        "guides/durable-execution.md"
+        "guides/durable-execution.md",
+        "guides/execution-strategies.md",
+        "guides/state-based-components.md"
       ],
       groups_for_extras: [
         Guides: ~r/guides\/.*/
@@ -40,6 +42,10 @@ defmodule Runic.MixProject do
           Runic.Workflow.Rule,
           Runic.Workflow.Condition,
           Runic.Workflow.StateMachine,
+          Runic.Workflow.FSM,
+          Runic.Workflow.Aggregate,
+          Runic.Workflow.Saga,
+          Runic.Workflow.ProcessManager,
           Runic.Workflow.Accumulator,
           Runic.Workflow.Map,
           Runic.Workflow.Reduce,
@@ -55,6 +61,16 @@ defmodule Runic.MixProject do
         Runner: [
           Runic.Runner,
           Runic.Runner.Worker,
+          Runic.Runner.Executor,
+          Runic.Runner.Executor.Task,
+          Runic.Runner.Executor.GenStage,
+          Runic.Runner.Scheduler,
+          Runic.Runner.Scheduler.Default,
+          Runic.Runner.Scheduler.ChainBatching,
+          Runic.Runner.Scheduler.FlowBatch,
+          Runic.Runner.Scheduler.ContractTest,
+          Runic.Runner.Promise,
+          Runic.Runner.PromiseBuilder,
           Runic.Runner.Store,
           Runic.Runner.Store.ETS,
           Runic.Runner.Store.Mnesia,
@@ -95,7 +111,9 @@ defmodule Runic.MixProject do
       {:ex_doc, "~> 0.34", only: :dev, runtime: false, warn_if_outdated: true},
       {:tidewave, "~> 0.4", only: :dev},
       {:bandit, "~> 1.0", only: :dev},
-      {:benchee, "~> 1.3", only: :dev}
+      {:benchee, "~> 1.3", only: :dev},
+      {:gen_stage, "~> 1.2", optional: true},
+      {:flow, "~> 1.2", optional: true}
       # {:libgraph, "~> 0.16.0", path: "~/wrk/oss/libgraph"}
     ]
   end

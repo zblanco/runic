@@ -1,5 +1,6 @@
 defmodule Runic.Runner.WorkerTest do
   use ExUnit.Case, async: true
+  @moduletag capture_log: true
 
   require Runic
   alias Runic.Workflow
@@ -336,9 +337,16 @@ defmodule Runic.Runner.WorkerTest do
       assert_workflow_idle(runner, :wf_persist)
 
       {store_mod, store_state} = Runic.Runner.get_store(runner)
-      assert {:ok, log} = store_mod.load(:wf_persist, store_state)
-      assert is_list(log)
-      assert length(log) > 0
+
+      if Runic.Runner.Store.supports_stream?(store_mod) do
+        assert {:ok, stream} = store_mod.stream(:wf_persist, store_state)
+        events = Enum.to_list(stream)
+        assert length(events) > 0
+      else
+        assert {:ok, log} = store_mod.load(:wf_persist, store_state)
+        assert is_list(log)
+        assert length(log) > 0
+      end
     end
 
     test "resume loads from store and starts a new Worker with restored workflow", %{
@@ -367,7 +375,7 @@ defmodule Runic.Runner.WorkerTest do
       Process.sleep(50)
 
       {store_mod, store_state} = Runic.Runner.get_store(runner)
-      assert {:ok, _log} = store_mod.load(:wf_persist_stop, store_state)
+      assert store_mod.exists?(:wf_persist_stop, store_state)
     end
 
     test "checkpoint_strategy: :on_complete only persists when workflow satisfies", %{
@@ -387,7 +395,7 @@ defmodule Runic.Runner.WorkerTest do
 
       # After full completion, the store should have the log
       {store_mod, store_state} = Runic.Runner.get_store(runner)
-      assert {:ok, _log} = store_mod.load(:wf_on_complete, store_state)
+      assert store_mod.exists?(:wf_on_complete, store_state)
     end
 
     test "checkpoint_strategy: {:every_n, 3} persists every 3rd cycle", %{runner: runner} do
@@ -408,7 +416,7 @@ defmodule Runic.Runner.WorkerTest do
 
       # After completion, the store should have the log (final persist on idle)
       {store_mod, store_state} = Runic.Runner.get_store(runner)
-      assert {:ok, _log} = store_mod.load(:wf_every_n, store_state)
+      assert store_mod.exists?(:wf_every_n, store_state)
     end
   end
 
@@ -480,7 +488,118 @@ defmodule Runic.Runner.WorkerTest do
   end
 
   # ---------------------------------------------------------------------------
-  # H. Error cases
+  # H. Hybrid rehydration resume
+  # ---------------------------------------------------------------------------
+
+  describe "hybrid rehydration resume" do
+    test "resume with rehydration: :hybrid restores workflow and continues", %{runner: runner} do
+      step_a = Runic.step(fn x -> x + 1 end, name: :ha)
+      step_b = Runic.step(fn x -> x * 2 end, name: :hb)
+      workflow = Runic.workflow(steps: [{step_a, [step_b]}])
+
+      {:ok, _} = Runic.Runner.start_workflow(runner, :wf_hybrid, workflow)
+      :ok = Runic.Runner.run(runner, :wf_hybrid, 5)
+      assert_workflow_idle(runner, :wf_hybrid)
+
+      {:ok, original_results} = Runic.Runner.get_results(runner, :wf_hybrid)
+      # 5 → 6 → 12
+      assert 12 in original_results
+
+      :ok = Runic.Runner.stop(runner, :wf_hybrid)
+      Process.sleep(50)
+
+      assert {:ok, _pid} = Runic.Runner.resume(runner, :wf_hybrid, rehydration: :hybrid)
+      {:ok, resumed_results} = Runic.Runner.get_results(runner, :wf_hybrid)
+      # The final (hot) production is preserved; intermediate cold facts are FactRefs
+      assert 12 in resumed_results
+    end
+
+    test "hybrid-resumed worker has a resolver in its state", %{runner: runner} do
+      workflow = build_single_step_workflow()
+      {:ok, _} = Runic.Runner.start_workflow(runner, :wf_resolver, workflow)
+      :ok = Runic.Runner.run(runner, :wf_resolver, 5)
+      assert_workflow_idle(runner, :wf_resolver)
+
+      :ok = Runic.Runner.stop(runner, :wf_resolver)
+      Process.sleep(50)
+
+      {:ok, pid} = Runic.Runner.resume(runner, :wf_resolver, rehydration: :hybrid)
+      state = :sys.get_state(pid)
+      assert %Runic.Workflow.FactResolver{} = state.resolver
+    end
+
+    test "hybrid resume dehydrates cold facts to FactRefs", %{runner: runner} do
+      step_a = Runic.step(fn x -> x + 1 end, name: :da)
+      step_b = Runic.step(fn x -> x * 2 end, name: :db)
+      step_c = Runic.step(fn x -> x - 3 end, name: :dc)
+      workflow = Runic.workflow(steps: [{step_a, [{step_b, [step_c]}]}])
+
+      {:ok, _} = Runic.Runner.start_workflow(runner, :wf_dehydrate, workflow)
+      :ok = Runic.Runner.run(runner, :wf_dehydrate, 5)
+      assert_workflow_idle(runner, :wf_dehydrate)
+
+      :ok = Runic.Runner.stop(runner, :wf_dehydrate)
+      Process.sleep(50)
+
+      {:ok, pid} = Runic.Runner.resume(runner, :wf_dehydrate, rehydration: :hybrid)
+      state = :sys.get_state(pid)
+
+      # With a 3-step chain fully executed (4 facts: input + 3 produced),
+      # only the leaf is hot (frontier); the rest are cold FactRefs
+      fact_ref_count =
+        Graph.vertices(state.workflow.graph)
+        |> Enum.count(fn v -> is_struct(v, Runic.Workflow.FactRef) end)
+
+      assert fact_ref_count > 0
+    end
+
+    test "default resume (full) preserves all facts as full structs", %{runner: runner} do
+      step_a = Runic.step(fn x -> x + 1 end, name: :fa)
+      step_b = Runic.step(fn x -> x * 2 end, name: :fb)
+      workflow = Runic.workflow(steps: [{step_a, [step_b]}])
+
+      {:ok, _} = Runic.Runner.start_workflow(runner, :wf_full_resume, workflow)
+      :ok = Runic.Runner.run(runner, :wf_full_resume, 5)
+      assert_workflow_idle(runner, :wf_full_resume)
+
+      :ok = Runic.Runner.stop(runner, :wf_full_resume)
+      Process.sleep(50)
+
+      {:ok, pid} = Runic.Runner.resume(runner, :wf_full_resume)
+      state = :sys.get_state(pid)
+
+      fact_ref_count =
+        Graph.vertices(state.workflow.graph)
+        |> Enum.count(fn v -> is_struct(v, Runic.Workflow.FactRef) end)
+
+      assert fact_ref_count == 0
+    end
+
+    test "hybrid resume can accept new inputs and continue execution", %{runner: runner} do
+      step = Runic.step(fn x -> x * 3 end, name: :triple)
+      workflow = Runic.workflow(steps: [step])
+
+      {:ok, _} = Runic.Runner.start_workflow(runner, :wf_hybrid_continue, workflow)
+      :ok = Runic.Runner.run(runner, :wf_hybrid_continue, 5)
+      assert_workflow_idle(runner, :wf_hybrid_continue)
+
+      :ok = Runic.Runner.stop(runner, :wf_hybrid_continue)
+      Process.sleep(50)
+
+      {:ok, _pid} = Runic.Runner.resume(runner, :wf_hybrid_continue, rehydration: :hybrid)
+
+      # Feed new input to the resumed workflow
+      :ok = Runic.Runner.run(runner, :wf_hybrid_continue, 10)
+      assert_workflow_idle(runner, :wf_hybrid_continue)
+
+      {:ok, results} = Runic.Runner.get_results(runner, :wf_hybrid_continue)
+      assert 15 in results
+      assert 30 in results
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # I. Error cases
   # ---------------------------------------------------------------------------
 
   describe "error cases" do

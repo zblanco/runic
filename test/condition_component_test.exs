@@ -136,10 +136,10 @@ defmodule ConditionComponentTest do
       schema = Runic.Component.inputs(cond)
 
       assert is_list(schema)
-      assert Keyword.has_key?(schema, :condition)
+      assert Keyword.has_key?(schema, :in)
 
-      condition_schema = Keyword.fetch!(schema, :condition)
-      assert Keyword.get(condition_schema, :type) == :any
+      in_schema = Keyword.fetch!(schema, :in)
+      assert Keyword.get(in_schema, :type) == :any
     end
 
     test "Condition implements Component.outputs/1" do
@@ -147,10 +147,10 @@ defmodule ConditionComponentTest do
       schema = Runic.Component.outputs(cond)
 
       assert is_list(schema)
-      assert Keyword.has_key?(schema, :condition)
+      assert Keyword.has_key?(schema, :out)
 
-      condition_schema = Keyword.fetch!(schema, :condition)
-      assert Keyword.get(condition_schema, :type) == :any
+      out_schema = Keyword.fetch!(schema, :out)
+      assert Keyword.get(out_schema, :type) == :any
     end
 
     test "Condition implements Component.connectable?/2" do

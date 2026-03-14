@@ -5,6 +5,7 @@ defmodule Runic.Workflow.Components do
 
   def fact_hash(value), do: :erlang.phash2(value, @max_phash)
 
+  def vertex_id_of(%Runic.Workflow.FactRef{hash: hash}), do: hash
   def vertex_id_of(%{hash: hash}), do: hash
   def vertex_id_of(hash) when is_integer(hash), do: hash
   def vertex_id_of(anything_otherwise), do: fact_hash(anything_otherwise)

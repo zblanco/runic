@@ -1,5 +1,6 @@
 defmodule Runic.Runner.WorkerConcurrencyTest do
   use ExUnit.Case, async: true
+  @moduletag capture_log: true
 
   @moduledoc """
   Concurrency and correctness tests for the Worker dispatch loop.
@@ -77,7 +78,7 @@ defmodule Runic.Runner.WorkerConcurrencyTest do
 
       # Verify all steps produced durable events
       {:ok, wf} = Runic.Runner.get_workflow(runner, :wf_3join_durable)
-      log = Workflow.log(wf)
+      log = Workflow.event_log(wf)
 
       dispatched = Enum.filter(log, &match?(%RunnableDispatched{}, &1))
       completed = Enum.filter(log, &match?(%RunnableCompleted{}, &1))

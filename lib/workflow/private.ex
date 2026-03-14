@@ -8,11 +8,13 @@ defmodule Runic.Workflow.Private do
   alias Runic.Workflow.Step
   alias Runic.Workflow.Condition
   alias Runic.Workflow.Fact
+  alias Runic.Workflow.FactRef
   alias Runic.Workflow.Rule
   alias Runic.Workflow.FanOut
   alias Runic.Workflow.FanIn
   alias Runic.Workflow.Join
   alias Runic.Workflow.Invokable
+  alias Runic.Workflow.Events.RunnableActivated
   alias Runic.Component
 
   # =============================================================================
@@ -220,6 +222,13 @@ defmodule Runic.Workflow.Private do
     }
   end
 
+  def log_fact(%Workflow{graph: graph} = wrk, %FactRef{} = ref) do
+    %Workflow{
+      wrk
+      | graph: Graph.add_vertex(graph, ref)
+    }
+  end
+
   # =============================================================================
   # Hooks
   # =============================================================================
@@ -334,6 +343,25 @@ defmodule Runic.Workflow.Private do
   end
 
   @doc false
+  def activate_downstream_with_events(%Workflow{} = workflow, node, %Fact{} = fact) do
+    next = Workflow.next_steps(workflow, node)
+
+    activation_events =
+      Enum.map(next, fn step ->
+        %RunnableActivated{
+          fact_hash: fact.hash,
+          node_hash: step.hash,
+          activation_kind: connection_for_activatable(step)
+        }
+      end)
+
+    wf =
+      Enum.reduce(activation_events, workflow, fn event, w -> Workflow.apply_event(w, event) end)
+
+    {wf, activation_events}
+  end
+
+  @doc false
   def prepare_next_generation(%Workflow{} = workflow, %Fact{}), do: workflow
 
   def prepare_next_generation(%Workflow{} = workflow, [%Fact{} | _] = _facts),
@@ -385,9 +413,6 @@ defmodule Runic.Workflow.Private do
       case target_node do
         %Runic.Workflow.Accumulator{} = acc ->
           get_accumulator_state(workflow, acc)
-
-        %{state_hash: _, init: _} = stateful_node ->
-          last_known_state(workflow, stateful_node)
 
         _ ->
           nil
@@ -536,50 +561,50 @@ defmodule Runic.Workflow.Private do
         _ -> node
       end
 
-    graph
-    |> Graph.out_edges(node_vertex, by: :meta_ref)
-    |> Enum.reduce(%{}, fn edge, acc ->
-      properties = edge.properties || %{}
-      getter_fn = Map.get(properties, :getter_fn)
-      context_key = Map.get(properties, :context_key)
-      target = edge.v2
+    # Resolve graph-based meta_refs via :meta_ref edges
+    graph_context =
+      graph
+      |> Graph.out_edges(node_vertex, by: :meta_ref)
+      |> Enum.reduce(%{}, fn edge, acc ->
+        properties = edge.properties || %{}
+        getter_fn = Map.get(properties, :getter_fn)
+        context_key = Map.get(properties, :context_key)
+        target = edge.v2
 
-      if getter_fn && context_key do
-        value = getter_fn.(workflow, target)
-        Map.put(acc, context_key, value)
-      else
-        acc
-      end
-    end)
+        if getter_fn && context_key do
+          value = getter_fn.(workflow, target)
+          Map.put(acc, context_key, value)
+        else
+          acc
+        end
+      end)
+
+    # Resolve :context-kind refs from run_context
+    external_context = resolve_context_refs(workflow, node)
+
+    # Graph context overrides external (more specific wins)
+    Map.merge(external_context, graph_context)
   end
 
-  # =============================================================================
-  # last_known_state
-  # =============================================================================
+  defp resolve_context_refs(%Workflow{} = workflow, node) do
+    meta_refs = Map.get(node, :meta_refs, [])
 
-  def last_known_state(%Workflow{} = workflow, state_reaction) do
-    accumulator = Map.get(workflow.graph.vertices, state_reaction.state_hash)
+    meta_refs
+    |> Enum.filter(fn ref -> ref.kind == :context end)
+    |> Enum.reduce(%{}, fn ref, acc ->
+      component_ctx = Workflow.get_run_context(workflow, node.name)
+      value = Map.get(component_ctx, ref.target)
 
-    state_from_memory =
-      for edge <- Graph.out_edges(workflow.graph, accumulator),
-          edge.label == :state_produced do
-        edge
-      end
-      |> List.first(%{})
-      |> Map.get(:v2)
+      resolved =
+        case {value, Map.get(ref, :default)} do
+          {nil, nil} -> nil
+          {nil, default} when is_function(default) -> default.()
+          {nil, default} -> default
+          {value, _} -> value
+        end
 
-    init_state =
-      workflow.graph.vertices
-      |> Map.get(state_reaction.state_hash)
-      |> Map.get(:init)
-
-    unless is_nil(state_from_memory) do
-      state_from_memory
-      |> Map.get(:value)
-      |> invoke_init()
-    else
-      invoke_init(init_state)
-    end
+      Map.put(acc, ref.context_key, resolved)
+    end)
   end
 
   # =============================================================================
@@ -619,24 +644,32 @@ defmodule Runic.Workflow.Private do
   end
 
   defp get_accumulator_state(
-         %Workflow{graph: graph} = _workflow,
+         %Workflow{} = workflow,
          %Runic.Workflow.Accumulator{} = acc
        ) do
-    state_produced_edges =
-      graph
-      |> Graph.out_edges(acc, by: :state_produced)
+    case latest_state_fact(workflow, acc) do
+      nil -> invoke_init(acc.init)
+      fact -> Map.get(fact, :value)
+    end
+  end
 
-    case state_produced_edges do
-      [] ->
-        invoke_init(acc.init)
-
-      edges ->
-        edges
-        |> Enum.max_by(fn edge -> edge.weight || 0 end, fn -> nil end)
+  def latest_state_fact(
+        %Workflow{graph: graph, mapped: mapped},
+        %Runic.Workflow.Accumulator{} = acc
+      ) do
+    case Map.get(mapped, {:latest_state_fact, acc.hash}) do
+      nil ->
+        graph
+        |> Graph.out_edges(acc, by: :state_produced)
+        |> Enum.with_index()
+        |> Enum.max_by(fn {edge, idx} -> {edge.weight || 0, idx} end, fn -> nil end)
         |> case do
-          nil -> invoke_init(acc.init)
-          edge -> Map.get(edge.v2, :value)
+          nil -> nil
+          {edge, _idx} -> Map.get(edge, :v2)
         end
+
+      fact_hash ->
+        Map.get(graph.vertices, fact_hash)
     end
   end
 

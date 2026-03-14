@@ -1,13 +1,14 @@
 defmodule Runic.Workflow.Fact do
   alias Runic.Workflow.Components
-  defstruct [:hash, :value, :ancestry]
+  defstruct [:hash, :value, :ancestry, meta: %{}]
 
   @type hash() :: integer() | binary()
 
   @type t() :: %__MODULE__{
           value: term(),
           hash: hash(),
-          ancestry: {hash(), hash()}
+          ancestry: {hash(), hash()},
+          meta: map()
         }
 
   def new(params) do

@@ -14,6 +14,12 @@ defmodule Runic.Runner do
       {:ok, pid} = Runic.Runner.start_workflow(MyApp.Runner, :my_workflow, workflow)
       :ok = Runic.Runner.run(MyApp.Runner, :my_workflow, input)
       {:ok, results} = Runic.Runner.get_results(MyApp.Runner, :my_workflow)
+
+      # Structured results using output port contracts
+      {:ok, %{total: value}} = Runic.Runner.get_results(MyApp.Runner, :my_workflow, [])
+
+      # Select specific components
+      {:ok, %{price: p}} = Runic.Runner.get_results(MyApp.Runner, :id, components: [:price])
   """
 
   use Supervisor
@@ -80,6 +86,12 @@ defmodule Runic.Runner do
 
   @doc """
   Feeds input to a running workflow.
+
+  ## Options
+
+  - `:run_context` - A map of external values keyed by component name, made available
+    to components that use `context/1` expressions. Supports a `:_global` key for
+    values available to all components.
   """
   def run(runner, workflow_id, input, opts \\ []) do
     case lookup(runner, workflow_id) do
@@ -90,11 +102,41 @@ defmodule Runic.Runner do
 
   @doc """
   Returns the raw productions from a running workflow.
+
+  For structured results using port contracts, use `get_results/3`.
   """
   def get_results(runner, workflow_id) do
     case lookup(runner, workflow_id) do
       nil -> {:error, :not_found}
       pid -> GenServer.call(pid, :get_results)
+    end
+  end
+
+  @doc """
+  Returns structured results from a running workflow.
+
+  ## Options
+
+    - `:components` — list of component names to extract. When `nil` (default),
+      uses the workflow's output port contract.
+    - `:facts` — when `true`, returns `%Fact{}` structs. Default `false`.
+    - `:all` — when `true`, returns all produced values as lists. Default `false`.
+
+  ## Examples
+
+      # Use output port contract
+      {:ok, %{total: 42.50}} = Runner.get_results(runner, :order_pipeline, [])
+
+      # Explicit component selection
+      {:ok, %{price: 42.50}} = Runner.get_results(runner, :order_pipeline, components: [:price])
+
+      # All values as facts
+      {:ok, %{total: [%Fact{}, ...]}} = Runner.get_results(runner, :id, facts: true, all: true)
+  """
+  def get_results(runner, workflow_id, opts) when is_list(opts) do
+    case lookup(runner, workflow_id) do
+      nil -> {:error, :not_found}
+      pid -> GenServer.call(pid, {:get_results, opts})
     end
   end
 
@@ -165,13 +207,94 @@ defmodule Runic.Runner do
 
   Loads the workflow log from the store, rebuilds the workflow via
   `Workflow.from_log/1`, and starts a new Worker.
+
+  ## Options
+
+    - `:rehydration` — Controls how fact values are loaded during recovery.
+      - `:full` (default) — All fact values are loaded into memory.
+      - `:hybrid` — Uses lean replay to create `FactRef` vertices, classifies
+        hot/cold facts, then resolves only hot values from the fact store.
+        Requires a store that implements `save_fact/3` and `load_fact/2`.
+      - `:lazy` — All facts stay as `FactRef` structs, resolved on demand
+        during dispatch. Maximum memory savings, but requires resolution
+        before any fact value can be used.
   """
   def resume(runner, workflow_id, opts \\ []) do
     {store_mod, store_state} = get_store(runner)
 
+    if Runic.Runner.Store.supports_stream?(store_mod) do
+      case store_mod.stream(workflow_id, store_state) do
+        {:ok, event_stream} ->
+          rehydration = Keyword.get(opts, :rehydration, :full)
+          store = {store_mod, store_state}
+          events = Enum.to_list(event_stream)
+
+          {workflow, resolver} = resume_from_events(events, rehydration, store)
+
+          worker_opts =
+            opts
+            |> Keyword.put(:resumed, true)
+            |> Keyword.put(:resolver, resolver)
+
+          start_workflow(runner, workflow_id, workflow, worker_opts)
+
+        {:error, :not_found} ->
+          # Fall back to legacy load
+          resume_from_log(runner, workflow_id, store_mod, store_state, opts)
+
+        {:error, _} = error ->
+          error
+      end
+    else
+      resume_from_log(runner, workflow_id, store_mod, store_state, opts)
+    end
+  end
+
+  defp resume_from_events(events, :full, store) do
+    # Check if any FactProduced events have been stripped of values
+    has_stripped =
+      Enum.any?(events, fn
+        %Runic.Workflow.Events.FactProduced{value: nil} -> true
+        _ -> false
+      end)
+
+    if has_stripped do
+      # Lean replay + resolve all facts to restore full in-memory state
+      workflow = Runic.Workflow.from_events(events, nil, fact_mode: :ref)
+
+      all_ref_hashes =
+        for {hash, %Runic.Workflow.FactRef{}} <- workflow.graph.vertices,
+            into: MapSet.new(),
+            do: hash
+
+      resolver = Runic.Workflow.FactResolver.new(store)
+
+      {workflow, _resolver} =
+        Runic.Workflow.Rehydration.resolve_hot(workflow, all_ref_hashes, resolver)
+
+      {workflow, nil}
+    else
+      {Runic.Workflow.from_events(events), nil}
+    end
+  end
+
+  defp resume_from_events(events, :hybrid, store) do
+    workflow = Runic.Workflow.from_events(events, nil, fact_mode: :ref)
+    %{hot: hot} = Runic.Workflow.Rehydration.classify(workflow)
+    resolver = Runic.Workflow.FactResolver.new(store)
+    {workflow, resolver} = Runic.Workflow.Rehydration.resolve_hot(workflow, hot, resolver)
+    {workflow, resolver}
+  end
+
+  defp resume_from_events(events, :lazy, store) do
+    workflow = Runic.Workflow.from_events(events, nil, fact_mode: :ref)
+    {workflow, Runic.Workflow.FactResolver.new(store)}
+  end
+
+  defp resume_from_log(runner, workflow_id, store_mod, store_state, opts) do
     case store_mod.load(workflow_id, store_state) do
       {:ok, log} ->
-        workflow = Runic.Workflow.from_log(log)
+        workflow = Runic.Workflow.from_events(log)
         start_workflow(runner, workflow_id, workflow, opts)
 
       {:error, _} = error ->

@@ -17,7 +17,6 @@ defmodule Runic.Workflow.PolicyDriver do
     * `%RunnableFailed{}` — emitted on permanent failure (retries exhausted)
   """
 
-  alias Runic.Workflow
   alias Runic.Workflow.{Runnable, Invokable, Fact, SchedulerPolicy}
   alias Runic.Workflow.{RunnableDispatched, RunnableCompleted, RunnableFailed}
 
@@ -288,7 +287,7 @@ defmodule Runic.Workflow.PolicyDriver do
   end
 
   defp reset_for_retry(%Runnable{} = runnable) do
-    %{runnable | status: :pending, result: nil, error: nil, apply_fn: nil}
+    %{runnable | status: :pending, result: nil, error: nil, events: nil}
   end
 
   defp handle_fallback(%Runnable{} = runnable, error, %SchedulerPolicy{fallback: fallback}) do
@@ -308,17 +307,24 @@ defmodule Runic.Workflow.PolicyDriver do
         result_fact =
           Fact.new(value: term, ancestry: {runnable.node.hash, runnable.input_fact.hash})
 
-        apply_fn = fn workflow ->
-          workflow
-          |> Workflow.log_fact(result_fact)
-          |> Workflow.draw_connection(runnable.node, result_fact, :produced,
-            weight: (runnable.context.ancestry_depth || 0) + 1
-          )
-          |> Workflow.mark_runnable_as_ran(runnable.node, runnable.input_fact)
-          |> Workflow.prepare_next_runnables(runnable.node, result_fact)
-        end
+        alias Runic.Workflow.Events.{FactProduced, ActivationConsumed}
 
-        Runnable.complete(runnable, result_fact, apply_fn)
+        events = [
+          %FactProduced{
+            hash: result_fact.hash,
+            value: result_fact.value,
+            ancestry: result_fact.ancestry,
+            producer_label: :produced,
+            weight: (runnable.context.ancestry_depth || 0) + 1
+          },
+          %ActivationConsumed{
+            fact_hash: runnable.input_fact.hash,
+            node_hash: runnable.node.hash,
+            from_label: :runnable
+          }
+        ]
+
+        Runnable.complete(runnable, result_fact, events)
 
       other ->
         Runnable.fail(runnable, {:invalid_fallback_return, other})
@@ -326,12 +332,16 @@ defmodule Runic.Workflow.PolicyDriver do
   end
 
   defp skip_runnable(%Runnable{} = runnable) do
-    apply_fn = fn workflow ->
-      workflow
-      |> Workflow.mark_runnable_as_ran(runnable.node, runnable.input_fact)
-      |> Workflow.skip_downstream_subgraph(runnable.node)
-    end
+    alias Runic.Workflow.Events.ActivationConsumed
 
-    Runnable.skip(runnable, apply_fn)
+    events = [
+      %ActivationConsumed{
+        fact_hash: runnable.input_fact.hash,
+        node_hash: runnable.node.hash,
+        from_label: :runnable
+      }
+    ]
+
+    Runnable.skip(runnable, events)
   end
 end

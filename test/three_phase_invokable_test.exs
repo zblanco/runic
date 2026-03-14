@@ -63,7 +63,7 @@ defmodule Runic.Workflow.ThreePhaseInvokableTest do
       assert runnable.status == :pending
     end
 
-    test "execute returns completed Runnable with result and apply_fn" do
+    test "execute returns completed Runnable with result and events" do
       step = Step.new(work: &double/1)
       workflow = Workflow.new() |> Workflow.add(step)
       fact = Fact.new(value: 5)
@@ -73,10 +73,11 @@ defmodule Runic.Workflow.ThreePhaseInvokableTest do
 
       assert executed.status == :completed
       assert %Fact{value: 10} = executed.result
-      assert is_function(executed.apply_fn, 1)
+      assert is_list(executed.events)
+      assert length(executed.events) > 0
     end
 
-    test "apply_fn properly updates workflow" do
+    test "apply_runnable properly updates workflow" do
       step = Step.new(work: &double/1)
       workflow = Workflow.new() |> Workflow.add(step)
       root_fact = Fact.new(value: 5)
@@ -90,8 +91,8 @@ defmodule Runic.Workflow.ThreePhaseInvokableTest do
       {:ok, runnable} = Invokable.prepare(step, workflow, root_fact)
       executed = Invokable.execute(step, runnable)
 
-      # Apply the result
-      updated_workflow = executed.apply_fn.(workflow)
+      # Apply the result via apply_runnable
+      updated_workflow = Workflow.apply_runnable(workflow, executed)
 
       # Check the result fact is in the graph
       result_facts =
@@ -122,7 +123,7 @@ defmodule Runic.Workflow.ThreePhaseInvokableTest do
       # Three-phase path
       {:ok, runnable} = Invokable.prepare(step, setup_workflow, root_fact)
       executed = Invokable.execute(step, runnable)
-      three_phase_result = executed.apply_fn.(setup_workflow)
+      three_phase_result = Workflow.apply_runnable(setup_workflow, executed)
 
       # Compare produced facts
       legacy_facts = get_produced_facts(legacy_result, step)

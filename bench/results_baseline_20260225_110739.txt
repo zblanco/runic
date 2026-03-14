@@ -1,0 +1,535 @@
+
+================================================================================
+RUNIC EVENT-SOURCE BASELINE BENCHMARK
+Model: Direct Mutation (current)
+Date: 2026-02-25T18:07:39.697799Z
+================================================================================
+
+Building canonical test workflows...
+
+Workflow structure stats:
+  Name                          Vertices   Edges   Steps  Conditions
+  ------------------------------------------------------------------
+  accumulator_downstream               3       4       1           0
+  accumulator_rule                     5       6       1           1
+  accumulator_simple                   2       2       0           0
+  branching_large                     51     100      50           0
+  branching_medium                    21      40      20           0
+  branching_small                      6      10       5           0
+  fanout_medium                        7      10       2           0
+  fanout_small                         7      10       2           0
+  join_deep                            7      12       5           0
+  join_simple                          5       8       3           0
+  linear_large                        51     100      50           0
+  linear_medium                       21      40      20           0
+  linear_small                         6      10       5           0
+  linear_xlarge                      101     200     100           0
+  mixed_large                         16      30      15           0
+  mixed_medium                         6      10       4           0
+  mixed_small                          6       8       3           1
+  rules_large                         76     100      25          25
+  rules_medium                        31      40      10          10
+  rules_small                          7       8       2           2
+
+Sanity checking all workflows produce results...
+  accumulator_downstream: 3 productions, 4 total facts, runnable?=false
+  accumulator_rule: 2 productions, 3 total facts, runnable?=false
+  accumulator_simple: 2 productions, 3 total facts, runnable?=false
+  branching_large: 50 productions, 51 total facts, runnable?=false
+  branching_medium: 20 productions, 21 total facts, runnable?=false
+  branching_small: 5 productions, 6 total facts, runnable?=false
+  fanout_medium: 21 productions, 32 total facts, runnable?=false
+  fanout_small: 9 productions, 14 total facts, runnable?=false
+  join_deep: 6 productions, 7 total facts, runnable?=false
+  join_simple: 4 productions, 5 total facts, runnable?=false
+  linear_large: 50 productions, 51 total facts, runnable?=false
+  linear_medium: 20 productions, 21 total facts, runnable?=false
+  linear_small: 5 productions, 6 total facts, runnable?=false
+  linear_xlarge: 100 productions, 101 total facts, runnable?=false
+  mixed_large: 15 productions, 16 total facts, runnable?=false
+  mixed_medium: 6 productions, 7 total facts, runnable?=false
+  mixed_small: 3 productions, 4 total facts, runnable?=false
+  rules_large: 5 productions, 6 total facts, runnable?=false
+  rules_medium: 5 productions, 6 total facts, runnable?=false
+  rules_small: 1 productions, 2 total facts, runnable?=false
+
+================================================================================
+BENCHMARK 1: Linear Pipelines (react_until_satisfied)
+================================================================================
+Benchmarking linear_100 ...
+Benchmarking linear_20 ...
+Benchmarking linear_5 ...
+Benchmarking linear_50 ...
+Calculating statistics...
+Formatting results...
+
+Name                 ips        average  deviation         median         99th %
+linear_5         29.04 K       34.43 μs     ±6.48%       33.78 μs       41.48 μs
+linear_20         6.20 K      161.32 μs     ±6.30%      160.13 μs      194.35 μs
+linear_50         2.16 K      462.25 μs    ±15.71%      450.55 μs      803.55 μs
+linear_100        0.84 K     1184.40 μs    ±24.84%     1105.79 μs     2554.65 μs
+
+Comparison: 
+linear_5         29.04 K
+linear_20         6.20 K - 4.69x slower +126.89 μs
+linear_50         2.16 K - 13.43x slower +427.82 μs
+linear_100        0.84 K - 34.40x slower +1149.97 μs
+
+Memory usage statistics:
+
+Name          Memory usage
+linear_5             69 KB
+linear_20        304.09 KB - 4.41x memory usage +235.09 KB
+linear_50        720.97 KB - 10.45x memory usage +651.97 KB
+linear_100      1470.87 KB - 21.32x memory usage +1401.87 KB
+
+**All measurements for memory usage were the same**
+================================================================================
+BENCHMARK 2: Branching Pipelines
+================================================================================
+Benchmarking branching_20 ...
+Benchmarking branching_5 ...
+Benchmarking branching_50 ...
+Calculating statistics...
+Formatting results...
+
+Name                   ips        average  deviation         median         99th %
+branching_5        31.99 K       31.26 μs     ±8.41%       30.22 μs       39.33 μs
+branching_20        7.01 K      142.60 μs     ±8.69%      137.81 μs      197.09 μs
+branching_50        2.00 K      499.74 μs    ±26.96%      460.22 μs     1225.31 μs
+
+Comparison: 
+branching_5        31.99 K
+branching_20        7.01 K - 4.56x slower +111.34 μs
+branching_50        2.00 K - 15.99x slower +468.48 μs
+
+Memory usage statistics:
+
+Name            Memory usage
+branching_5         68.07 KB
+branching_20       342.19 KB - 5.03x memory usage +274.12 KB
+branching_50      1158.80 KB - 17.02x memory usage +1090.73 KB
+
+**All measurements for memory usage were the same**
+================================================================================
+BENCHMARK 3: Rules with Conditions
+================================================================================
+Benchmarking rules_10 ...
+Benchmarking rules_2 ...
+Benchmarking rules_25 ...
+Calculating statistics...
+Formatting results...
+
+Name               ips        average  deviation         median         99th %
+rules_2        59.85 K       16.71 μs    ±39.27%       16.11 μs       29.17 μs
+rules_10       11.69 K       85.57 μs    ±11.41%       82.96 μs      126.60 μs
+rules_25        6.48 K      154.26 μs    ±12.38%      148.62 μs      235.25 μs
+
+Comparison: 
+rules_2        59.85 K
+rules_10       11.69 K - 5.12x slower +68.87 μs
+rules_25        6.48 K - 9.23x slower +137.55 μs
+
+Memory usage statistics:
+
+Name        Memory usage
+rules_2         33.39 KB
+rules_10       181.19 KB - 5.43x memory usage +147.80 KB
+rules_25       400.19 KB - 11.99x memory usage +366.80 KB
+
+**All measurements for memory usage were the same**
+================================================================================
+BENCHMARK 4: Accumulators
+================================================================================
+Benchmarking accumulator_10_inputs ...
+Benchmarking accumulator_50_inputs ...
+Benchmarking accumulator_downstream ...
+Benchmarking accumulator_rule ...
+Benchmarking accumulator_simple ...
+Calculating statistics...
+Formatting results...
+
+Name                             ips        average  deviation         median         99th %
+accumulator_simple          121.17 K        8.25 μs    ±32.24%        7.91 μs       14.03 μs
+accumulator_rule             77.20 K       12.95 μs    ±39.21%       12.66 μs       20.22 μs
+accumulator_downstream       66.13 K       15.12 μs    ±42.00%       14.37 μs       27.82 μs
+accumulator_10_inputs         9.71 K      102.94 μs    ±11.25%       97.85 μs      152.50 μs
+accumulator_50_inputs         0.89 K     1119.97 μs    ±17.96%     1107.01 μs     2123.27 μs
+
+Comparison: 
+accumulator_simple          121.17 K
+accumulator_rule             77.20 K - 1.57x slower +4.70 μs
+accumulator_downstream       66.13 K - 1.83x slower +6.87 μs
+accumulator_10_inputs         9.71 K - 12.47x slower +94.69 μs
+accumulator_50_inputs         0.89 K - 135.71x slower +1111.72 μs
+
+Memory usage statistics:
+
+Name                      Memory usage
+accumulator_simple            16.27 KB
+accumulator_rule              26.60 KB - 1.63x memory usage +10.33 KB
+accumulator_downstream        29.79 KB - 1.83x memory usage +13.52 KB
+accumulator_10_inputs        200.52 KB - 12.32x memory usage +184.25 KB
+accumulator_50_inputs       1989.35 KB - 122.25x memory usage +1973.08 KB
+
+**All measurements for memory usage were the same**
+================================================================================
+BENCHMARK 5: Joins
+================================================================================
+Benchmarking join_deep ...
+Benchmarking join_simple ...
+Calculating statistics...
+Formatting results...
+
+Name                  ips        average  deviation         median         99th %
+join_simple       24.62 K       40.62 μs     ±6.20%       40.01 μs       48.18 μs
+join_deep         17.63 K       56.72 μs     ±7.95%       55.01 μs       66.72 μs
+
+Comparison: 
+join_simple       24.62 K
+join_deep         17.63 K - 1.40x slower +16.10 μs
+
+Memory usage statistics:
+
+Name           Memory usage
+join_simple        86.87 KB
+join_deep         117.91 KB - 1.36x memory usage +31.05 KB
+
+**All measurements for memory usage were the same**
+================================================================================
+BENCHMARK 6: Fan-out / Fan-in (Map-Reduce)
+================================================================================
+Benchmarking fanout_10_items ...
+Benchmarking fanout_4_items ...
+Calculating statistics...
+Formatting results...
+
+Name                      ips        average  deviation         median         99th %
+fanout_4_items         9.41 K      106.29 μs    ±13.41%      102.02 μs      178.86 μs
+fanout_10_items        3.99 K      250.84 μs    ±10.03%      241.50 μs      297.91 μs
+
+Comparison: 
+fanout_4_items         9.41 K
+fanout_10_items        3.99 K - 2.36x slower +144.56 μs
+
+Memory usage statistics:
+
+Name               Memory usage
+fanout_4_items        187.05 KB
+fanout_10_items       524.23 KB - 2.80x memory usage +337.18 KB
+
+**All measurements for memory usage were the same**
+================================================================================
+BENCHMARK 7: Mixed / Composite Workflows
+================================================================================
+Benchmarking mixed_large ...
+Benchmarking mixed_medium ...
+Benchmarking mixed_small ...
+Calculating statistics...
+Formatting results...
+
+Name                   ips        average  deviation         median         99th %
+mixed_small        39.39 K       25.39 μs     ±8.71%       24.16 μs       32.11 μs
+mixed_medium       26.42 K       37.85 μs    ±11.95%       38.18 μs       49.97 μs
+mixed_large         8.28 K      120.73 μs    ±12.03%      121.07 μs      194.69 μs
+
+Comparison: 
+mixed_small        39.39 K
+mixed_medium       26.42 K - 1.49x slower +12.46 μs
+mixed_large         8.28 K - 4.76x slower +95.34 μs
+
+Memory usage statistics:
+
+Name            Memory usage
+mixed_small         51.84 KB
+mixed_medium        72.69 KB - 1.40x memory usage +20.84 KB
+mixed_large        230.17 KB - 4.44x memory usage +178.33 KB
+
+**All measurements for memory usage were the same**
+================================================================================
+BENCHMARK 8: Long-Running Workflows (Multiple Inputs)
+================================================================================
+Benchmarking branching_20x10_inputs ...
+Benchmarking branching_20x50_inputs ...
+Benchmarking linear_20x10_inputs ...
+Benchmarking linear_20x50_inputs ...
+Benchmarking mixed_medium_x10_inputs ...
+Calculating statistics...
+Formatting results...
+
+Name                              ips        average  deviation         median         99th %
+mixed_medium_x10_inputs       2185.85        0.46 ms    ±19.12%        0.43 ms        0.84 ms
+branching_20x10_inputs         502.23        1.99 ms    ±16.69%        1.92 ms        3.45 ms
+linear_20x10_inputs            479.12        2.09 ms    ±19.01%        2.02 ms        3.75 ms
+branching_20x50_inputs          73.50       13.61 ms    ±10.30%       13.13 ms       18.71 ms
+linear_20x50_inputs             69.68       14.35 ms     ±8.70%       13.96 ms       18.44 ms
+
+Comparison: 
+mixed_medium_x10_inputs       2185.85
+branching_20x10_inputs         502.23 - 4.35x slower +1.53 ms
+linear_20x10_inputs            479.12 - 4.56x slower +1.63 ms
+branching_20x50_inputs          73.50 - 29.74x slower +13.15 ms
+linear_20x50_inputs             69.68 - 31.37x slower +13.89 ms
+
+Memory usage statistics:
+
+Name                       Memory usage
+mixed_medium_x10_inputs         0.81 MB
+branching_20x10_inputs          3.44 MB - 4.26x memory usage +2.63 MB
+linear_20x10_inputs             3.02 MB - 3.75x memory usage +2.22 MB
+branching_20x50_inputs         20.57 MB - 25.48x memory usage +19.77 MB
+linear_20x50_inputs            18.77 MB - 23.25x memory usage +17.96 MB
+
+**All measurements for memory usage were the same**
+================================================================================
+BENCHMARK 9: Prepare/Execute/Apply Overhead (per-cycle)
+================================================================================
+Measures the individual phases of a single reaction cycle.
+
+Benchmarking full_react_cycle (branching_20) ...
+Benchmarking full_react_cycle (linear_20) ...
+Benchmarking prepare_dispatch (branching_20) ...
+Benchmarking prepare_dispatch (linear_20) ...
+Calculating statistics...
+Formatting results...
+
+Name                                      ips        average  deviation         median         99th %
+prepare_dispatch (branching_20)      932.08 K        1.07 μs  ±1444.14%        0.98 μs        1.35 μs
+prepare_dispatch (linear_20)         826.05 K        1.21 μs  ±1079.01%        1.12 μs        2.28 μs
+full_react_cycle (linear_20)         155.97 K        6.41 μs   ±170.15%        6.08 μs       13.10 μs
+full_react_cycle (branching_20)       32.11 K       31.14 μs    ±22.13%       29.44 μs       63.01 μs
+
+Comparison: 
+prepare_dispatch (branching_20)      932.08 K
+prepare_dispatch (linear_20)         826.05 K - 1.13x slower +0.138 μs
+full_react_cycle (linear_20)         155.97 K - 5.98x slower +5.34 μs
+full_react_cycle (branching_20)       32.11 K - 29.03x slower +30.07 μs
+
+Memory usage statistics:
+
+Name                               Memory usage
+prepare_dispatch (branching_20)         1.85 KB
+prepare_dispatch (linear_20)            1.85 KB - 1.00x memory usage +0 KB
+full_react_cycle (linear_20)           12.40 KB - 6.70x memory usage +10.55 KB
+full_react_cycle (branching_20)        73.47 KB - 39.68x memory usage +71.62 KB
+
+**All measurements for memory usage were the same**
+================================================================================
+BENCHMARK 10: Serial vs Async — Branching & Rules
+System schedulers: 16
+================================================================================
+Benchmarking branching_20 async ...
+Benchmarking branching_20 serial ...
+Benchmarking branching_50 async ...
+Benchmarking branching_50 serial ...
+Benchmarking rules_25 async ...
+Benchmarking rules_25 serial ...
+Calculating statistics...
+Formatting results...
+
+Name                          ips        average  deviation         median         99th %
+branching_20 serial        6.41 K      155.92 μs    ±21.97%      154.92 μs      291.32 μs
+rules_25 serial            6.21 K      161.00 μs    ±12.05%      156.13 μs      235.32 μs
+branching_20 async         2.80 K      357.77 μs    ±18.87%      336.51 μs      617.44 μs
+rules_25 async             2.61 K      383.51 μs    ±15.18%      363.19 μs      646.81 μs
+branching_50 serial        1.96 K      510.30 μs    ±25.58%      498.67 μs     1224.82 μs
+branching_50 async         0.97 K     1028.75 μs    ±15.85%      993.13 μs     1638.81 μs
+
+Comparison: 
+branching_20 serial        6.41 K
+rules_25 serial            6.21 K - 1.03x slower +5.08 μs
+branching_20 async         2.80 K - 2.29x slower +201.85 μs
+rules_25 async             2.61 K - 2.46x slower +227.60 μs
+branching_50 serial        1.96 K - 3.27x slower +354.39 μs
+branching_50 async         0.97 K - 6.60x slower +872.83 μs
+
+Memory usage statistics:
+
+Name                        average  deviation         median         99th %
+branching_20 serial       342.19 KB     ±0.00%      342.19 KB      342.19 KB
+rules_25 serial           400.19 KB     ±0.00%      400.19 KB      400.19 KB
+branching_20 async        371.55 KB     ±0.16%      372.09 KB      372.09 KB
+rules_25 async            441.51 KB     ±0.18%      441.66 KB      442.52 KB
+branching_50 serial      1158.80 KB     ±0.00%     1158.80 KB     1158.80 KB
+branching_50 async       1224.63 KB     ±0.87%     1227.63 KB     1241.50 KB
+
+Comparison: 
+branching_20 serial       342.19 KB
+rules_25 serial           400.19 KB - 1.17x memory usage +58 KB
+branching_20 async        371.55 KB - 1.09x memory usage +29.37 KB
+rules_25 async            441.51 KB - 1.29x memory usage +99.33 KB
+branching_50 serial      1158.80 KB - 3.39x memory usage +816.62 KB
+branching_50 async       1224.63 KB - 3.58x memory usage +882.44 KB
+================================================================================
+BENCHMARK 11: Serial vs Async — Joins
+================================================================================
+Benchmarking join_deep async ...
+Benchmarking join_deep serial ...
+Benchmarking join_simple async ...
+Benchmarking join_simple serial ...
+Calculating statistics...
+Formatting results...
+
+Name                         ips        average  deviation         median         99th %
+join_simple serial       21.73 K       46.01 μs    ±16.27%       45.03 μs       82.25 μs
+join_deep serial         15.66 K       63.87 μs    ±17.54%       61.57 μs      108.84 μs
+join_simple async        10.83 K       92.34 μs    ±14.37%       92.34 μs      146.25 μs
+join_deep async           7.71 K      129.67 μs    ±18.94%      118.39 μs      230.52 μs
+
+Comparison: 
+join_simple serial       21.73 K
+join_deep serial         15.66 K - 1.39x slower +17.85 μs
+join_simple async        10.83 K - 2.01x slower +46.33 μs
+join_deep async           7.71 K - 2.82x slower +83.66 μs
+
+Memory usage statistics:
+
+Name                       average  deviation         median         99th %
+join_simple serial        86.87 KB     ±0.00%       86.87 KB       86.87 KB
+join_deep serial         117.91 KB     ±0.00%      117.91 KB      117.91 KB
+join_simple async         95.37 KB     ±0.00%       95.38 KB       95.38 KB
+join_deep async          130.91 KB     ±0.00%      130.91 KB      130.91 KB
+
+Comparison: 
+join_simple serial        86.87 KB
+join_deep serial         117.91 KB - 1.36x memory usage +31.05 KB
+join_simple async         95.37 KB - 1.10x memory usage +8.51 KB
+join_deep async          130.91 KB - 1.51x memory usage +44.04 KB
+================================================================================
+BENCHMARK 12: Serial vs Async — Fan-out / Fan-in
+================================================================================
+Benchmarking fanout_10 async ...
+Benchmarking fanout_10 serial ...
+Benchmarking fanout_4 async ...
+Benchmarking fanout_4 serial ...
+Calculating statistics...
+Formatting results...
+
+Name                       ips        average  deviation         median         99th %
+fanout_4 serial         9.60 K      104.12 μs     ±9.82%       99.60 μs      141.78 μs
+fanout_4 async          5.30 K      188.75 μs     ±6.70%      183.54 μs      221.94 μs
+fanout_10 serial        3.64 K      275.08 μs    ±14.06%      273.39 μs      428.09 μs
+fanout_10 async         1.90 K      526.68 μs    ±17.83%      490.82 μs      897.44 μs
+
+Comparison: 
+fanout_4 serial         9.60 K
+fanout_4 async          5.30 K - 1.81x slower +84.64 μs
+fanout_10 serial        3.64 K - 2.64x slower +170.97 μs
+fanout_10 async         1.90 K - 5.06x slower +422.56 μs
+
+Memory usage statistics:
+
+Name                     average  deviation         median         99th %
+fanout_4 serial        187.05 KB     ±0.00%      187.05 KB      187.05 KB
+fanout_4 async         204.60 KB     ±0.00%      204.60 KB      204.60 KB
+fanout_10 serial       524.23 KB     ±0.00%      524.23 KB      524.23 KB
+fanout_10 async        566.04 KB     ±0.29%      566.26 KB      567.59 KB
+
+Comparison: 
+fanout_4 serial        187.05 KB
+fanout_4 async         204.60 KB - 1.09x memory usage +17.55 KB
+fanout_10 serial       524.23 KB - 2.80x memory usage +337.18 KB
+fanout_10 async        566.04 KB - 3.03x memory usage +379.00 KB
+================================================================================
+BENCHMARK 13: Serial vs Async — Mixed Composite
+================================================================================
+Benchmarking mixed_large async ...
+Benchmarking mixed_large serial ...
+Benchmarking mixed_medium async ...
+Benchmarking mixed_medium serial ...
+Calculating statistics...
+Formatting results...
+
+Name                          ips        average  deviation         median         99th %
+mixed_medium serial       28.38 K       35.23 μs     ±9.88%       34.38 μs       43.53 μs
+mixed_medium async        12.10 K       82.68 μs     ±4.39%       81.38 μs       94.24 μs
+mixed_large serial         9.08 K      110.14 μs     ±6.11%      108.79 μs      129.86 μs
+mixed_large async          3.61 K      276.75 μs    ±14.35%      274.97 μs      418.84 μs
+
+Comparison: 
+mixed_medium serial       28.38 K
+mixed_medium async        12.10 K - 2.35x slower +47.44 μs
+mixed_large serial         9.08 K - 3.13x slower +74.91 μs
+mixed_large async          3.61 K - 7.85x slower +241.52 μs
+
+Memory usage statistics:
+
+Name                        average  deviation         median         99th %
+mixed_medium serial        72.69 KB     ±0.00%       72.69 KB       72.69 KB
+mixed_medium async         81.89 KB     ±0.00%       81.89 KB       81.89 KB
+mixed_large serial        230.17 KB     ±0.00%      230.17 KB      230.17 KB
+mixed_large async         255.90 KB     ±0.02%      255.90 KB      255.90 KB
+
+Comparison: 
+mixed_medium serial        72.69 KB
+mixed_medium async         81.89 KB - 1.13x memory usage +9.20 KB
+mixed_large serial        230.17 KB - 3.17x memory usage +157.48 KB
+mixed_large async         255.90 KB - 3.52x memory usage +183.21 KB
+================================================================================
+BENCHMARK 14: Serial vs Async — Long-Running (Multiple Inputs)
+================================================================================
+Benchmarking branching_20x10 async ...
+Benchmarking branching_20x10 serial ...
+Benchmarking mixed_medium_x10 async ...
+Benchmarking mixed_medium_x10 serial ...
+Calculating statistics...
+Formatting results...
+
+Name                              ips        average  deviation         median         99th %
+mixed_medium_x10 serial        2.36 K        0.42 ms    ±15.39%        0.42 ms        0.72 ms
+mixed_medium_x10 async         1.00 K        1.00 ms    ±13.56%        0.93 ms        1.46 ms
+branching_20x10 serial         0.49 K        2.03 ms    ±16.75%        1.92 ms        3.57 ms
+branching_20x10 async          0.26 K        3.86 ms     ±9.27%        3.78 ms        5.20 ms
+
+Comparison: 
+mixed_medium_x10 serial        2.36 K
+mixed_medium_x10 async         1.00 K - 2.35x slower +0.57 ms
+branching_20x10 serial         0.49 K - 4.79x slower +1.60 ms
+branching_20x10 async          0.26 K - 9.11x slower +3.44 ms
+
+Memory usage statistics:
+
+Name                            average  deviation         median         99th %
+mixed_medium_x10 serial         0.81 MB     ±0.00%        0.81 MB        0.81 MB
+mixed_medium_x10 async          0.90 MB     ±0.00%        0.90 MB        0.90 MB
+branching_20x10 serial          3.44 MB     ±0.00%        3.44 MB        3.44 MB
+branching_20x10 async           3.72 MB     ±0.23%        3.72 MB        3.73 MB
+
+Comparison: 
+mixed_medium_x10 serial         0.81 MB
+mixed_medium_x10 async          0.90 MB - 1.11x memory usage +0.0880 MB
+branching_20x10 serial          3.44 MB - 4.26x memory usage +2.63 MB
+branching_20x10 async           3.72 MB - 4.60x memory usage +2.91 MB
+================================================================================
+MEMORY FOOTPRINT
+================================================================================
+
+  Workflow                      Pre (KB) Post (KB)    Growth   Facts    B/Fact
+  ----------------------------------------------------------------------------
+  accumulator_downstream             6.8      10.1       3.4       4       864
+  accumulator_rule                  11.8      14.5       2.7       3       906
+  accumulator_simple                 4.2       6.3       2.1       3       728
+  branching_large                   79.6     135.4      55.9      51      1122
+  branching_medium                  29.9      52.4      22.6      21      1100
+  branching_small                    8.4      13.9       5.5       6       945
+  fanout_medium                     16.6      46.9      30.4      32       972
+  fanout_small                      16.1      29.4      13.3      14       974
+  join_deep                         16.1      24.3       8.2       7      1196
+  join_simple                       11.0      16.7       5.8       5      1185
+  linear_large                      78.1     144.2      66.1      51      1327
+  linear_medium                     29.8      57.5      27.7      21      1349
+  linear_small                       8.4      14.6       6.2       6      1057
+  linear_xlarge                    154.0     286.9     132.9     101      1347
+  mixed_large                       22.4      40.4      18.0      16      1153
+  mixed_medium                      14.4      21.2       6.7       7       986
+  mixed_small                       14.2      18.5       4.4       4      1116
+  rules_large                      198.3     213.7      15.3       6      2616
+  rules_medium                      77.9      89.2      11.2       6      1918
+  rules_small                       16.6      19.1       2.5       2      1276
+
+================================================================================
+BASELINE BENCHMARK COMPLETE
+================================================================================
+
+To compare against the event-sourced model, save this output and re-run
+after implementing the event-sourced aggregate model.

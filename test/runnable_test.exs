@@ -18,7 +18,7 @@ defmodule Runic.Workflow.RunnableTest do
       assert runnable.context == context
       assert is_integer(runnable.id)
       assert runnable.result == nil
-      assert runnable.apply_fn == nil
+      assert runnable.events == nil
       assert runnable.error == nil
     end
 
@@ -72,18 +72,27 @@ defmodule Runic.Workflow.RunnableTest do
   end
 
   describe "Runnable.complete/3" do
-    test "marks runnable as completed with result and apply_fn" do
+    test "marks runnable as completed with result and events" do
       step = Step.new(work: &double/1)
       fact = Fact.new(value: 42)
       context = CausalContext.new()
       runnable = Runnable.new(step, fact, context)
 
-      apply_fn = fn workflow -> workflow end
-      completed = Runnable.complete(runnable, :some_result, apply_fn)
+      events = [
+        %Runic.Workflow.Events.FactProduced{
+          hash: 1,
+          value: 84,
+          ancestry: nil,
+          producer_label: :produced,
+          weight: 1
+        }
+      ]
+
+      completed = Runnable.complete(runnable, :some_result, events)
 
       assert completed.status == :completed
       assert completed.result == :some_result
-      assert completed.apply_fn == apply_fn
+      assert completed.events == events
       assert completed.error == nil
     end
   end
@@ -105,17 +114,24 @@ defmodule Runic.Workflow.RunnableTest do
   end
 
   describe "Runnable.skip/2" do
-    test "marks runnable as skipped with apply_fn" do
+    test "marks runnable as skipped with events" do
       step = Step.new(work: &double/1)
       fact = Fact.new(value: 42)
       context = CausalContext.new()
       runnable = Runnable.new(step, fact, context)
 
-      apply_fn = fn workflow -> workflow end
-      skipped = Runnable.skip(runnable, apply_fn)
+      events = [
+        %Runic.Workflow.Events.ActivationConsumed{
+          fact_hash: fact.hash,
+          node_hash: step.hash,
+          from_label: :runnable
+        }
+      ]
+
+      skipped = Runnable.skip(runnable, events)
 
       assert skipped.status == :skipped
-      assert skipped.apply_fn == apply_fn
+      assert skipped.events == events
     end
   end
 

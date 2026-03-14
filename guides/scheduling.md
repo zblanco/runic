@@ -760,9 +760,7 @@ Using `Task.Supervisor` means a crashing task doesn't bring down the scheduler. 
 
 ## What's Next
 
-This guide covered building schedulers for in-memory, single-node execution. The next guide on **Durable Execution and Persistence** will cover:
+This guide covered building schedulers for in-memory, single-node execution. From here:
 
-- Persisting workflow state with `build_log/1` and `from_log/1`
-- Recovering workflows across process restarts
-- Incremental event capture with `invoke_with_events/3`
-- Checkpointing strategies for long-running workflows
+- **[Durable Execution and Persistence](durable-execution.html)** — persisting workflow state, crash recovery, event sourcing, and checkpointing
+- **[Execution Strategies](execution-strategies.html)** — pluggable executors (Task, inline, GenStage), schedulers (ChainBatching, FlowBatch), parallel promise execution via Flow, and per-component execution overrides

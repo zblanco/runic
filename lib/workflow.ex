@@ -81,6 +81,46 @@ defmodule Runic.Workflow do
   - `apply_runnable/2` - Applies a completed runnable back to the workflow
   - `Invokable.execute/2` - Executes a runnable in isolation (no workflow access)
 
+  ## Runtime Context
+
+  Runtime context provides a way to inject external, runtime-scoped values (API keys,
+  database connections, tenant IDs, feature flags) into workflow components without
+  baking them into closures or the workflow graph.
+
+  Components declare their context dependencies using `context/1` expressions in the
+  `Runic` DSL:
+
+      step = Runic.step(fn _x -> context(:api_key) end, name: :call_llm)
+
+      rule = Runic.rule name: :gated do
+        given(val: v)
+        where(v > context(:threshold))
+        then(fn %{val: v} -> {:ok, v} end)
+      end
+
+  Context is provided at runtime via `put_run_context/2` or the `:run_context` option:
+
+      # Set context directly
+      workflow = Workflow.put_run_context(workflow, %{
+        call_llm: %{api_key: "sk-..."},
+        _global: %{workspace_id: "ws1"}
+      })
+
+      # Or pass via options
+      Workflow.react_until_satisfied(workflow, input,
+        run_context: %{call_llm: %{api_key: "sk-..."}}
+      )
+
+  Context values are:
+
+  - **Scoped by component name** with an optional `_global` key for shared values
+  - **Not part of the workflow hash** — two workflows with different contexts are structurally identical
+  - **Not serialized** in the event log or fact graph
+  - **Resolved during the prepare phase** of the three-phase execution model
+
+  Use `required_context_keys/1` and `validate_run_context/2` to introspect and validate
+  context requirements before execution.
+
   ## Workflow Composition
 
   Workflows can be composed together using `merge/2` or by adding components with `add/3`:
@@ -118,7 +158,17 @@ defmodule Runic.Workflow do
 
   Extract results after workflow execution:
 
-      # Raw values (most common)
+      # Structured results using output port contract (recommended)
+      Workflow.results(workflow)                       # => %{total: 42.50}
+
+      # Explicit component selection
+      Workflow.results(workflow, [:add, :mult])         # => %{add: 6, mult: 10}
+
+      # With options
+      Workflow.results(workflow, [:price], facts: true) # => %{price: %Fact{}}
+      Workflow.results(workflow, nil, all: true)         # => %{total: [v1, v2]}
+
+      # Raw values (low-level)
       Workflow.raw_productions(workflow)           # All leaf outputs
       Workflow.raw_productions(workflow, :step_name)  # From specific component
 
@@ -171,10 +221,12 @@ defmodule Runic.Workflow do
   alias Runic.Workflow.Step
   alias Runic.Workflow.Condition
   alias Runic.Workflow.Fact
+  alias Runic.Workflow.FactRef
   alias Runic.Workflow.Rule
   alias Runic.Workflow.Join
   alias Runic.Workflow.Invokable
   alias Runic.Workflow.ComponentAdded
+  alias Runic.Workflow.ComponentRemoved
   alias Runic.Workflow.ReactionOccurred
   alias Runic.Workflow.Runnable
   alias Runic.Workflow.SchedulerPolicy
@@ -183,6 +235,17 @@ defmodule Runic.Workflow do
   alias Runic.Workflow.RunnableCompleted
   alias Runic.Workflow.RunnableFailed
   alias Runic.Workflow.Private
+  alias Runic.Workflow.Events.FactProduced
+  alias Runic.Workflow.Events.ActivationConsumed
+  alias Runic.Workflow.Events.RunnableActivated
+  alias Runic.Workflow.Events.ConditionSatisfied
+  alias Runic.Workflow.Events.MapReduceTracked
+  alias Runic.Workflow.Events.StateInitiated
+  alias Runic.Workflow.Events.JoinFactReceived
+  alias Runic.Workflow.Events.JoinCompleted
+  alias Runic.Workflow.Events.JoinEdgeRelabeled
+  alias Runic.Workflow.Events.FanOutFactEmitted
+  alias Runic.Workflow.Events.FanInCompleted
 
   @type t() :: %__MODULE__{
           name: String.t(),
@@ -197,10 +260,18 @@ defmodule Runic.Workflow do
           mapped: map(),
           # input_fact_hash -> MapSet.new([produced_facts])
           inputs: map(),
+          # port contract for workflow boundary inputs (keyword list or nil)
+          input_ports: keyword() | nil,
+          # port contract for workflow boundary outputs (keyword list or nil)
+          output_ports: keyword() | nil,
           # list of {matcher, policy_map} tuples for scheduler policies
           scheduler_policies: list(),
           # accumulated runnable lifecycle events for durable execution
-          runnable_events: list()
+          runnable_events: list(),
+          # when true, apply_runnable/2 buffers events into uncommitted_events
+          emit_events: boolean(),
+          # runtime-scoped external values (secrets, tenant IDs, etc.) keyed by component name
+          run_context: map()
         }
 
   @type runnable() :: {fun(), term()}
@@ -214,8 +285,13 @@ defmodule Runic.Workflow do
             mapped: %{},
             build_log: [],
             inputs: %{},
+            input_ports: nil,
+            output_ports: nil,
             scheduler_policies: [],
-            runnable_events: []
+            runnable_events: [],
+            emit_events: false,
+            uncommitted_events: [],
+            run_context: %{}
 
   @doc """
   Creates an empty workflow with no components.
@@ -290,6 +366,146 @@ defmodule Runic.Workflow do
   @spec append_scheduler_policy(t(), term(), map()) :: t()
   def append_scheduler_policy(%__MODULE__{} = workflow, matcher, policy) when is_map(policy) do
     %{workflow | scheduler_policies: workflow.scheduler_policies ++ [{matcher, policy}]}
+  end
+
+  @doc """
+  Merges the given context map into the workflow's run context.
+
+  Run context provides external, runtime-scoped values (secrets, tenant IDs,
+  database connections) to components during execution. Values are keyed by
+  component name for scoped access, with an optional `:_global` key for
+  values available to all components.
+
+  Run context is NOT part of the workflow's content hash, NOT serialized
+  in the event log, and NOT visible in the fact graph.
+
+  ## Example
+
+      workflow = Workflow.put_run_context(workflow, %{
+        call_llm: %{api_key: "sk-..."},
+        _global: %{workspace_id: "ws1"}
+      })
+  """
+  @spec put_run_context(t(), map()) :: t()
+  def put_run_context(%__MODULE__{} = workflow, context) when is_map(context) do
+    %{workflow | run_context: Map.merge(workflow.run_context, context)}
+  end
+
+  @doc """
+  Returns the full run context map.
+
+  ## Example
+
+      Workflow.get_run_context(workflow)
+      # => %{call_llm: %{api_key: "sk-..."}, _global: %{workspace_id: "ws1"}}
+  """
+  @spec get_run_context(t()) :: map()
+  def get_run_context(%__MODULE__{run_context: ctx}), do: ctx
+
+  @doc """
+  Returns the resolved run context for a specific component.
+
+  Merges `_global` context (if any) with the component-specific context.
+  Component-specific keys take precedence over global keys.
+
+  ## Example
+
+      Workflow.get_run_context(workflow, :call_llm)
+      # => %{workspace_id: "ws1", api_key: "sk-..."}
+  """
+  @spec get_run_context(t(), atom() | String.t()) :: map()
+  def get_run_context(%__MODULE__{run_context: ctx}, component_name) do
+    global = Map.get(ctx, :_global, %{})
+    component = Map.get(ctx, component_name, %{})
+    Map.merge(global, component)
+  end
+
+  @doc """
+  Returns a map of component names to their context key requirements.
+
+  Only includes components that use `context/1` or `context/2` meta expressions.
+  Components without context requirements are omitted.
+
+  Keys are annotated with whether they have defaults:
+
+  ## Example
+
+      Workflow.required_context_keys(workflow)
+      # => %{call_llm: [api_key: :required, model: {:optional, "gpt-4"}]}
+  """
+  @spec required_context_keys(t()) :: %{atom() => keyword()}
+  def required_context_keys(%__MODULE__{graph: graph} = workflow) do
+    for {_hash, vertex} <- graph.vertices,
+        is_map_key(vertex, :meta_refs),
+        refs = vertex.meta_refs,
+        refs != [],
+        context_refs = Enum.filter(refs, &(&1.kind == :context)),
+        context_refs != [],
+        name = resolve_component_name(workflow, vertex),
+        not is_nil(name),
+        reduce: %{} do
+      acc ->
+        entries =
+          Enum.map(context_refs, fn ref ->
+            case Map.get(ref, :default) do
+              nil -> {ref.context_key, :required}
+              default -> {ref.context_key, {:optional, default}}
+            end
+          end)
+
+        existing = Map.get(acc, name, [])
+        merged = Enum.uniq_by(existing ++ entries, &elem(&1, 0))
+        Map.put(acc, name, merged)
+    end
+  end
+
+  defp resolve_component_name(_workflow, %{name: name}) when not is_nil(name), do: name
+
+  defp resolve_component_name(%__MODULE__{graph: graph}, vertex) do
+    (Graph.in_edges(graph, vertex, by: :flow) ++
+       Graph.in_edges(graph, vertex, by: :component_of))
+    |> Enum.find_value(fn edge ->
+      case edge.v1 do
+        %Rule{name: name} -> name
+        _ -> nil
+      end
+    end)
+  end
+
+  @doc """
+  Validates that the given run_context satisfies all `context/1` references
+  in the workflow.
+
+  Returns `:ok` if all required keys are present, or `{:error, missing}` with
+  a map of component names to their missing context keys. Keys with defaults
+  (from `context/2`) are not reported as missing.
+
+  ## Example
+
+      Workflow.validate_run_context(workflow, %{call_llm: %{api_key: "sk-..."}})
+      # => :ok
+
+      Workflow.validate_run_context(workflow, %{})
+      # => {:error, %{call_llm: [:api_key], db_query: [:repo, :tenant_id]}}
+  """
+  @spec validate_run_context(t(), map()) :: :ok | {:error, %{atom() => [atom()]}}
+  def validate_run_context(%__MODULE__{} = workflow, context) when is_map(context) do
+    required = required_context_keys(workflow)
+    global = Map.get(context, :_global, %{})
+
+    missing =
+      for {component_name, entries} <- required,
+          component_ctx = Map.get(context, component_name, %{}),
+          available = Map.merge(global, component_ctx),
+          # Only check keys marked as :required (no default)
+          required_keys =
+            for({k, :required} <- entries, !Map.has_key?(available, k), do: k),
+          required_keys != [],
+          into: %{} do
+        {component_name, required_keys}
+      end
+
+    if map_size(missing) == 0, do: :ok, else: {:error, missing}
   end
 
   @doc """
@@ -394,6 +610,21 @@ defmodule Runic.Workflow do
       6 in result  # :a produced 5 + 1
       10 in result # :b produced 5 * 2
       16 in result # :sum produced 6 + 10
+
+  ## Port Validation
+
+  By default, `add/3` validates that the producer's output ports are type-compatible
+  with the consumer's input ports. Control this with the `:validate` option:
+
+  - `:error` (default) — raises `Runic.IncompatiblePortError` on type mismatch
+  - `:warn` — logs a warning but allows the connection
+  - `:off` — skips validation entirely (useful for prototyping)
+
+      # Bypass validation during prototyping
+      Workflow.add(workflow, step, to: :parent, validate: :off)
+
+  Untyped components (all ports default to `type: :any`) always pass validation,
+  preserving Runic's gradual typing philosophy.
   """
   def add(%__MODULE__{} = workflow, component, opts \\ []) do
     case opts[:to] do
@@ -449,7 +680,12 @@ defmodule Runic.Workflow do
           transmuted = Transmutable.to_component(component)
           do_add_component(workflow, transmuted, parent, opts)
         else
-          workflow = Component.connect(component, parent, workflow)
+          validate_ports(component, parent, opts)
+
+          workflow =
+            component
+            |> Component.connect(parent, workflow)
+            |> maybe_draw_connects_to(component, parent)
 
           if should_log do
             append_build_log(workflow, component, parent)
@@ -461,6 +697,78 @@ defmodule Runic.Workflow do
       _otherwise ->
         transmuted = Transmutable.to_component(component)
         do_add_component(workflow, transmuted, parent, opts)
+    end
+  end
+
+  defp validate_ports(consumer, parents, opts) when is_list(parents) do
+    Enum.each(parents, fn parent -> validate_ports(consumer, parent, opts) end)
+  end
+
+  defp validate_ports(consumer, producer, opts) do
+    validation = Keyword.get(opts, :validate, :error)
+
+    if validation == :off or Component.impl_for(producer) == nil do
+      :ok
+    else
+      producer_outputs = Component.outputs(producer)
+      consumer_inputs = Component.inputs(consumer)
+
+      case Component.TypeCompatibility.ports_compatible?(producer_outputs, consumer_inputs) do
+        {:ok, _} ->
+          :ok
+
+        {:error, reasons} ->
+          case validation do
+            :warn ->
+              Logger.warning(
+                "Port incompatibility connecting #{inspect(component_name(consumer))} to #{inspect(component_name(producer))}: #{inspect(reasons)}"
+              )
+
+            :error ->
+              raise Runic.IncompatiblePortError,
+                producer: producer,
+                consumer: consumer,
+                reasons: reasons
+          end
+      end
+    end
+  end
+
+  defp component_name(%{name: name}) when not is_nil(name), do: name
+  defp component_name(%{hash: hash}), do: hash
+  defp component_name(other), do: inspect(other)
+
+  defp maybe_draw_connects_to(workflow, component, parents) when is_list(parents) do
+    Enum.reduce(parents, workflow, fn parent, wrk ->
+      maybe_draw_connects_to(wrk, component, parent)
+    end)
+  end
+
+  defp maybe_draw_connects_to(workflow, _component, %Root{}), do: workflow
+
+  defp maybe_draw_connects_to(workflow, component, parent) do
+    parent_component = find_owning_component(workflow, parent)
+
+    if parent_component do
+      Private.draw_connection(workflow, parent_component, component, :connects_to)
+    else
+      workflow
+    end
+  end
+
+  defp find_owning_component(%__MODULE__{components: components, graph: g}, node) do
+    node_hash = if is_map(node) and Map.has_key?(node, :hash), do: node.hash, else: nil
+
+    case Enum.find(components, fn {_name, hash} -> hash == node_hash end) do
+      {_name, hash} ->
+        Map.get(g.vertices, hash)
+
+      nil ->
+        # The node might be a sub-component; find the component that owns it via :component_of
+        case Graph.in_edges(g, node, by: :component_of) do
+          [%{v1: owner} | _] -> owner
+          _ -> nil
+        end
     end
   end
 
@@ -524,6 +832,7 @@ defmodule Runic.Workflow do
         closure: closure,
         name: component.name,
         to: parent,
+        hash: Map.get(component, :hash),
         # Backward compatibility: also set source/bindings for old deserialization
         source: Component.source(component),
         bindings: if(closure, do: closure.bindings, else: %{})
@@ -564,7 +873,8 @@ defmodule Runic.Workflow do
           %ComponentAdded{
             closure: closure,
             name: component.name,
-            to: parent
+            to: parent,
+            hash: Map.get(component, :hash)
           }
 
         nil ->
@@ -573,6 +883,7 @@ defmodule Runic.Workflow do
             source: Component.source(component),
             name: component.name,
             to: parent,
+            hash: Map.get(component, :hash),
             bindings: Map.get(component, :bindings, %{})
           }
       end
@@ -628,6 +939,221 @@ defmodule Runic.Workflow do
     add(wrk, component, to: event.to)
   end
 
+  def apply_event(%__MODULE__{} = wf, %FactProduced{} = e) do
+    fact = Fact.new(hash: e.hash, value: e.value, ancestry: e.ancestry, meta: e.meta)
+    wf = log_fact(wf, fact)
+
+    case e.ancestry do
+      {producer_hash, _parent_fact_hash} ->
+        producer = Map.get(wf.graph.vertices, producer_hash)
+
+        if producer do
+          wf
+          |> draw_connection(producer, fact, e.producer_label, weight: e.weight || 0)
+          |> maybe_track_latest_state_fact(e)
+        else
+          wf
+        end
+
+      nil ->
+        wf
+    end
+  end
+
+  def apply_event(%__MODULE__{} = wf, %ActivationConsumed{} = e) do
+    node = Map.get(wf.graph.vertices, e.node_hash)
+    fact = Map.get(wf.graph.vertices, e.fact_hash)
+
+    if node && fact do
+      mark_runnable_as_ran(wf, node, fact)
+    else
+      wf
+    end
+  end
+
+  def apply_event(%__MODULE__{} = wf, %ConditionSatisfied{} = e) do
+    fact = Map.get(wf.graph.vertices, e.fact_hash)
+    cond_node = Map.get(wf.graph.vertices, e.condition_hash)
+
+    if fact && cond_node do
+      draw_connection(wf, fact, cond_node, :satisfied, weight: e.weight || 0)
+    else
+      wf
+    end
+  end
+
+  def apply_event(%__MODULE__{} = wf, %RunnableActivated{} = e) do
+    fact = Map.get(wf.graph.vertices, e.fact_hash)
+    node = Map.get(wf.graph.vertices, e.node_hash)
+
+    if fact && node do
+      draw_connection(wf, fact, node, e.activation_kind)
+    else
+      wf
+    end
+  end
+
+  def apply_event(%__MODULE__{} = wf, %MapReduceTracked{} = e) do
+    seen_key = {e.source_fact_hash, e.step_hash}
+    seen = Map.get(wf.mapped, seen_key, %{})
+    seen = Map.put(seen, e.fan_out_fact_hash, e.result_fact_hash)
+
+    mapped =
+      wf.mapped
+      |> Map.put(seen_key, seen)
+      |> Map.put({:fan_out_for_batch, e.source_fact_hash}, e.fan_out_hash)
+
+    %{wf | mapped: mapped}
+  end
+
+  def apply_event(%__MODULE__{} = wf, %StateInitiated{} = e) do
+    init_fact = Fact.new(hash: e.init_fact_hash, value: e.init_value, ancestry: e.init_ancestry)
+    acc = Map.get(wf.graph.vertices, e.accumulator_hash)
+
+    if acc do
+      wf
+      |> log_fact(init_fact)
+      |> draw_connection(acc, init_fact, :state_initiated, weight: e.weight || 0)
+    else
+      wf
+    end
+  end
+
+  def apply_event(%__MODULE__{} = wf, %JoinFactReceived{} = e) do
+    fact = Map.get(wf.graph.vertices, e.fact_hash)
+    join = Map.get(wf.graph.vertices, e.join_hash)
+
+    if fact && join do
+      draw_connection(wf, fact, join, :joined, weight: e.weight || 0)
+    else
+      wf
+    end
+  end
+
+  def apply_event(%__MODULE__{} = wf, %JoinCompleted{} = e) do
+    join = Map.get(wf.graph.vertices, e.join_hash)
+
+    result_fact =
+      Fact.new(hash: e.result_fact_hash, value: e.result_value, ancestry: e.result_ancestry)
+
+    if join do
+      wf
+      |> log_fact(result_fact)
+      |> draw_connection(join, result_fact, :produced, weight: e.weight || 0)
+    else
+      wf
+    end
+  end
+
+  def apply_event(%__MODULE__{} = wf, %JoinEdgeRelabeled{} = e) do
+    fact = Map.get(wf.graph.vertices, e.fact_hash)
+    join = Map.get(wf.graph.vertices, e.join_hash)
+
+    if fact && join do
+      case Graph.update_labelled_edge(wf.graph, fact, join, e.from_label, label: e.to_label) do
+        %Graph{} = updated -> %{wf | graph: updated}
+        _ -> wf
+      end
+    else
+      wf
+    end
+  end
+
+  def apply_event(%__MODULE__{} = wf, %FanOutFactEmitted{} = e) do
+    fact =
+      Fact.new(hash: e.emitted_fact_hash, value: e.emitted_value, ancestry: e.emitted_ancestry)
+
+    fan_out = Map.get(wf.graph.vertices, e.fan_out_hash)
+
+    wf = log_fact(wf, fact)
+
+    wf =
+      if fan_out do
+        draw_connection(wf, fan_out, fact, :fan_out, weight: e.weight || 0)
+      else
+        wf
+      end
+
+    # Update mapped tracking for downstream FanIn coordination
+    key = {e.source_fact_hash, e.fan_out_hash}
+    expected = Map.get(wf.mapped, key, [])
+    %{wf | mapped: Map.put(wf.mapped, key, [e.emitted_fact_hash | expected])}
+  end
+
+  def apply_event(%__MODULE__{} = wf, %FanInCompleted{} = e) do
+    fan_in = Map.get(wf.graph.vertices, e.fan_in_hash)
+
+    result_fact =
+      Fact.new(hash: e.result_fact_hash, value: e.result_value, ancestry: e.result_ancestry)
+
+    if fan_in do
+      wf
+      |> log_fact(result_fact)
+      |> draw_connection(fan_in, result_fact, :reduced, weight: e.weight || 0)
+      |> fan_in_mark_completed(e)
+      |> fan_in_cleanup_mapped(e)
+    else
+      wf
+    end
+  end
+
+  # Fallback: protocol dispatch for custom events from external Invokable implementations
+  def apply_event(%__MODULE__{} = wf, event) when is_struct(event) do
+    Runic.Workflow.EventApplicator.apply(event, wf)
+  end
+
+  # Lean replay: creates FactRef instead of Fact when value was stripped.
+  # Falls back to full Fact for legacy events that still carry values (migration).
+  defp apply_event_lean(%__MODULE__{} = wf, %FactProduced{value: nil} = e) do
+    ref = %FactRef{hash: e.hash, ancestry: e.ancestry}
+    wf = log_fact(wf, ref)
+
+    case e.ancestry do
+      {producer_hash, _parent_fact_hash} ->
+        producer = Map.get(wf.graph.vertices, producer_hash)
+
+        if producer do
+          wf
+          |> draw_connection(producer, ref, e.producer_label, weight: e.weight || 0)
+          |> maybe_track_latest_state_fact(e)
+        else
+          wf
+        end
+
+      nil ->
+        wf
+    end
+  end
+
+  defp apply_event_lean(%__MODULE__{} = wf, %FactProduced{} = e) do
+    apply_event(wf, e)
+  end
+
+  defp maybe_track_latest_state_fact(%__MODULE__{} = wf, %FactProduced{
+         producer_label: :state_produced,
+         ancestry: {producer_hash, _parent_fact_hash},
+         hash: fact_hash
+       }) do
+    %{wf | mapped: Map.put(wf.mapped, {:latest_state_fact, producer_hash}, fact_hash)}
+  end
+
+  defp maybe_track_latest_state_fact(%__MODULE__{} = wf, _event), do: wf
+
+  defp fan_in_mark_completed(%__MODULE__{} = wf, %FanInCompleted{} = e) do
+    completed_key = {:fan_in_completed, e.source_fact_hash, e.fan_in_hash}
+    %{wf | mapped: Map.put(wf.mapped, completed_key, true)}
+  end
+
+  defp fan_in_cleanup_mapped(%__MODULE__{} = wf, %FanInCompleted{} = e) do
+    mapped =
+      wf.mapped
+      |> Map.delete(e.expected_key)
+      |> Map.delete(e.seen_key)
+      |> Map.delete({:fan_out_for_batch, e.source_fact_hash})
+
+    %{wf | mapped: mapped}
+  end
+
   @doc """
   Applies a list of `%ComponentAdded{}` events to the workflow.
 
@@ -671,8 +1197,16 @@ defmodule Runic.Workflow do
           raise "ComponentAdded event has neither closure nor source"
       end
 
-    component
-    |> Map.put(:name, event.name)
+    component =
+      component
+      |> Map.put(:name, event.name)
+
+    # Restore original hash if stored — ensures hash stability across rebuilds
+    if event.hash do
+      Map.put(component, :hash, event.hash)
+    else
+      component
+    end
   end
 
   # Backward compatibility: evaluate source with old __caller_context__ approach
@@ -765,6 +1299,94 @@ defmodule Runic.Workflow do
 
       %RunnableFailed{} = event, wrk ->
         %{wrk | runnable_events: wrk.runnable_events ++ [event]}
+
+      %ComponentRemoved{name: name}, wrk ->
+        remove_component(wrk, name)
+    end)
+  end
+
+  @doc """
+  Rebuilds a workflow from a mixed stream of build and runtime events.
+
+  Separates `%ComponentAdded{}` events (workflow structure) from runtime events
+  (e.g. `%FactProduced{}`, `%ActivationConsumed{}`), rebuilds the workflow
+  structure via `from_log/1`, then replays runtime events via `apply_event/2`.
+
+  When a `base_workflow` is provided, skips structure reconstruction and
+  replays only runtime events on top of the base.
+
+  This is the primary recovery path for event-sourced stores using
+  `append/3` and `stream/2`.
+
+  ## Examples
+
+      # Full rebuild from event stream
+      {:ok, event_stream} = store.stream(workflow_id, store_state)
+      workflow = Workflow.from_events(Enum.to_list(event_stream))
+
+      # Replay on an existing workflow structure
+      workflow = Workflow.from_events(runtime_events, base_workflow)
+  """
+  @spec from_events(Enumerable.t(), t() | nil) :: t()
+  def from_events(events, base_workflow \\ nil) do
+    do_from_events(events, base_workflow, [])
+  end
+
+  @doc """
+  Like `from_events/2` but accepts options for replay control.
+
+  ## Options
+
+    * `:fact_mode` — `:full` (default) creates `Fact` vertices from `FactProduced`
+      events. `:ref` creates lightweight `FactRef` vertices instead, enabling
+      lean replay that avoids loading cold fact values into memory.
+
+  ## Example
+
+      # Lean replay: creates FactRef vertices, resolve hot ones later
+      workflow = Workflow.from_events(events, nil, fact_mode: :ref)
+  """
+  @spec from_events(Enumerable.t(), t() | nil, keyword()) :: t()
+  def from_events(events, base_workflow, opts) when is_list(opts) do
+    do_from_events(events, base_workflow, opts)
+  end
+
+  defp do_from_events(events, base_workflow, opts) do
+    fact_mode = Keyword.get(opts, :fact_mode, :full)
+
+    {build_events, runtime_events} =
+      Enum.split_with(events, fn event ->
+        is_struct(event, ComponentAdded) or
+          is_struct(event, ReactionOccurred) or
+          is_struct(event, RunnableDispatched) or
+          is_struct(event, RunnableCompleted) or
+          is_struct(event, RunnableFailed)
+      end)
+
+    base =
+      if base_workflow do
+        # Replay only structural/lifecycle events that from_log handles
+        if build_events != [] do
+          from_log(build_events)
+          |> then(fn rebuilt ->
+            # Merge runnable_events from rebuilt onto base if base is provided
+            %{
+              base_workflow
+              | runnable_events: base_workflow.runnable_events ++ rebuilt.runnable_events
+            }
+          end)
+        else
+          base_workflow
+        end
+      else
+        from_log(build_events)
+      end
+
+    Enum.reduce(runtime_events, base, fn event, wf ->
+      case {fact_mode, event} do
+        {:ref, %FactProduced{}} -> apply_event_lean(wf, event)
+        _ -> apply_event(wf, event)
+      end
     end)
   end
 
@@ -785,11 +1407,11 @@ defmodule Runic.Workflow do
   end
 
   @doc """
-  Returns the complete event log combining `build_log/1` and reaction events.
+  Returns a complete event snapshot for the workflow.
 
   The returned list contains `%ComponentAdded{}` events followed by
   `%ReactionOccurred{}` events, providing a full serializable snapshot of
-  the workflow structure and execution state. Use with `from_log/1` to
+  the workflow structure and execution state. Use with `from_events/2` to
   persist and restore both the workflow definition and its runtime state.
 
   ## Example
@@ -800,11 +1422,24 @@ defmodule Runic.Workflow do
       workflow = Runic.workflow(steps: [Runic.step(fn x -> x + 1 end, name: :add)])
       ran = Workflow.react_until_satisfied(workflow, 5)
 
-      log = Workflow.log(ran)
-      restored = Workflow.from_log(log)
+      events = Workflow.event_log(ran)
+      restored = Workflow.from_events(events)
   """
-  def log(wrk) do
+  @spec event_log(t()) :: list()
+  def event_log(wrk) do
     build_log(wrk) ++ reactions_occurred(wrk) ++ wrk.runnable_events
+  end
+
+  @doc """
+  Returns the complete event log combining `build_log/1` and reaction events.
+
+  Deprecated in favor of `event_log/1` for full snapshots, or
+  `build_log/1 + workflow.uncommitted_events` for incremental event-sourced
+  persistence.
+  """
+  @deprecated "Use build_log/1 + workflow.uncommitted_events with from_events/2 instead"
+  def log(wrk) do
+    event_log(wrk)
   end
 
   defp reactions_occurred(%__MODULE__{graph: g}) do
@@ -876,6 +1511,50 @@ defmodule Runic.Workflow do
   end
 
   @doc """
+  Returns a graph containing only the registered components as vertices
+  and `:connects_to` edges showing how components are connected to each other.
+
+  This provides a high-level projected view of the workflow suitable for
+  visualization in no-code builders or canvas UIs, without exposing the
+  internal invokable nodes (Steps, Conditions, Joins, etc.).
+
+  ## Example
+
+      require Runic
+      alias Runic.Workflow
+
+      step1 = Runic.step(fn x -> x + 1 end, name: :add)
+      step2 = Runic.step(fn x -> x * 2 end, name: :double)
+
+      workflow = Workflow.new()
+        |> Workflow.add(step1)
+        |> Workflow.add(step2, to: :add)
+
+      component_graph = Workflow.connected_components(workflow)
+      # => Graph with :add and :double vertices, edge :add -> :double
+  """
+  def connected_components(%__MODULE__{graph: g, components: components}) do
+    component_vertices =
+      Map.new(components, fn {_name, hash} ->
+        {hash, Map.get(g.vertices, hash)}
+      end)
+
+    component_edges = Graph.edges(g, by: :connects_to)
+
+    Enum.reduce(component_edges, Graph.new(type: :directed), fn edge, cg ->
+      v1 = Map.get(component_vertices, edge.v1.hash, edge.v1)
+      v2 = Map.get(component_vertices, edge.v2.hash, edge.v2)
+      Graph.add_edge(cg, v1, v2, label: :connects_to)
+    end)
+    |> then(fn cg ->
+      # Ensure all registered components appear as vertices, even if unconnected
+      Enum.reduce(component_vertices, cg, fn {_hash, vertex}, acc ->
+        if vertex, do: Graph.add_vertex(acc, vertex), else: acc
+      end)
+    end)
+  end
+
+  @doc """
   Returns a keyword list of sub-components of the given component by kind.
 
   ## Examples
@@ -939,10 +1618,14 @@ defmodule Runic.Workflow do
   def connectable?(wrk, component, to: component_name) do
     with {:ok, added_to} <- fetch_component(wrk, component_name),
          :ok <- arity_match(component, added_to),
-         true <- Component.connectable?(component, added_to) do
+         {:ok, _} <-
+           Component.TypeCompatibility.ports_compatible?(
+             Component.outputs(added_to),
+             Component.inputs(component)
+           ) do
       :ok
     else
-      false -> {:error, :not_connectable}
+      {:error, reasons} when is_list(reasons) -> {:error, {:incompatible_ports, reasons}}
       otherwise -> otherwise
     end
   end
@@ -1071,11 +1754,150 @@ defmodule Runic.Workflow do
 
   def apply_hook_fns(%__MODULE__{} = workflow, nil), do: workflow
 
-  # def remove_component(%__MODULE__{} = workflow, component_name) do
-  #   component = get_component(workflow, component_name)
+  @doc """
+  Removes a component and its owned invokable nodes from the workflow.
 
-  #   Component.remove(component, workflow)
-  # end
+  Invokable nodes that are shared with other components (due to content-addressable
+  hashing) are preserved. Downstream nodes of the removed component are rewired
+  to the removed component's upstream parents so the rest of the workflow stays
+  connected.
+
+  Also removes any `:connects_to` edges involving the component and appends
+  a `%ComponentRemoved{}` event to the build log.
+
+  ## Example
+
+      require Runic
+      alias Runic.Workflow
+
+      step1 = Runic.step(fn x -> x + 1 end, name: :add)
+      step2 = Runic.step(fn x -> x * 2 end, name: :double)
+      step3 = Runic.step(fn x -> x - 1 end, name: :subtract)
+
+      workflow = Workflow.new()
+        |> Workflow.add(step1)
+        |> Workflow.add(step2, to: :add)
+        |> Workflow.add(step3, to: :double)
+
+      workflow = Workflow.remove_component(workflow, :double)
+      # :add now flows directly to :subtract
+  """
+  def remove_component(%__MODULE__{} = workflow, component_name) do
+    component = get_component(workflow, component_name)
+
+    if is_nil(component) do
+      workflow
+    else
+      do_remove_component(workflow, component, component_name)
+    end
+  end
+
+  defp do_remove_component(workflow, component, component_name) do
+    # 1. Find all invokable nodes owned by this component via :component_of edges
+    owned_edges = Graph.out_edges(workflow.graph, component, by: :component_of)
+    owned_nodes = Enum.map(owned_edges, & &1.v2)
+
+    # Include the component itself if it's also an invokable node (e.g. Step, Condition, Accumulator)
+    all_owned =
+      if component in owned_nodes do
+        owned_nodes
+      else
+        [component | owned_nodes]
+      end
+      |> Enum.uniq_by(& &1.hash)
+
+    # 2. Determine which nodes are safe to remove (not owned by another component)
+    {safe_to_remove, _shared} =
+      Enum.split_with(all_owned, fn node ->
+        owners =
+          Graph.in_edges(workflow.graph, node, by: :component_of)
+          |> Enum.map(& &1.v1)
+          |> Enum.reject(&(&1 == component))
+
+        owners == []
+      end)
+
+    safe_hashes = MapSet.new(safe_to_remove, & &1.hash)
+
+    # 3. Find upstream parents and downstream children for rewiring
+    #    Upstream: :flow in-edges into any safe-to-remove node from nodes NOT being removed
+    #    Downstream: :flow out-edges from any safe-to-remove node to nodes NOT being removed
+    upstream_parents =
+      safe_to_remove
+      |> Enum.flat_map(fn node ->
+        Graph.in_edges(workflow.graph, node, by: :flow)
+        |> Enum.reject(fn edge ->
+          case edge.v1 do
+            %Root{} -> false
+            node -> MapSet.member?(safe_hashes, node.hash)
+          end
+        end)
+        |> Enum.map(& &1.v1)
+      end)
+      |> Enum.uniq_by(fn
+        %Root{} -> :root
+        node -> node.hash
+      end)
+
+    downstream_children =
+      safe_to_remove
+      |> Enum.flat_map(fn node ->
+        Graph.out_edges(workflow.graph, node, by: :flow)
+        |> Enum.reject(fn edge -> MapSet.member?(safe_hashes, edge.v2.hash) end)
+        |> Enum.map(& &1.v2)
+      end)
+      |> Enum.uniq_by(& &1.hash)
+
+    # 4. Rewire: connect each upstream parent to each downstream child
+    #    Add both :flow edges (for runtime) and :connects_to edges (for component graph)
+    graph =
+      Enum.reduce(upstream_parents, workflow.graph, fn parent, g ->
+        Enum.reduce(downstream_children, g, fn child, g ->
+          g = Graph.add_edge(g, parent, child, label: :flow, weight: 0)
+
+          # Find the owning components for the parent/child to add :connects_to edges
+          temp_wrk = %{workflow | graph: g}
+          parent_component = find_owning_component(temp_wrk, parent)
+          child_component = find_owning_component(temp_wrk, child)
+
+          if parent_component && child_component && parent_component != child_component do
+            Graph.add_edge(g, parent_component, child_component, label: :connects_to)
+          else
+            g
+          end
+        end)
+      end)
+
+    # 5. Delete the safe-to-remove vertices (also removes all their edges)
+    graph = Graph.delete_vertices(graph, safe_to_remove)
+
+    # 6. Remove from components registry (including any sub-component entries like {name, :kind})
+    components =
+      Enum.reject(workflow.components, fn
+        {^component_name, _hash} -> true
+        {{^component_name, _kind}, _hash} -> true
+        _ -> false
+      end)
+      |> Map.new()
+
+    # 7. Clean up hooks
+    component_hash = Component.hash(component)
+
+    before_hooks = Map.delete(workflow.before_hooks, component_hash)
+    after_hooks = Map.delete(workflow.after_hooks, component_hash)
+
+    # 8. Append ComponentRemoved event to build log
+    event = %ComponentRemoved{name: component_name, hash: component_hash}
+
+    %__MODULE__{
+      workflow
+      | graph: graph,
+        components: components,
+        before_hooks: before_hooks,
+        after_hooks: after_hooks,
+        build_log: workflow.build_log ++ [event]
+    }
+  end
 
   defp get_by_hash(%__MODULE__{graph: g}, %{hash: hash}) do
     Map.get(g.vertices, hash)
@@ -1660,9 +2482,9 @@ defmodule Runic.Workflow do
       [10]
   """
   def raw_productions(%__MODULE__{graph: graph}) do
-    for %Graph.Edge{} = edge <-
+    for %Graph.Edge{v2: %Fact{value: value}} <-
           Graph.edges(graph, by: [:produced, :state_produced, :state_initiated, :reduced]) do
-      edge.v2.value
+      value
     end
   end
 
@@ -1707,14 +2529,120 @@ defmodule Runic.Workflow do
     wrk.graph
     |> Graph.out_edges(component, by: :component_of)
     |> Enum.flat_map(fn %{v2: invokable} ->
-      for edge <-
+      for %Graph.Edge{v2: %Fact{value: value}} <-
             Graph.out_edges(wrk.graph, invokable,
               by: [:produced, :state_produced, :state_initiated, :reduced]
             ) do
-        edge.v2.value
+        value
       end
     end)
   end
+
+  @doc """
+  Extracts structured results from a workflow.
+
+  When `component_names` is a list, extracts the last produced value for each
+  named component, independent of output port declarations.
+
+  When `component_names` is `nil` (default) and the workflow declares
+  `output_ports`, returns a map keyed by port name with values extracted
+  according to each port's `:from` binding and `:cardinality`.
+
+  When `component_names` is `nil` and no `output_ports` are declared, falls
+  back to `raw_productions_by_component/1`.
+
+  ## Options
+
+    - `:facts` — when `true`, returns `%Fact{}` structs instead of raw values.
+      Default `false`.
+    - `:all` — when `true`, returns all produced values as a list instead of
+      just the last one, regardless of port cardinality. Default `false`.
+
+  ## Examples
+
+      # With output ports
+      workflow = Runic.workflow(
+        name: :pipeline,
+        steps: [{Runic.step(&parse/1, name: :parse),
+                 [Runic.step(&price/1, name: :price)]}],
+        output_ports: [total: [type: :float, from: :price]]
+      )
+
+      %{total: 42.50} =
+        workflow
+        |> Workflow.react_until_satisfied(order)
+        |> Workflow.results()
+
+      # Explicit component selection
+      %{add: 6, mult: 10} =
+        workflow
+        |> Workflow.react_until_satisfied(5)
+        |> Workflow.results([:add, :mult])
+
+      # With options
+      %{price: [%Fact{}, %Fact{}]} =
+        Workflow.results(workflow, [:price], facts: true, all: true)
+
+      # Use output ports with options
+      %{total: [42.50, 43.00]} =
+        Workflow.results(workflow, nil, all: true)
+  """
+  @spec results(t(), [atom() | binary()] | nil, keyword()) :: map()
+  def results(workflow, component_names \\ nil, opts \\ [])
+
+  # Explicit component selection
+  def results(%__MODULE__{} = workflow, component_names, opts)
+      when is_list(component_names) do
+    return_facts = Keyword.get(opts, :facts, false)
+    return_all = Keyword.get(opts, :all, false)
+
+    Map.new(component_names, fn name ->
+      values = extract_productions(workflow, name, return_facts)
+      {name, select_value(values, :one, return_all)}
+    end)
+  end
+
+  # Port-driven extraction
+  def results(%__MODULE__{output_ports: ports} = workflow, nil, opts)
+      when is_list(ports) do
+    return_facts = Keyword.get(opts, :facts, false)
+    return_all = Keyword.get(opts, :all, false)
+
+    Map.new(ports, fn {port_name, port_opts} ->
+      component_name = Keyword.get(port_opts, :from, port_name)
+      cardinality = Keyword.get(port_opts, :cardinality, :one)
+      values = extract_productions(workflow, component_name, return_facts)
+      {port_name, select_value(values, cardinality, return_all)}
+    end)
+  end
+
+  # Fallback: no ports, no explicit names
+  def results(%__MODULE__{} = workflow, nil, opts) do
+    if Keyword.get(opts, :facts, false) do
+      productions_by_component(workflow)
+    else
+      raw_productions_by_component(workflow)
+    end
+  end
+
+  defp extract_productions(workflow, component_name, return_facts) do
+    case get_component(workflow, component_name) do
+      nil ->
+        []
+
+      component ->
+        if return_facts do
+          productions(workflow, component)
+        else
+          raw_productions(workflow, component)
+        end
+    end
+  end
+
+  defp select_value(values, _cardinality, true = _return_all), do: values
+  defp select_value(values, :many, false = _return_all), do: values
+  defp select_value([], :one, false = _return_all), do: nil
+  defp select_value(values, :one, false = _return_all), do: List.last(values)
 
   @spec facts(Runic.Workflow.t()) :: list(Runic.Workflow.Fact.t())
   @doc """
@@ -1808,10 +2736,13 @@ defmodule Runic.Workflow do
   - `:async` - When `true`, executes runnables in parallel. Default: `false`
   - `:max_concurrency` - Maximum parallel tasks when `async: true`
   - `:timeout` - Timeout for each task when `async: true`
+  - `:run_context` - A map of external values for `context/1` expressions.
+    See `put_run_context/2` and `react_until_satisfied/3`.
   """
   @spec react(t(), Fact.t() | term(), keyword()) :: t()
   def react(%__MODULE__{} = wrk, %Fact{ancestry: nil} = fact, opts) do
     wrk
+    |> maybe_apply_run_context(opts)
     |> invoke(root(), fact)
     |> react(opts)
   end
@@ -1872,6 +2803,13 @@ defmodule Runic.Workflow do
     end
   end
 
+  defp maybe_apply_run_context(workflow, opts) do
+    case Keyword.get(opts, :run_context) do
+      nil -> workflow
+      ctx when is_map(ctx) -> put_run_context(workflow, ctx)
+    end
+  end
+
   defp resolve_effective_policies(workflow, opts) do
     runtime = Keyword.get(opts, :scheduler_policies)
     mode = Keyword.get(opts, :scheduler_policies_mode, :merge)
@@ -1914,6 +2852,9 @@ defmodule Runic.Workflow do
     deadline is reached. Converted to an absolute `deadline_at` monotonic time internally.
   - `:checkpoint` - A 1-arity function called after each react cycle with the updated workflow.
     Useful for persisting intermediate state in long-running durable workflows.
+  - `:run_context` - A map of external values keyed by component name, made available
+    to components that use `context/1` expressions. Supports a `:_global` key for
+    values available to all components. See `put_run_context/2`.
 
   ## Warning
 
@@ -1936,11 +2877,13 @@ defmodule Runic.Workflow do
 
   def react_until_satisfied(%__MODULE__{} = workflow, nil, opts) do
     opts = maybe_convert_deadline(opts)
+    workflow = maybe_apply_run_context(workflow, opts)
     do_react_until_satisfied(workflow, is_runnable?(workflow), opts)
   end
 
   def react_until_satisfied(%__MODULE__{} = wrk, %Fact{ancestry: nil} = fact, opts) do
     opts = maybe_convert_deadline(opts)
+    wrk = maybe_apply_run_context(wrk, opts)
 
     wrk
     |> react(fact, opts)
@@ -2395,63 +3338,7 @@ defmodule Runic.Workflow do
   @doc false
   def log_fact(workflow, fact), do: Private.log_fact(workflow, fact)
 
-  defp maybe_prepare_next_generation_from_state_accumulations(
-         %__MODULE__{graph: graph} = workflow
-       ) do
-    # Find all state_produced facts by walking :state_produced edges from accumulators
-    state_produced_facts_by_ancestor =
-      for edge <- Graph.edges(graph, by: :state_produced) do
-        edge.v2
-      end
-      |> Enum.reduce(%{}, fn %{ancestry: {accumulator_hash, _}} = state_produced_fact, acc ->
-        # Keep the latest state fact for each accumulator
-        existing = Map.get(acc, accumulator_hash)
-
-        if is_nil(existing) or
-             ancestry_depth(workflow, state_produced_fact) > ancestry_depth(workflow, existing) do
-          Map.put(acc, accumulator_hash, state_produced_fact)
-        else
-          acc
-        end
-      end)
-
-    stateful_matching_impls = stateful_matching_impls()
-    state_produced_fact_ancestors = Map.keys(state_produced_facts_by_ancestor)
-
-    unless Enum.empty?(state_produced_facts_by_ancestor) do
-      Graph.Reducers.Bfs.reduce(graph, workflow, fn
-        node, wrk ->
-          if is_struct(node) and node.__struct__ in stateful_matching_impls do
-            state_hash = Runic.Workflow.StatefulMatching.matches_on(node)
-
-            if state_hash in state_produced_fact_ancestors do
-              relevant_state_produced_fact = Map.get(state_produced_facts_by_ancestor, state_hash)
-
-              {:next,
-               Private.draw_connection(
-                 wrk,
-                 relevant_state_produced_fact,
-                 node.hash,
-                 Private.connection_for_activatable(node)
-               )}
-            else
-              {:next, wrk}
-            end
-          else
-            {:next, wrk}
-          end
-      end)
-    else
-      workflow
-    end
-  end
-
-  defp stateful_matching_impls do
-    case Runic.Workflow.StatefulMatching.__protocol__(:impls) do
-      {:consolidated, impls} -> impls
-      :not_consolidated -> []
-    end
-  end
+  defp maybe_prepare_next_generation_from_state_accumulations(workflow), do: workflow
 
   @doc false
   @deprecated "Generation counters removed; use ancestry_depth/2 for causal ordering"
@@ -2473,10 +3360,6 @@ defmodule Runic.Workflow do
   def prepare_next_runnables(workflow, node, fact),
     do: Private.prepare_next_runnables(workflow, node, fact)
 
-  @doc false
-  def last_known_state(workflow, state_reaction),
-    do: Private.last_known_state(workflow, state_reaction)
-
   @doc """
   Computes the causal depth of a fact by walking its ancestry chain.
 
@@ -2491,18 +3374,27 @@ defmodule Runic.Workflow do
       iex> ancestry_depth(workflow, fact_after_two_steps)
       2
   """
-  @spec ancestry_depth(t(), Fact.t()) :: non_neg_integer()
+  @spec ancestry_depth(t(), Fact.t() | FactRef.t()) :: non_neg_integer()
   def ancestry_depth(%__MODULE__{}, %Fact{ancestry: nil}), do: 0
+  def ancestry_depth(%__MODULE__{}, %FactRef{ancestry: nil}), do: 0
 
   def ancestry_depth(%__MODULE__{graph: graph} = workflow, %Fact{
         ancestry: {_producer_hash, parent_fact_hash}
       }) do
     case Map.get(graph.vertices, parent_fact_hash) do
-      %Fact{} = parent_fact ->
-        1 + ancestry_depth(workflow, parent_fact)
+      %Fact{} = parent -> 1 + ancestry_depth(workflow, parent)
+      %FactRef{} = parent -> 1 + ancestry_depth(workflow, parent)
+      nil -> 1
+    end
+  end
 
-      nil ->
-        1
+  def ancestry_depth(%__MODULE__{graph: graph} = workflow, %FactRef{
+        ancestry: {_producer_hash, parent_fact_hash}
+      }) do
+    case Map.get(graph.vertices, parent_fact_hash) do
+      %Fact{} = parent -> 1 + ancestry_depth(workflow, parent)
+      %FactRef{} = parent -> 1 + ancestry_depth(workflow, parent)
+      nil -> 1
     end
   end
 
@@ -2519,8 +3411,9 @@ defmodule Runic.Workflow do
       iex> causal_depth(workflow, produced_fact)
       3  # produced after 3 causal steps
   """
-  @spec causal_depth(t(), Fact.t()) :: non_neg_integer()
-  def causal_depth(%__MODULE__{} = workflow, %Fact{} = fact) do
+  @spec causal_depth(t(), Fact.t() | FactRef.t()) :: non_neg_integer()
+  def causal_depth(%__MODULE__{} = workflow, fact)
+      when is_struct(fact, Fact) or is_struct(fact, FactRef) do
     ancestry_depth(workflow, fact)
   end
 
@@ -2575,7 +3468,7 @@ defmodule Runic.Workflow do
 
   1. **Prepare** - This function calls `Invokable.prepare/3` for each pending node
   2. **Execute** - Call `Invokable.execute/2` on each runnable (can be parallelized)
-  3. **Apply** - Call `runnable.apply_fn.(workflow)` to reduce results back
+  3. **Apply** - Call `Workflow.apply_runnable(workflow, runnable)` to fold events back
 
   ## Returns
 
@@ -2651,13 +3544,15 @@ defmodule Runic.Workflow do
   @doc """
   Applies a completed runnable back to the workflow.
 
-  Called by schedulers after receiving execution results. The runnable's
-  `apply_fn` is invoked to reduce results into the workflow state.
+  Called by schedulers after receiving execution results.
+
+  Events from the runnable are folded via `apply_event/2`, hook apply_fns
+  are run, and downstream nodes are activated.
 
   ## Parameters
 
   - `workflow` - The current workflow state
-  - `runnable` - A runnable with status `:completed` or `:failed`
+  - `runnable` - A runnable with status `:completed`, `:failed`, `:skipped`, or `:pending`
 
   ## Returns
 
@@ -2669,14 +3564,58 @@ defmodule Runic.Workflow do
       workflow = Workflow.apply_runnable(workflow, executed)
   """
   @spec apply_runnable(t(), Runnable.t()) :: t()
-  def apply_runnable(%__MODULE__{} = workflow, %Runnable{status: :completed, apply_fn: apply_fn})
-      when is_function(apply_fn, 1) do
-    apply_fn.(workflow)
+
+  def apply_runnable(
+        %__MODULE__{} = workflow,
+        %Runnable{status: :completed, events: events} = runnable
+      )
+      when is_list(events) and events != [] do
+    # 1. Fold core events
+    wf = Enum.reduce(events, workflow, fn event, wf -> apply_event(wf, event) end)
+
+    # 2. Run hook apply_fns if present (collected during execute, not serializable)
+    wf = apply_hook_fns(wf, runnable.hook_apply_fns || [])
+
+    # 3. Coordination finalization (Join completion check, etc.)
+    #    Returns {wf, derived_events} — derived events are already folded into wf
+    {wf, derived_events} = maybe_finalize_coordination(wf, runnable)
+
+    # 4. Emit downstream activations (skipped when coordination produced derived events,
+    #    since coordination already handled downstream activation)
+    #    Returns {wf, activation_events} so activation edges are captured in the event stream
+    {wf, activation_events} =
+      if derived_events == [] do
+        emit_downstream_activations(wf, runnable)
+      else
+        {wf, []}
+      end
+
+    # 5. Buffer all events as uncommitted (only when emit_events is enabled)
+    if wf.emit_events do
+      all_new =
+        Enum.reverse(activation_events) ++ Enum.reverse(derived_events) ++ Enum.reverse(events)
+
+      %{wf | uncommitted_events: all_new ++ wf.uncommitted_events}
+    else
+      wf
+    end
   end
 
-  def apply_runnable(%__MODULE__{} = workflow, %Runnable{status: :skipped, apply_fn: apply_fn})
-      when is_function(apply_fn, 1) do
-    apply_fn.(workflow)
+  # Skipped runnable: fold events (marks activation as consumed),
+  # then skip all downstream nodes to prevent stalled workflows.
+  def apply_runnable(
+        %__MODULE__{} = workflow,
+        %Runnable{status: :skipped, events: events, node: node} = _runnable
+      )
+      when is_list(events) and events != [] do
+    wf = Enum.reduce(events, workflow, fn event, wf -> apply_event(wf, event) end)
+    wf = skip_downstream_subgraph(wf, node)
+
+    if wf.emit_events do
+      %{wf | uncommitted_events: Enum.reverse(events) ++ wf.uncommitted_events}
+    else
+      wf
+    end
   end
 
   def apply_runnable(%__MODULE__{} = workflow, %Runnable{status: :failed} = runnable) do
@@ -2685,6 +3624,66 @@ defmodule Runic.Workflow do
 
   def apply_runnable(%__MODULE__{} = workflow, %Runnable{status: :pending}) do
     workflow
+  end
+
+  @doc """
+  Enables event emission on the workflow.
+
+  When `emit_events` is `true`, `apply_runnable/2` buffers events into
+  `uncommitted_events` for consumption by durable execution stores.
+  """
+  @spec enable_event_emission(t()) :: t()
+  def enable_event_emission(%__MODULE__{} = wf), do: %{wf | emit_events: true}
+
+  @doc """
+  Disables event emission on the workflow.
+
+  When `emit_events` is `false` (the default), `apply_runnable/2` skips
+  the `uncommitted_events` buffer entirely, avoiding allocation overhead
+  for in-memory scripting use cases.
+  """
+  @spec disable_event_emission(t()) :: t()
+  def disable_event_emission(%__MODULE__{} = wf), do: %{wf | emit_events: false}
+
+  # Emit downstream activations: dispatches to Activator protocol if implemented,
+  # otherwise uses the default activation logic (find :flow successors, draw activation edges).
+  # Returns {wf, activation_events} so all graph mutations are captured in the event stream.
+  defp emit_downstream_activations(%__MODULE__{} = wf, %Runnable{node: node} = runnable) do
+    if Runic.Workflow.Activator.impl_for(node) do
+      Runic.Workflow.Activator.activate_downstream(node, wf, runnable)
+    else
+      default_emit_downstream(wf, runnable)
+    end
+  end
+
+  # Default: single Fact result — activate :flow successors via RunnableActivated events
+  defp default_emit_downstream(%__MODULE__{} = wf, %Runnable{result: result, node: node})
+       when is_struct(result, Fact) do
+    next = next_steps(wf, node)
+
+    activation_events =
+      Enum.map(next, fn step ->
+        %RunnableActivated{
+          fact_hash: result.hash,
+          node_hash: step.hash,
+          activation_kind: Private.connection_for_activatable(step)
+        }
+      end)
+
+    wf = Enum.reduce(activation_events, wf, fn event, w -> apply_event(w, event) end)
+    {wf, activation_events}
+  end
+
+  defp default_emit_downstream(%__MODULE__{} = wf, _runnable), do: {wf, []}
+
+  # Coordination finalization: dispatches to Coordinator protocol if implemented,
+  # otherwise returns {wf, []} (no coordination needed).
+  defp maybe_finalize_coordination(%__MODULE__{} = wf, %Runnable{node: node} = runnable) do
+    if Runic.Workflow.Coordinator.impl_for(node) do
+      Runic.Workflow.Coordinator.finalize(node, wf, runnable)
+    else
+      {wf, []}
+    end
   end
 
   defp handle_failed_runnable(%__MODULE__{} = workflow, %Runnable{
@@ -2974,4 +3973,8 @@ defmodule Runic.Workflow do
   @spec draw_meta_ref_edge(t(), term(), term(), map()) :: t()
   def draw_meta_ref_edge(workflow, from, to, meta_ref),
     do: Private.draw_meta_ref_edge(workflow, from, to, meta_ref)
+
+  @doc false
+  def latest_state_fact(workflow, accumulator),
+    do: Private.latest_state_fact(workflow, accumulator)
 end

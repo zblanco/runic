@@ -1,0 +1,1136 @@
+     warning: Runic.Workflow.log/1 is deprecated. Use build_log/1 + workflow.uncommitted_events with from_events/2 instead
+     │
+ 469 │         log = Workflow.log(state.workflow)
+     │                        ~
+     │
+     └─ lib/runic/runner/worker.ex:469:24: Runic.Runner.Worker.do_checkpoint/1
+
+     warning: Runic.Workflow.log/1 is deprecated. Use build_log/1 + workflow.uncommitted_events with from_events/2 instead
+     │
+ 514 │         store_mod.save(id, Workflow.log(state.workflow), store_state)
+     │                                     ~
+     │
+     └─ lib/runic/runner/worker.ex:514:37: Runic.Runner.Worker.maybe_persist/1
+
+
+================================================================================
+RUNIC REHYDRATION STRATEGY BENCHMARK
+Strategies: Full | Lazy | Hybrid
+Date: 2026-02-27T21:02:03.774277Z
+================================================================================
+
+Building and executing workflows...
+
+Building large-value workflows...
+
+  Workflow              Vertices   Edges   Facts  Mem (KB)
+  --------------------------------------------------------
+  branching_20                42      80      21      53.2
+  branching_5                 12      20       6      14.0
+  fanout_10                   30      54      23      40.4
+  fanout_4                    18      30      11      27.4
+  join_deep                   14      27       7      24.4
+  join_simple                 10      19       5      16.8
+  lg_branch_10_100k           24      44      12      33.1
+  lg_branch_10_10k            24      44      12      33.1
+  lg_branch_10_1k             24      44      12      33.1
+  lg_linear_10_100k           22      40      11      30.4
+  lg_linear_10_10k            22      40      11      30.3
+  lg_linear_10_1k             22      40      11      30.4
+  lg_linear_20_10k            42      80      21      62.0
+  lg_long_10_10k              34      45      31      36.7
+  lg_long_10_1k               34      45      31      37.2
+  lg_long_50_10k             154     205     151     162.0
+  lg_long_50_1k              154     205     151     171.6
+  linear_20                   42      80      21      58.2
+  linear_5                    12      20       6      14.7
+  linear_50                  102     200      51     144.9
+  long_10                     34      45      31      30.3
+  long_100                   304     405     301     251.0
+  long_50                    154     205     151     129.6
+  mixed_medium                13      21       7      21.3
+  rules_10                    37      65       6      89.9
+  rules_2                      9      13       2      19.2
+
+================================================================================
+BENCHMARK 1: End-to-End Rehydration Time — Single-Input Workflows
+================================================================================
+Benchmarking branching_20 full ...
+Benchmarking branching_20 hybrid ...
+Benchmarking branching_20 lazy ...
+Calculating statistics...
+Formatting results...
+
+Name                          ips        average  deviation         median         99th %
+branching_20 full      34053.31 K      0.0294 μs   ±502.71%      0.0300 μs      0.0400 μs
+branching_20 lazy        348.11 K        2.87 μs   ±399.07%        2.67 μs        5.46 μs
+branching_20 hybrid      271.48 K        3.68 μs   ±330.54%        3.25 μs        7.74 μs
+
+Comparison: 
+branching_20 full      34053.31 K
+branching_20 lazy        348.11 K - 97.82x slower +2.84 μs
+branching_20 hybrid      271.48 K - 125.43x slower +3.65 μs
+
+Memory usage statistics:
+
+Name                   Memory usage
+branching_20 full              0 KB
+branching_20 lazy           7.95 KB - ∞ x memory usage +7.95 KB
+branching_20 hybrid        10.34 KB - ∞ x memory usage +10.34 KB
+
+**All measurements for memory usage were the same**
+Benchmarking branching_5 full ...
+Benchmarking branching_5 hybrid ...
+Benchmarking branching_5 lazy ...
+Calculating statistics...
+Formatting results...
+
+Name                         ips        average  deviation         median         99th %
+branching_5 full         33.92 M       29.48 ns   ±172.88%          30 ns          41 ns
+branching_5 lazy          1.33 M      751.52 ns  ±1303.73%         631 ns        1533 ns
+branching_5 hybrid        0.55 M     1807.42 ns  ±1069.57%        1593 ns        3517 ns
+
+Comparison: 
+branching_5 full         33.92 M
+branching_5 lazy          1.33 M - 25.49x slower +722.04 ns
+branching_5 hybrid        0.55 M - 61.31x slower +1777.94 ns
+
+Memory usage statistics:
+
+Name                  Memory usage
+branching_5 full              0 KB
+branching_5 lazy           2.18 KB - ∞ x memory usage +2.18 KB
+branching_5 hybrid            4 KB - ∞ x memory usage +4 KB
+
+**All measurements for memory usage were the same**
+Benchmarking fanout_10 full ...
+Benchmarking fanout_10 hybrid ...
+Benchmarking fanout_10 lazy ...
+Calculating statistics...
+Formatting results...
+
+Name                       ips        average  deviation         median         99th %
+fanout_10 full      33353.97 K      0.0300 μs   ±201.17%      0.0300 μs      0.0500 μs
+fanout_10 lazy        498.58 K        2.01 μs   ±608.58%        1.78 μs        4.15 μs
+fanout_10 hybrid      204.76 K        4.88 μs   ±103.33%        4.23 μs       10.12 μs
+
+Comparison: 
+fanout_10 full      33353.97 K
+fanout_10 lazy        498.58 K - 66.90x slower +1.98 μs
+fanout_10 hybrid      204.76 K - 162.89x slower +4.85 μs
+
+Memory usage statistics:
+
+Name                Memory usage
+fanout_10 full              0 KB
+fanout_10 lazy          10.20 KB - ∞ x memory usage +10.20 KB
+fanout_10 hybrid        18.04 KB - ∞ x memory usage +18.04 KB
+
+**All measurements for memory usage were the same**
+Benchmarking fanout_4 full ...
+Benchmarking fanout_4 hybrid ...
+Benchmarking fanout_4 lazy ...
+Calculating statistics...
+Formatting results...
+
+Name                      ips        average  deviation         median         99th %
+fanout_4 full      33635.43 K      0.0297 μs   ±223.32%      0.0300 μs      0.0500 μs
+fanout_4 lazy        877.17 K        1.14 μs   ±938.11%        0.98 μs        2.35 μs
+fanout_4 hybrid      387.97 K        2.58 μs   ±491.84%        2.34 μs        4.75 μs
+
+Comparison: 
+fanout_4 full      33635.43 K
+fanout_4 lazy        877.17 K - 38.35x slower +1.11 μs
+fanout_4 hybrid      387.97 K - 86.70x slower +2.55 μs
+
+Memory usage statistics:
+
+Name               Memory usage
+fanout_4 full              0 KB
+fanout_4 lazy           4.20 KB - ∞ x memory usage +4.20 KB
+fanout_4 hybrid         7.79 KB - ∞ x memory usage +7.79 KB
+
+**All measurements for memory usage were the same**
+Benchmarking join_deep full ...
+Benchmarking join_deep hybrid ...
+Benchmarking join_deep lazy ...
+Calculating statistics...
+Formatting results...
+
+Name                       ips        average  deviation         median         99th %
+join_deep full         33.05 M       30.26 ns   ±360.55%          30 ns          50 ns
+join_deep lazy          1.35 M      742.12 ns  ±2124.09%         651 ns        1323 ns
+join_deep hybrid        0.44 M     2253.29 ns   ±630.68%        2024 ns        4909 ns
+
+Comparison: 
+join_deep full         33.05 M
+join_deep lazy          1.35 M - 24.53x slower +711.86 ns
+join_deep hybrid        0.44 M - 74.47x slower +2223.03 ns
+
+Memory usage statistics:
+
+Name                Memory usage
+join_deep full              0 KB
+join_deep lazy           2.70 KB - ∞ x memory usage +2.70 KB
+join_deep hybrid         5.23 KB - ∞ x memory usage +5.23 KB
+
+**All measurements for memory usage were the same**
+Benchmarking join_simple full ...
+Benchmarking join_simple hybrid ...
+Benchmarking join_simple lazy ...
+Calculating statistics...
+Formatting results...
+
+Name                         ips        average  deviation         median         99th %
+join_simple full         34.41 M       29.06 ns   ±208.72%          30 ns          40 ns
+join_simple lazy          1.45 M      687.33 ns  ±2027.03%         591 ns        1292 ns
+join_simple hybrid        0.55 M     1824.01 ns   ±740.09%        1723 ns        3407 ns
+
+Comparison: 
+join_simple full         34.41 M
+join_simple lazy          1.45 M - 23.65x slower +658.27 ns
+join_simple hybrid        0.55 M - 62.77x slower +1794.95 ns
+
+Memory usage statistics:
+
+Name                  Memory usage
+join_simple full              0 KB
+join_simple lazy           1.93 KB - ∞ x memory usage +1.93 KB
+join_simple hybrid         3.93 KB - ∞ x memory usage +3.93 KB
+
+**All measurements for memory usage were the same**
+Benchmarking linear_20 full ...
+Benchmarking linear_20 hybrid ...
+Benchmarking linear_20 lazy ...
+Calculating statistics...
+Formatting results...
+
+Name                       ips        average  deviation         median         99th %
+linear_20 full      33533.69 K      0.0298 μs   ±362.63%      0.0300 μs      0.0500 μs
+linear_20 lazy        343.07 K        2.91 μs   ±376.48%        2.51 μs        8.63 μs
+linear_20 hybrid      209.31 K        4.78 μs   ±105.56%        4.44 μs        9.37 μs
+
+Comparison: 
+linear_20 full      33533.69 K
+linear_20 lazy        343.07 K - 97.75x slower +2.89 μs
+linear_20 hybrid      209.31 K - 160.21x slower +4.75 μs
+
+Memory usage statistics:
+
+Name                Memory usage
+linear_20 full              0 KB
+linear_20 lazy           7.57 KB - ∞ x memory usage +7.57 KB
+linear_20 hybrid        19.19 KB - ∞ x memory usage +19.19 KB
+
+**All measurements for memory usage were the same**
+Benchmarking linear_5 full ...
+Benchmarking linear_5 hybrid ...
+Benchmarking linear_5 lazy ...
+Calculating statistics...
+Formatting results...
+
+Name                      ips        average  deviation         median         99th %
+linear_5 full         29.28 M       34.15 ns   ±159.05%          30 ns          50 ns
+linear_5 lazy          1.30 M      770.23 ns  ±1788.34%         651 ns        1483 ns
+linear_5 hybrid        0.49 M     2039.54 ns   ±586.47%        1833 ns        3798 ns
+
+Comparison: 
+linear_5 full         29.28 M
+linear_5 lazy          1.30 M - 22.55x slower +736.08 ns
+linear_5 hybrid        0.49 M - 59.72x slower +2005.39 ns
+
+Memory usage statistics:
+
+Name               Memory usage
+linear_5 full              0 KB
+linear_5 lazy           2.20 KB - ∞ x memory usage +2.20 KB
+linear_5 hybrid         4.67 KB - ∞ x memory usage +4.67 KB
+
+**All measurements for memory usage were the same**
+Benchmarking linear_50 full ...
+Benchmarking linear_50 hybrid ...
+Benchmarking linear_50 lazy ...
+Calculating statistics...
+Formatting results...
+
+Name                       ips        average  deviation         median         99th %
+linear_50 full      33965.49 K      0.0294 μs   ±116.42%      0.0300 μs      0.0410 μs
+linear_50 lazy        113.52 K        8.81 μs    ±30.58%        8.25 μs       15.47 μs
+linear_50 hybrid       74.44 K       13.43 μs    ±26.23%       12.86 μs       22.40 μs
+
+Comparison: 
+linear_50 full      33965.49 K
+linear_50 lazy        113.52 K - 299.22x slower +8.78 μs
+linear_50 hybrid       74.44 K - 456.31x slower +13.41 μs
+
+Memory usage statistics:
+
+Name                Memory usage
+linear_50 full              0 KB
+linear_50 lazy          20.55 KB - ∞ x memory usage +20.55 KB
+linear_50 hybrid        51.27 KB - ∞ x memory usage +51.27 KB
+
+**All measurements for memory usage were the same**
+Benchmarking mixed_medium full ...
+Benchmarking mixed_medium hybrid ...
+Benchmarking mixed_medium lazy ...
+Calculating statistics...
+Formatting results...
+
+Name                          ips        average  deviation         median         99th %
+mixed_medium full         31.54 M       31.70 ns   ±322.67%          30 ns          50 ns
+mixed_medium lazy          1.20 M      835.29 ns  ±1811.49%         711 ns        1513 ns
+mixed_medium hybrid        0.45 M     2212.28 ns   ±566.06%        1984 ns        4319 ns
+
+Comparison: 
+mixed_medium full         31.54 M
+mixed_medium lazy          1.20 M - 26.35x slower +803.59 ns
+mixed_medium hybrid        0.45 M - 69.78x slower +2180.57 ns
+
+Memory usage statistics:
+
+Name                   Memory usage
+mixed_medium full              0 KB
+mixed_medium lazy           2.63 KB - ∞ x memory usage +2.63 KB
+mixed_medium hybrid         5.09 KB - ∞ x memory usage +5.09 KB
+
+**All measurements for memory usage were the same**
+Benchmarking rules_10 full ...
+Benchmarking rules_10 hybrid ...
+Benchmarking rules_10 lazy ...
+Calculating statistics...
+Formatting results...
+
+Name                      ips        average  deviation         median         99th %
+rules_10 full      32171.35 K      0.0311 μs   ±491.51%      0.0300 μs      0.0500 μs
+rules_10 lazy        700.70 K        1.43 μs   ±878.11%        1.27 μs        2.77 μs
+rules_10 hybrid      419.99 K        2.38 μs   ±436.84%        2.19 μs        4.70 μs
+
+Comparison: 
+rules_10 full      32171.35 K
+rules_10 lazy        700.70 K - 45.91x slower +1.40 μs
+rules_10 hybrid      419.99 K - 76.60x slower +2.35 μs
+
+Memory usage statistics:
+
+Name               Memory usage
+rules_10 full              0 KB
+rules_10 lazy           3.11 KB - ∞ x memory usage +3.11 KB
+rules_10 hybrid         3.80 KB - ∞ x memory usage +3.80 KB
+
+**All measurements for memory usage were the same**
+Benchmarking rules_2 full ...
+Benchmarking rules_2 hybrid ...
+Benchmarking rules_2 lazy ...
+Calculating statistics...
+Formatting results...
+
+Name                     ips        average  deviation         median         99th %
+rules_2 full         35.15 M       28.45 ns   ±695.57%          30 ns          50 ns
+rules_2 lazy          1.61 M      621.48 ns  ±2412.45%         481 ns        1173 ns
+rules_2 hybrid        0.71 M     1416.03 ns   ±643.64%        1253 ns        2936 ns
+
+Comparison: 
+rules_2 full         35.15 M
+rules_2 lazy          1.61 M - 21.85x slower +593.03 ns
+rules_2 hybrid        0.71 M - 49.78x slower +1387.58 ns
+
+Memory usage statistics:
+
+Name              Memory usage
+rules_2 full              0 KB
+rules_2 lazy           1.17 KB - ∞ x memory usage +1.17 KB
+rules_2 hybrid         2.37 KB - ∞ x memory usage +2.37 KB
+
+**All measurements for memory usage were the same**
+================================================================================
+BENCHMARK 2: Long-Running Accumulator — Rehydration Scaling
+(This is where hybrid should show its advantage)
+================================================================================
+Benchmarking long_10 full ...
+Benchmarking long_10 hybrid ...
+Benchmarking long_10 lazy ...
+Calculating statistics...
+Formatting results...
+
+Name                     ips        average  deviation         median         99th %
+long_10 full      35301.22 K      0.0283 μs   ±188.78%      0.0300 μs      0.0500 μs
+long_10 lazy        291.22 K        3.43 μs   ±129.58%        3.19 μs        6.21 μs
+long_10 hybrid      137.46 K        7.27 μs    ±48.14%        6.46 μs       14.39 μs
+
+Comparison: 
+long_10 full      35301.22 K
+long_10 lazy        291.22 K - 121.22x slower +3.41 μs
+long_10 hybrid      137.46 K - 256.81x slower +7.25 μs
+
+Memory usage statistics:
+
+Name              Memory usage
+long_10 full              0 KB
+long_10 lazy          11.13 KB - ∞ x memory usage +11.13 KB
+long_10 hybrid        26.80 KB - ∞ x memory usage +26.80 KB
+
+**All measurements for memory usage were the same**
+Benchmarking long_50 full ...
+Benchmarking long_50 hybrid ...
+Benchmarking long_50 lazy ...
+Calculating statistics...
+Formatting results...
+
+Name                     ips        average  deviation         median         99th %
+long_50 full      34114.33 K      0.0293 μs   ±393.75%      0.0300 μs      0.0400 μs
+long_50 lazy         44.28 K       22.59 μs    ±14.65%       21.98 μs       33.23 μs
+long_50 hybrid       22.05 K       45.35 μs    ±23.19%       42.13 μs       83.31 μs
+
+Comparison: 
+long_50 full      34114.33 K
+long_50 lazy         44.28 K - 770.48x slower +22.56 μs
+long_50 hybrid       22.05 K - 1547.24x slower +45.33 μs
+
+Memory usage statistics:
+
+Name              Memory usage
+long_50 full              0 KB
+long_50 lazy          61.97 KB - ∞ x memory usage +61.97 KB
+long_50 hybrid       117.82 KB - ∞ x memory usage +117.82 KB
+
+**All measurements for memory usage were the same**
+Benchmarking long_100 full ...
+Benchmarking long_100 hybrid ...
+Benchmarking long_100 lazy ...
+Calculating statistics...
+Formatting results...
+
+Name                      ips        average  deviation         median         99th %
+long_100 full      34226.41 K      0.0292 μs   ±307.00%      0.0300 μs      0.0400 μs
+long_100 lazy         21.26 K       47.04 μs    ±15.45%       45.88 μs       68.31 μs
+long_100 hybrid       10.92 K       91.54 μs    ±16.27%       89.66 μs      153.11 μs
+
+Comparison: 
+long_100 full      34226.41 K
+long_100 lazy         21.26 K - 1609.97x slower +47.01 μs
+long_100 hybrid       10.92 K - 3133.25x slower +91.52 μs
+
+Memory usage statistics:
+
+Name               Memory usage
+long_100 full              0 KB
+long_100 lazy         131.85 KB - ∞ x memory usage +131.85 KB
+long_100 hybrid       235.60 KB - ∞ x memory usage +235.60 KB
+
+**All measurements for memory usage were the same**
+================================================================================
+BENCHMARK 3: Classification Overhead (Rehydration.classify/1)
+================================================================================
+Benchmarking classify branching_20 ...
+Benchmarking classify branching_5 ...
+Benchmarking classify fanout_10 ...
+Benchmarking classify fanout_4 ...
+Benchmarking classify join_deep ...
+Benchmarking classify join_simple ...
+Benchmarking classify lg_branch_10_100k ...
+Benchmarking classify lg_branch_10_10k ...
+Benchmarking classify lg_branch_10_1k ...
+Benchmarking classify lg_linear_10_100k ...
+Benchmarking classify lg_linear_10_10k ...
+Benchmarking classify lg_linear_10_1k ...
+Benchmarking classify lg_linear_20_10k ...
+Benchmarking classify lg_long_10_10k ...
+Benchmarking classify lg_long_10_1k ...
+Benchmarking classify lg_long_50_10k ...
+Benchmarking classify lg_long_50_1k ...
+Benchmarking classify linear_20 ...
+Benchmarking classify linear_5 ...
+Benchmarking classify linear_50 ...
+Benchmarking classify long_10 ...
+Benchmarking classify long_100 ...
+Benchmarking classify long_50 ...
+Benchmarking classify mixed_medium ...
+Benchmarking classify rules_10 ...
+Benchmarking classify rules_2 ...
+Calculating statistics...
+Formatting results...
+
+Name                                 ips        average  deviation         median         99th %
+classify rules_2                752.75 K        1.33 μs  ±1291.65%        1.19 μs        2.50 μs
+classify join_simple            643.43 K        1.55 μs  ±1151.63%        1.45 μs        2.94 μs
+classify linear_5               634.65 K        1.58 μs   ±787.79%        1.42 μs        3.05 μs
+classify branching_5            616.69 K        1.62 μs   ±923.94%        1.41 μs        3.36 μs
+classify join_deep              536.79 K        1.86 μs   ±899.15%        1.68 μs        3.47 μs
+classify mixed_medium           530.04 K        1.89 μs   ±787.74%        1.68 μs        3.79 μs
+classify rules_10               490.57 K        2.04 μs   ±190.97%        1.84 μs        4.20 μs
+classify lg_branch_10_10k       478.89 K        2.09 μs   ±773.60%        1.86 μs        4.02 μs
+classify lg_branch_10_1k        474.26 K        2.11 μs   ±491.38%        1.97 μs        4.13 μs
+classify lg_linear_10_1k        455.27 K        2.20 μs   ±711.80%        1.99 μs        4.23 μs
+classify fanout_4               453.77 K        2.20 μs   ±689.14%        2.11 μs        4.04 μs
+classify branching_20           270.56 K        3.70 μs   ±230.91%        3.33 μs        7.49 μs
+classify linear_20              259.60 K        3.85 μs   ±160.18%        3.54 μs        8.58 μs
+classify fanout_10              258.75 K        3.86 μs   ±133.84%        3.67 μs        8.16 μs
+classify lg_long_10_1k          200.43 K        4.99 μs   ±100.68%        4.47 μs       13.62 μs
+classify long_10                182.06 K        5.49 μs    ±70.81%        4.97 μs       13.47 μs
+classify lg_branch_10_100k      173.68 K        5.76 μs   ±857.92%        2.15 μs       11.30 μs
+classify lg_linear_10_100k      168.72 K        5.93 μs   ±815.48%        2.05 μs       12.24 μs
+classify lg_linear_10_10k       168.12 K        5.95 μs   ±812.93%        2.11 μs       10.83 μs
+classify linear_50               93.22 K       10.73 μs    ±29.45%       10.22 μs       19.28 μs
+classify lg_linear_20_10k        88.87 K       11.25 μs   ±460.26%        3.81 μs      175.84 μs
+classify lg_long_10_10k          62.85 K       15.91 μs   ±344.87%        5.81 μs      285.80 μs
+classify long_50                 30.63 K       32.64 μs    ±18.19%       32.28 μs       58.25 μs
+classify lg_long_50_1k           29.35 K       34.07 μs    ±17.48%       32.77 μs       58.69 μs
+classify long_100                15.22 K       65.71 μs    ±17.39%       62.17 μs      111.28 μs
+classify lg_long_50_10k          13.21 K       75.68 μs    ±77.72%       55.13 μs      258.70 μs
+
+Comparison: 
+classify rules_2                752.75 K
+classify join_simple            643.43 K - 1.17x slower +0.23 μs
+classify linear_5               634.65 K - 1.19x slower +0.25 μs
+classify branching_5            616.69 K - 1.22x slower +0.29 μs
+classify join_deep              536.79 K - 1.40x slower +0.53 μs
+classify mixed_medium           530.04 K - 1.42x slower +0.56 μs
+classify rules_10               490.57 K - 1.53x slower +0.71 μs
+classify lg_branch_10_10k       478.89 K - 1.57x slower +0.76 μs
+classify lg_branch_10_1k        474.26 K - 1.59x slower +0.78 μs
+classify lg_linear_10_1k        455.27 K - 1.65x slower +0.87 μs
+classify fanout_4               453.77 K - 1.66x slower +0.88 μs
+classify branching_20           270.56 K - 2.78x slower +2.37 μs
+classify linear_20              259.60 K - 2.90x slower +2.52 μs
+classify fanout_10              258.75 K - 2.91x slower +2.54 μs
+classify lg_long_10_1k          200.43 K - 3.76x slower +3.66 μs
+classify long_10                182.06 K - 4.13x slower +4.16 μs
+classify lg_branch_10_100k      173.68 K - 4.33x slower +4.43 μs
+classify lg_linear_10_100k      168.72 K - 4.46x slower +4.60 μs
+classify lg_linear_10_10k       168.12 K - 4.48x slower +4.62 μs
+classify linear_50               93.22 K - 8.07x slower +9.40 μs
+classify lg_linear_20_10k        88.87 K - 8.47x slower +9.92 μs
+classify lg_long_10_10k          62.85 K - 11.98x slower +14.58 μs
+classify long_50                 30.63 K - 24.57x slower +31.31 μs
+classify lg_long_50_1k           29.35 K - 25.65x slower +32.74 μs
+classify long_100                15.22 K - 49.46x slower +64.38 μs
+classify lg_long_50_10k          13.21 K - 56.97x slower +74.35 μs
+
+Memory usage statistics:
+
+Name                          Memory usage
+classify rules_2                   1.79 KB
+classify join_simple               2.97 KB - 1.66x memory usage +1.18 KB
+classify linear_5                  2.74 KB - 1.53x memory usage +0.95 KB
+classify branching_5               3.20 KB - 1.79x memory usage +1.41 KB
+classify join_deep                 3.98 KB - 2.23x memory usage +2.20 KB
+classify mixed_medium              3.84 KB - 2.15x memory usage +2.05 KB
+classify rules_10                  3.12 KB - 1.74x memory usage +1.33 KB
+classify lg_branch_10_10k          5.13 KB - 2.87x memory usage +3.34 KB
+classify lg_branch_10_1k           5.13 KB - 2.87x memory usage +3.34 KB
+classify lg_linear_10_1k           5.95 KB - 3.33x memory usage +4.16 KB
+classify fanout_4                  5.72 KB - 3.20x memory usage +3.93 KB
+classify branching_20              9.42 KB - 5.27x memory usage +7.63 KB
+classify linear_20                13.31 KB - 7.44x memory usage +11.52 KB
+classify fanout_10                12.96 KB - 7.24x memory usage +11.17 KB
+classify lg_long_10_1k            20.97 KB - 11.72x memory usage +19.18 KB
+classify long_10                  19.98 KB - 11.17x memory usage +18.20 KB
+classify lg_branch_10_100k         5.13 KB - 2.87x memory usage +3.34 KB
+classify lg_linear_10_100k         5.95 KB - 3.33x memory usage +4.16 KB
+classify lg_linear_10_10k          5.95 KB - 3.33x memory usage +4.16 KB
+classify linear_50                35.09 KB - 19.62x memory usage +33.30 KB
+classify lg_linear_20_10k         13.69 KB - 7.65x memory usage +11.90 KB
+classify lg_long_10_10k           21.17 KB - 11.83x memory usage +19.38 KB
+classify long_50                  85.14 KB - 47.59x memory usage +83.35 KB
+classify lg_long_50_1k            84.17 KB - 47.05x memory usage +82.38 KB
+classify long_100                171.94 KB - 96.10x memory usage +170.15 KB
+classify lg_long_50_10k           87.81 KB - 49.08x memory usage +86.02 KB
+
+**All measurements for memory usage were the same**
+================================================================================
+BENCHMARK 4: Dehydration Overhead (Rehydration.dehydrate/2)
+================================================================================
+Benchmarking dehydrate branching_20 (2 cold) ...
+Benchmarking dehydrate branching_5 (2 cold) ...
+Benchmarking dehydrate fanout_10 (13 cold) ...
+Benchmarking dehydrate fanout_4 (7 cold) ...
+Benchmarking dehydrate join_deep (5 cold) ...
+Benchmarking dehydrate join_simple (3 cold) ...
+Benchmarking dehydrate lg_branch_10_100k (2 cold) ...
+Benchmarking dehydrate lg_branch_10_10k (2 cold) ...
+Benchmarking dehydrate lg_branch_10_1k (2 cold) ...
+Benchmarking dehydrate lg_linear_10_100k (10 cold) ...
+Benchmarking dehydrate lg_linear_10_10k (10 cold) ...
+Benchmarking dehydrate lg_linear_10_1k (10 cold) ...
+Benchmarking dehydrate lg_linear_20_10k (20 cold) ...
+Benchmarking dehydrate lg_long_10_10k (20 cold) ...
+Benchmarking dehydrate lg_long_10_1k (20 cold) ...
+Benchmarking dehydrate lg_long_50_10k (100 cold) ...
+Benchmarking dehydrate lg_long_50_1k (100 cold) ...
+Benchmarking dehydrate linear_20 (20 cold) ...
+Benchmarking dehydrate linear_5 (5 cold) ...
+Benchmarking dehydrate linear_50 (50 cold) ...
+Benchmarking dehydrate long_10 (20 cold) ...
+Benchmarking dehydrate long_100 (200 cold) ...
+Benchmarking dehydrate long_50 (100 cold) ...
+Benchmarking dehydrate mixed_medium (4 cold) ...
+Benchmarking dehydrate rules_10 (1 cold) ...
+Benchmarking dehydrate rules_2 (1 cold) ...
+Calculating statistics...
+Formatting results...
+
+Name                                            ips        average  deviation         median         99th %
+dehydrate rules_2 (1 cold)                   5.41 M      184.93 ns  ±5879.87%         151 ns         371 ns
+dehydrate rules_10 (1 cold)                  5.14 M      194.41 ns   ±577.53%         180 ns         391 ns
+dehydrate lg_branch_10_1k (2 cold)           4.66 M      214.79 ns  ±4706.57%         180 ns         401 ns
+dehydrate branching_5 (2 cold)               4.47 M      223.50 ns  ±3082.31%         190 ns         460 ns
+dehydrate lg_branch_10_10k (2 cold)          4.14 M      241.76 ns  ±3782.06%         200 ns         461 ns
+dehydrate branching_20 (2 cold)              3.81 M      262.25 ns  ±1935.01%         230 ns         511 ns
+dehydrate join_simple (3 cold)               3.59 M      278.63 ns  ±4200.55%         220 ns         491 ns
+dehydrate mixed_medium (4 cold)              3.16 M      316.70 ns  ±3804.25%         260 ns         561 ns
+dehydrate linear_5 (5 cold)                  3.13 M      319.03 ns  ±3561.12%         260 ns         661 ns
+dehydrate join_deep (5 cold)                 2.80 M      356.98 ns  ±3902.39%         300 ns         641 ns
+dehydrate fanout_4 (7 cold)                  2.21 M      452.23 ns  ±2348.16%         381 ns         802 ns
+dehydrate lg_linear_10_1k (10 cold)          1.66 M      603.92 ns  ±2343.13%         511 ns        1183 ns
+dehydrate lg_branch_10_100k (2 cold)         1.34 M      747.24 ns  ±4133.62%         210 ns        2575 ns
+dehydrate fanout_10 (13 cold)                1.21 M      825.61 ns  ±1699.94%         681 ns        1703 ns
+dehydrate linear_20 (20 cold)                0.75 M     1337.40 ns  ±1055.72%        1212 ns        2284 ns
+dehydrate long_10 (20 cold)                  0.65 M     1538.34 ns   ±721.88%        1372 ns        2826 ns
+dehydrate lg_long_10_1k (20 cold)            0.62 M     1601.54 ns   ±856.80%        1422 ns        3126 ns
+dehydrate lg_linear_10_100k (10 cold)        0.35 M     2819.80 ns  ±1997.42%         552 ns        4829 ns
+dehydrate lg_linear_10_10k (10 cold)         0.35 M     2830.27 ns  ±1950.02%         621 ns        4829 ns
+dehydrate linear_50 (50 cold)                0.24 M     4230.27 ns   ±111.25%        3887 ns     9788.26 ns
+dehydrate lg_linear_20_10k (20 cold)        0.200 M     5002.99 ns   ±988.18%        1663 ns        8106 ns
+dehydrate lg_long_10_10k (20 cold)          0.200 M     5003.89 ns  ±1028.95%        1473 ns        8176 ns
+dehydrate lg_long_50_1k (100 cold)          0.140 M     7138.41 ns    ±37.52%        6783 ns    11636.24 ns
+dehydrate long_50 (100 cold)                0.133 M     7517.91 ns    ±46.28%        7003 ns       12704 ns
+dehydrate long_100 (200 cold)              0.0581 M    17215.16 ns    ±25.45%       16582 ns       29917 ns
+dehydrate lg_long_50_10k (100 cold)        0.0487 M    20546.08 ns   ±328.67%        8125 ns   422646.75 ns
+
+Comparison: 
+dehydrate rules_2 (1 cold)                   5.41 M
+dehydrate rules_10 (1 cold)                  5.14 M - 1.05x slower +9.48 ns
+dehydrate lg_branch_10_1k (2 cold)           4.66 M - 1.16x slower +29.85 ns
+dehydrate branching_5 (2 cold)               4.47 M - 1.21x slower +38.57 ns
+dehydrate lg_branch_10_10k (2 cold)          4.14 M - 1.31x slower +56.82 ns
+dehydrate branching_20 (2 cold)              3.81 M - 1.42x slower +77.31 ns
+dehydrate join_simple (3 cold)               3.59 M - 1.51x slower +93.70 ns
+dehydrate mixed_medium (4 cold)              3.16 M - 1.71x slower +131.77 ns
+dehydrate linear_5 (5 cold)                  3.13 M - 1.73x slower +134.10 ns
+dehydrate join_deep (5 cold)                 2.80 M - 1.93x slower +172.05 ns
+dehydrate fanout_4 (7 cold)                  2.21 M - 2.45x slower +267.30 ns
+dehydrate lg_linear_10_1k (10 cold)          1.66 M - 3.27x slower +418.98 ns
+dehydrate lg_branch_10_100k (2 cold)         1.34 M - 4.04x slower +562.31 ns
+dehydrate fanout_10 (13 cold)                1.21 M - 4.46x slower +640.67 ns
+dehydrate linear_20 (20 cold)                0.75 M - 7.23x slower +1152.47 ns
+dehydrate long_10 (20 cold)                  0.65 M - 8.32x slower +1353.41 ns
+dehydrate lg_long_10_1k (20 cold)            0.62 M - 8.66x slower +1416.61 ns
+dehydrate lg_linear_10_100k (10 cold)        0.35 M - 15.25x slower +2634.86 ns
+dehydrate lg_linear_10_10k (10 cold)         0.35 M - 15.30x slower +2645.33 ns
+dehydrate linear_50 (50 cold)                0.24 M - 22.87x slower +4045.33 ns
+dehydrate lg_linear_20_10k (20 cold)        0.200 M - 27.05x slower +4818.05 ns
+dehydrate lg_long_10_10k (20 cold)          0.200 M - 27.06x slower +4818.95 ns
+dehydrate lg_long_50_1k (100 cold)          0.140 M - 38.60x slower +6953.48 ns
+dehydrate long_50 (100 cold)                0.133 M - 40.65x slower +7332.98 ns
+dehydrate long_100 (200 cold)              0.0581 M - 93.09x slower +17030.22 ns
+dehydrate lg_long_50_10k (100 cold)        0.0487 M - 111.10x slower +20361.15 ns
+
+Memory usage statistics:
+
+Name                                     Memory usage
+dehydrate rules_2 (1 cold)                    0.51 KB
+dehydrate rules_10 (1 cold)                   0.61 KB - 1.20x memory usage +0.102 KB
+dehydrate lg_branch_10_1k (2 cold)            0.92 KB - 1.82x memory usage +0.41 KB
+dehydrate branching_5 (2 cold)                0.73 KB - 1.45x memory usage +0.23 KB
+dehydrate lg_branch_10_10k (2 cold)           0.92 KB - 1.82x memory usage +0.41 KB
+dehydrate branching_20 (2 cold)               0.85 KB - 1.68x memory usage +0.34 KB
+dehydrate join_simple (3 cold)                0.89 KB - 1.75x memory usage +0.38 KB
+dehydrate mixed_medium (4 cold)               1.17 KB - 2.31x memory usage +0.66 KB
+dehydrate linear_5 (5 cold)                   1.34 KB - 2.65x memory usage +0.84 KB
+dehydrate join_deep (5 cold)                  1.42 KB - 2.80x memory usage +0.91 KB
+dehydrate fanout_4 (7 cold)                   1.66 KB - 3.28x memory usage +1.16 KB
+dehydrate lg_linear_10_1k (10 cold)           3.14 KB - 6.18x memory usage +2.63 KB
+dehydrate lg_branch_10_100k (2 cold)          0.92 KB - 1.82x memory usage +0.41 KB
+dehydrate fanout_10 (13 cold)                 4.02 KB - 7.92x memory usage +3.52 KB
+dehydrate linear_20 (20 cold)                 5.88 KB - 11.58x memory usage +5.38 KB
+dehydrate long_10 (20 cold)                   5.93 KB - 11.68x memory usage +5.42 KB
+dehydrate lg_long_10_1k (20 cold)             5.05 KB - 9.95x memory usage +4.55 KB
+dehydrate lg_linear_10_100k (10 cold)         3.14 KB - 6.18x memory usage +2.63 KB
+dehydrate lg_linear_10_10k (10 cold)          3.14 KB - 6.18x memory usage +2.63 KB
+dehydrate linear_50 (50 cold)                15.56 KB - 30.65x memory usage +15.05 KB
+dehydrate lg_linear_20_10k (20 cold)          5.50 KB - 10.83x memory usage +4.99 KB
+dehydrate lg_long_10_10k (20 cold)            5.60 KB - 11.03x memory usage +5.09 KB
+dehydrate lg_long_50_1k (100 cold)           32.48 KB - 63.95x memory usage +31.97 KB
+dehydrate long_50 (100 cold)                 32.16 KB - 63.32x memory usage +31.65 KB
+dehydrate long_100 (200 cold)                68.84 KB - 135.57x memory usage +68.34 KB
+dehydrate lg_long_50_10k (100 cold)          32.48 KB - 63.95x memory usage +31.97 KB
+
+**All measurements for memory usage were the same**
+================================================================================
+BENCHMARK 5: FactResolver Performance
+================================================================================
+Benchmarking preload 200 hashes ...
+Benchmarking resolve all 200 refs (cold) ...
+Benchmarking resolve single (cache hit) ...
+Benchmarking resolve single (store hit) ...
+Calculating statistics...
+Formatting results...
+
+Name                                  ips        average  deviation         median         99th %
+resolve single (cache hit)        15.32 M      0.0653 μs ±12118.14%      0.0500 μs      0.0810 μs
+resolve single (store hit)         6.23 M       0.161 μs  ±1495.50%       0.130 μs        0.35 μs
+resolve all 200 refs (cold)      0.0476 M       21.00 μs   ±343.76%       19.63 μs       38.63 μs
+preload 200 hashes               0.0339 M       29.52 μs   ±115.09%       28.55 μs       49.51 μs
+
+Comparison: 
+resolve single (cache hit)        15.32 M
+resolve single (store hit)         6.23 M - 2.46x slower +0.0953 μs
+resolve all 200 refs (cold)      0.0476 M - 321.73x slower +20.93 μs
+preload 200 hashes               0.0339 M - 452.30x slower +29.46 μs
+
+Memory usage statistics:
+
+Name                           Memory usage
+resolve single (cache hit)        0.0781 KB
+resolve single (store hit)         0.141 KB - 1.80x memory usage +0.0625 KB
+resolve all 200 refs (cold)        28.16 KB - 360.40x memory usage +28.08 KB
+preload 200 hashes                 47.09 KB - 602.80x memory usage +47.02 KB
+
+**All measurements for memory usage were the same**
+================================================================================
+BENCHMARK 6: Large-Value Rehydration — Linear Chains
+(Payload sizes: 1KB, 10KB, 100KB per step)
+================================================================================
+Benchmarking lg_linear_10_1k full ...
+Benchmarking lg_linear_10_1k hybrid ...
+Benchmarking lg_linear_10_1k lazy ...
+Calculating statistics...
+Formatting results...
+
+Name                             ips        average  deviation         median         99th %
+lg_linear_10_1k full      33275.19 K      0.0301 μs   ±311.17%      0.0300 μs      0.0500 μs
+lg_linear_10_1k lazy        895.62 K        1.12 μs  ±1235.31%        0.94 μs        2.29 μs
+lg_linear_10_1k hybrid      384.80 K        2.60 μs   ±397.80%        2.48 μs        4.98 μs
+
+Comparison: 
+lg_linear_10_1k full      33275.19 K
+lg_linear_10_1k lazy        895.62 K - 37.15x slower +1.09 μs
+lg_linear_10_1k hybrid      384.80 K - 86.47x slower +2.57 μs
+
+Memory usage statistics:
+
+Name                      Memory usage
+lg_linear_10_1k full              0 KB
+lg_linear_10_1k lazy           4.60 KB - ∞ x memory usage +4.60 KB
+lg_linear_10_1k hybrid         8.58 KB - ∞ x memory usage +8.58 KB
+
+**All measurements for memory usage were the same**
+Benchmarking lg_linear_10_10k full ...
+Benchmarking lg_linear_10_10k hybrid ...
+Benchmarking lg_linear_10_10k lazy ...
+Calculating statistics...
+Formatting results...
+
+Name                              ips        average  deviation         median         99th %
+lg_linear_10_10k full      33483.50 K      0.0299 μs   ±272.66%      0.0300 μs      0.0500 μs
+lg_linear_10_10k lazy        231.63 K        4.32 μs  ±1261.58%        1.23 μs        6.95 μs
+lg_linear_10_10k hybrid      128.76 K        7.77 μs   ±608.48%        2.90 μs       58.94 μs
+
+Comparison: 
+lg_linear_10_10k full      33483.50 K
+lg_linear_10_10k lazy        231.63 K - 144.56x slower +4.29 μs
+lg_linear_10_10k hybrid      128.76 K - 260.04x slower +7.74 μs
+
+Memory usage statistics:
+
+Name                       Memory usage
+lg_linear_10_10k full              0 KB
+lg_linear_10_10k lazy           4.60 KB - ∞ x memory usage +4.60 KB
+lg_linear_10_10k hybrid         9.16 KB - ∞ x memory usage +9.16 KB
+
+**All measurements for memory usage were the same**
+Benchmarking lg_linear_10_100k full ...
+Benchmarking lg_linear_10_100k hybrid ...
+Benchmarking lg_linear_10_100k lazy ...
+Calculating statistics...
+Formatting results...
+
+Name                               ips        average  deviation         median         99th %
+lg_linear_10_100k full      32799.87 K      0.0305 μs   ±220.41%      0.0300 μs      0.0500 μs
+lg_linear_10_100k lazy        232.66 K        4.30 μs  ±1264.60%        1.22 μs        7.31 μs
+lg_linear_10_100k hybrid      129.63 K        7.71 μs   ±605.44%        2.63 μs       57.10 μs
+
+Comparison: 
+lg_linear_10_100k full      32799.87 K
+lg_linear_10_100k lazy        232.66 K - 140.98x slower +4.27 μs
+lg_linear_10_100k hybrid      129.63 K - 253.03x slower +7.68 μs
+
+Memory usage statistics:
+
+Name                        Memory usage
+lg_linear_10_100k full              0 KB
+lg_linear_10_100k lazy           4.60 KB - ∞ x memory usage +4.60 KB
+lg_linear_10_100k hybrid         9.16 KB - ∞ x memory usage +9.16 KB
+
+**All measurements for memory usage were the same**
+Benchmarking lg_linear_20_10k full ...
+Benchmarking lg_linear_20_10k hybrid ...
+Benchmarking lg_linear_20_10k lazy ...
+Calculating statistics...
+Formatting results...
+
+Name                              ips        average  deviation         median         99th %
+lg_linear_20_10k full      32859.84 K      0.0304 μs   ±300.83%      0.0300 μs      0.0500 μs
+lg_linear_20_10k lazy        138.76 K        7.21 μs   ±662.30%        2.71 μs       13.28 μs
+lg_linear_20_10k hybrid       61.73 K       16.20 μs   ±344.86%        5.35 μs      307.21 μs
+
+Comparison: 
+lg_linear_20_10k full      32859.84 K
+lg_linear_20_10k lazy        138.76 K - 236.81x slower +7.18 μs
+lg_linear_20_10k hybrid       61.73 K - 532.35x slower +16.17 μs
+
+Memory usage statistics:
+
+Name                       Memory usage
+lg_linear_20_10k full              0 KB
+lg_linear_20_10k lazy           7.78 KB - ∞ x memory usage +7.78 KB
+lg_linear_20_10k hybrid        19.26 KB - ∞ x memory usage +19.26 KB
+
+**All measurements for memory usage were the same**
+================================================================================
+BENCHMARK 7: Large-Value Rehydration — Branching
+================================================================================
+Benchmarking lg_branch_10_1k full ...
+Benchmarking lg_branch_10_1k hybrid ...
+Benchmarking lg_branch_10_1k lazy ...
+Calculating statistics...
+Formatting results...
+
+Name                             ips        average  deviation         median         99th %
+lg_branch_10_1k full      34096.00 K      0.0293 μs   ±398.99%      0.0300 μs      0.0400 μs
+lg_branch_10_1k lazy        826.69 K        1.21 μs  ±1092.35%        1.09 μs        2.39 μs
+lg_branch_10_1k hybrid      424.54 K        2.36 μs   ±664.80%        2.19 μs        4.45 μs
+
+Comparison: 
+lg_branch_10_1k full      34096.00 K
+lg_branch_10_1k lazy        826.69 K - 41.24x slower +1.18 μs
+lg_branch_10_1k hybrid      424.54 K - 80.31x slower +2.33 μs
+
+Memory usage statistics:
+
+Name                      Memory usage
+lg_branch_10_1k full              0 KB
+lg_branch_10_1k lazy           5.16 KB - ∞ x memory usage +5.16 KB
+lg_branch_10_1k hybrid         6.13 KB - ∞ x memory usage +6.13 KB
+
+**All measurements for memory usage were the same**
+Benchmarking lg_branch_10_10k full ...
+Benchmarking lg_branch_10_10k hybrid ...
+Benchmarking lg_branch_10_10k lazy ...
+Calculating statistics...
+Formatting results...
+
+Name                              ips        average  deviation         median         99th %
+lg_branch_10_10k full      33398.18 K      0.0299 μs   ±339.76%      0.0300 μs      0.0410 μs
+lg_branch_10_10k lazy        788.61 K        1.27 μs  ±1223.76%        1.12 μs        2.36 μs
+lg_branch_10_10k hybrid      418.02 K        2.39 μs   ±458.14%        2.20 μs        4.79 μs
+
+Comparison: 
+lg_branch_10_10k full      33398.18 K
+lg_branch_10_10k lazy        788.61 K - 42.35x slower +1.24 μs
+lg_branch_10_10k hybrid      418.02 K - 79.90x slower +2.36 μs
+
+Memory usage statistics:
+
+Name                       Memory usage
+lg_branch_10_10k full              0 KB
+lg_branch_10_10k lazy           5.16 KB - ∞ x memory usage +5.16 KB
+lg_branch_10_10k hybrid         6.13 KB - ∞ x memory usage +6.13 KB
+
+**All measurements for memory usage were the same**
+Benchmarking lg_branch_10_100k full ...
+Benchmarking lg_branch_10_100k hybrid ...
+Benchmarking lg_branch_10_100k lazy ...
+Calculating statistics...
+Formatting results...
+
+Name                               ips        average  deviation         median         99th %
+lg_branch_10_100k full      33037.48 K      0.0303 μs   ±153.77%      0.0300 μs      0.0500 μs
+lg_branch_10_100k lazy        224.21 K        4.46 μs  ±1229.18%        1.16 μs        7.01 μs
+lg_branch_10_100k hybrid      165.37 K        6.05 μs   ±762.47%        2.54 μs       10.32 μs
+
+Comparison: 
+lg_branch_10_100k full      33037.48 K
+lg_branch_10_100k lazy        224.21 K - 147.35x slower +4.43 μs
+lg_branch_10_100k hybrid      165.37 K - 199.77x slower +6.02 μs
+
+Memory usage statistics:
+
+Name                        Memory usage
+lg_branch_10_100k full              0 KB
+lg_branch_10_100k lazy           5.16 KB - ∞ x memory usage +5.16 KB
+lg_branch_10_100k hybrid         6.13 KB - ∞ x memory usage +6.13 KB
+
+**All measurements for memory usage were the same**
+================================================================================
+BENCHMARK 8: Large-Value Long-Running Accumulator
+================================================================================
+Benchmarking lg_long_10_1k full ...
+Benchmarking lg_long_10_1k hybrid ...
+Benchmarking lg_long_10_1k lazy ...
+Calculating statistics...
+Formatting results...
+
+Name                           ips        average  deviation         median         99th %
+lg_long_10_1k full      33902.65 K      0.0295 μs   ±171.73%      0.0300 μs      0.0500 μs
+lg_long_10_1k lazy        290.88 K        3.44 μs   ±368.40%        3.32 μs        7.09 μs
+lg_long_10_1k hybrid      164.09 K        6.09 μs    ±45.48%        5.80 μs       10.57 μs
+
+Comparison: 
+lg_long_10_1k full      33902.65 K
+lg_long_10_1k lazy        290.88 K - 116.55x slower +3.41 μs
+lg_long_10_1k hybrid      164.09 K - 206.61x slower +6.06 μs
+
+Memory usage statistics:
+
+Name                    Memory usage
+lg_long_10_1k full              0 KB
+lg_long_10_1k lazy          10.57 KB - ∞ x memory usage +10.57 KB
+lg_long_10_1k hybrid        26.57 KB - ∞ x memory usage +26.57 KB
+
+**All measurements for memory usage were the same**
+Benchmarking lg_long_50_1k full ...
+Benchmarking lg_long_50_1k hybrid ...
+Benchmarking lg_long_50_1k lazy ...
+Calculating statistics...
+Formatting results...
+
+Name                           ips        average  deviation         median         99th %
+lg_long_50_1k full      33843.20 K      0.0295 μs   ±146.95%      0.0300 μs      0.0410 μs
+lg_long_50_1k lazy         43.05 K       23.23 μs    ±16.02%       22.66 μs       37.66 μs
+lg_long_50_1k hybrid       24.99 K       40.02 μs    ±18.32%       38.30 μs       70.00 μs
+
+Comparison: 
+lg_long_50_1k full      33843.20 K
+lg_long_50_1k lazy         43.05 K - 786.10x slower +23.20 μs
+lg_long_50_1k hybrid       24.99 K - 1354.28x slower +39.99 μs
+
+Memory usage statistics:
+
+Name                    Memory usage
+lg_long_50_1k full              0 KB
+lg_long_50_1k lazy          61.55 KB - ∞ x memory usage +61.55 KB
+lg_long_50_1k hybrid       116.72 KB - ∞ x memory usage +116.72 KB
+
+**All measurements for memory usage were the same**
+Benchmarking lg_long_10_10k full ...
+Benchmarking lg_long_10_10k hybrid ...
+Benchmarking lg_long_10_10k lazy ...
+Calculating statistics...
+Formatting results...
+
+Name                            ips        average  deviation         median         99th %
+lg_long_10_10k full      33101.99 K      0.0302 μs   ±136.27%      0.0300 μs      0.0500 μs
+lg_long_10_10k lazy        106.02 K        9.43 μs   ±504.47%        3.49 μs      120.53 μs
+lg_long_10_10k hybrid       48.15 K       20.77 μs   ±302.73%        6.44 μs      356.11 μs
+
+Comparison: 
+lg_long_10_10k full      33101.99 K
+lg_long_10_10k lazy        106.02 K - 312.22x slower +9.40 μs
+lg_long_10_10k hybrid       48.15 K - 687.53x slower +20.74 μs
+
+Memory usage statistics:
+
+Name                     Memory usage
+lg_long_10_10k full              0 KB
+lg_long_10_10k lazy          10.91 KB - ∞ x memory usage +10.91 KB
+lg_long_10_10k hybrid        26.31 KB - ∞ x memory usage +26.31 KB
+
+**All measurements for memory usage were the same**
+Benchmarking lg_long_50_10k full ...
+Benchmarking lg_long_50_10k hybrid ...
+Benchmarking lg_long_50_10k lazy ...
+Calculating statistics...
+Formatting results...
+
+Name                            ips        average  deviation         median         99th %
+lg_long_50_10k full      33153.58 K      0.0302 μs   ±152.38%      0.0300 μs      0.0500 μs
+lg_long_50_10k lazy         18.01 K       55.53 μs   ±118.15%       23.88 μs      310.04 μs
+lg_long_50_10k hybrid       12.27 K       81.47 μs    ±80.28%       37.99 μs      289.37 μs
+
+Comparison: 
+lg_long_50_10k full      33153.58 K
+lg_long_50_10k lazy         18.01 K - 1840.95x slower +55.50 μs
+lg_long_50_10k hybrid       12.27 K - 2701.07x slower +81.44 μs
+
+Memory usage statistics:
+
+Name                     Memory usage
+lg_long_50_10k full              0 KB
+lg_long_50_10k lazy          61.88 KB - ∞ x memory usage +61.88 KB
+lg_long_50_10k hybrid       120.27 KB - ∞ x memory usage +120.27 KB
+
+**All measurements for memory usage were the same**
+================================================================================
+BENCHMARK 9: Large-Value FactResolver Performance
+================================================================================
+Benchmarking lg_linear_10_10k preload 10 ...
+Benchmarking lg_linear_10_10k resolve 1 (cache) ...
+Benchmarking lg_linear_10_10k resolve 1 (store) ...
+Calculating statistics...
+Formatting results...
+
+Name                                         ips        average  deviation         median         99th %
+lg_linear_10_10k resolve 1 (store)        4.82 M      207.67 ns  ±5902.32%         150 ns         912 ns
+lg_linear_10_10k resolve 1 (cache)        4.58 M      218.45 ns ±10620.55%          41 ns         251 ns
+lg_linear_10_10k preload 10               0.52 M     1918.20 ns  ±1267.32%        1713 ns        3156 ns
+
+Comparison: 
+lg_linear_10_10k resolve 1 (store)        4.82 M
+lg_linear_10_10k resolve 1 (cache)        4.58 M - 1.05x slower +10.78 ns
+lg_linear_10_10k preload 10               0.52 M - 9.24x slower +1710.53 ns
+
+Memory usage statistics:
+
+Name                                  Memory usage
+lg_linear_10_10k resolve 1 (store)           272 B
+lg_linear_10_10k resolve 1 (cache)            80 B - 0.29x memory usage -192 B
+lg_linear_10_10k preload 10                 3032 B - 11.15x memory usage +2760 B
+
+**All measurements for memory usage were the same**
+Benchmarking lg_long_50_10k preload 100 ...
+Benchmarking lg_long_50_10k resolve 1 (cache) ...
+Benchmarking lg_long_50_10k resolve 1 (store) ...
+Calculating statistics...
+Formatting results...
+
+Name                                       ips        average  deviation         median         99th %
+lg_long_50_10k resolve 1 (store)        6.02 M      166.02 ns  ±2544.84%         130 ns         351 ns
+lg_long_50_10k resolve 1 (cache)        4.34 M      230.49 ns ±10283.57%          50 ns         551 ns
+lg_long_50_10k preload 100            0.0423 M    23661.81 ns    ±27.06%       22022 ns       36750 ns
+
+Comparison: 
+lg_long_50_10k resolve 1 (store)        6.02 M
+lg_long_50_10k resolve 1 (cache)        4.34 M - 1.39x slower +64.47 ns
+lg_long_50_10k preload 100            0.0423 M - 142.53x slower +23495.79 ns
+
+Memory usage statistics:
+
+Name                                Memory usage
+lg_long_50_10k resolve 1 (store)           144 B
+lg_long_50_10k resolve 1 (cache)            80 B - 0.56x memory usage -64 B
+lg_long_50_10k preload 100               48016 B - 333.44x memory usage +47872 B
+
+**All measurements for memory usage were the same**
+================================================================================
+MEMORY FOOTPRINT COMPARISON
+================================================================================
+
+  Workflow               Full KB   Lazy KB Hybrid KB  Savings%   Hot  Cold Total
+  ------------------------------------------------------------------------------
+  branching_20              53.2      52.9      53.2      0.1%    19     2    21
+  branching_5               14.0      13.9      14.0      0.2%     4     2     6
+  fanout_10                 40.4      39.9      40.0      0.9%    10    13    23
+  fanout_4                  27.4      27.1      27.2      0.6%     4     7    11
+  join_deep                 24.4      24.2      24.3      0.4%     2     5     7
+  join_simple               16.8      16.7      16.8      0.5%     2     3     5
+  lg_branch_10_100k         33.1      29.6      32.8      0.8%    10     2    12
+  lg_branch_10_10k          33.1      29.6      32.9      0.8%    10     2    12
+  lg_branch_10_1k           33.1      29.6      32.9      0.8%    10     2    12
+  lg_linear_10_100k         30.4      29.0      29.1      4.4%     1    10    11
+  lg_linear_10_10k          30.3      28.9      29.0      4.4%     1    10    11
+  lg_linear_10_1k           30.4      28.9      29.0      4.4%     1    10    11
+  lg_linear_20_10k          62.0      59.1      59.3      4.4%     1    20    21
+  lg_long_10_10k            36.7      30.5      32.6     11.2%    11    20    31
+  lg_long_10_1k             37.2      30.6      32.6     12.2%    11    20    31
+  lg_long_50_10k           162.0     127.4     137.5     15.1%    51   100   151
+  lg_long_50_1k            171.6     127.4     137.5     19.8%    51   100   151
+  linear_20                 58.2      57.8      57.8      0.5%     1    20    21
+  linear_5                  14.7      14.6      14.6      0.5%     1     5     6
+  linear_50                144.9     144.1     144.1      0.5%     1    50    51
+  long_10                   30.3      29.8      30.0      1.0%    11    20    31
+  long_100                 251.0     246.3     247.9      1.2%   101   200   301
+  long_50                  129.6     127.2     128.0      1.2%    51   100   151
+  mixed_medium              21.3      21.2      21.2      0.3%     3     4     7
+  rules_10                  89.9      89.8      89.9      0.0%     5     1     6
+  rules_2                   19.2      19.2      19.2      0.1%     1     1     2
+
+================================================================================
+HOT/COLD CLASSIFICATION DETAIL
+================================================================================
+
+  Workflow               Total     Hot    Cold    Hot%   Cold%
+  ------------------------------------------------------------
+  branching_20              21      19       2   90.5%    9.5%
+  branching_5                6       4       2   66.7%   33.3%
+  fanout_10                 23      10      13   43.5%   56.5%
+  fanout_4                  11       4       7   36.4%   63.6%
+  join_deep                  7       2       5   28.6%   71.4%
+  join_simple                5       2       3   40.0%   60.0%
+  lg_branch_10_100k         12      10       2   83.3%   16.7%
+  lg_branch_10_10k          12      10       2   83.3%   16.7%
+  lg_branch_10_1k           12      10       2   83.3%   16.7%
+  lg_linear_10_100k         11       1      10    9.1%   90.9%
+  lg_linear_10_10k          11       1      10    9.1%   90.9%
+  lg_linear_10_1k           11       1      10    9.1%   90.9%
+  lg_linear_20_10k          21       1      20    4.8%   95.2%
+  lg_long_10_10k            31      11      20   35.5%   64.5%
+  lg_long_10_1k             31      11      20   35.5%   64.5%
+  lg_long_50_10k           151      51     100   33.8%   66.2%
+  lg_long_50_1k            151      51     100   33.8%   66.2%
+  linear_20                 21       1      20    4.8%   95.2%
+  linear_5                   6       1       5   16.7%   83.3%
+  linear_50                 51       1      50    2.0%   98.0%
+  long_10                   31      11      20   35.5%   64.5%
+  long_100                 301     101     200   33.6%   66.4%
+  long_50                  151      51     100   33.8%   66.2%
+  mixed_medium               7       3       4   42.9%   57.1%
+  rules_10                   6       5       1   83.3%   16.7%
+  rules_2                    2       1       1   50.0%   50.0%
+
+================================================================================
+PER-FACT MEMORY COST
+================================================================================
+
+  Workflow               B/Fact(F)   B/Fact(L)   B/Fact(H)   B/FactRef
+  --------------------------------------------------------------------
+  branching_20                2593        2577        2592         104
+  branching_5                 2392        2376        2386         104
+  fanout_10                   1797        1774        1781         104
+  fanout_4                    2548        2526        2532         104
+  join_deep                   3566        3546        3550         104
+  join_simple                 3448        3425        3432         104
+  lg_branch_10_100k           2823        2522        2802         104
+  lg_branch_10_10k            2828        2527        2807         104
+  lg_branch_10_1k             2827        2526        2806         104
+  lg_linear_10_100k           2833        2696        2709         104
+  lg_linear_10_10k            2824        2688        2701         104
+  lg_linear_10_1k             2826        2689        2702         104
+  lg_linear_20_10k            3024        2883        2890          80
+  lg_long_10_10k              1211        1008        1076         104
+  lg_long_10_1k               1227        1010        1077          80
+  lg_long_50_10k              1098         863         932         104
+  lg_long_50_1k               1163         863         932         104
+  linear_20                   2835        2819        2820         104
+  linear_5                    2504        2488        2490         104
+  linear_50                   2908        2892        2893         104
+  long_10                     1001         985         990          80
+  long_100                     853         837         843         104
+  long_50                      878         862         867         104
+  mixed_medium                3114        3098        3105         104
+  rules_10                   15346       15330       15344         104
+  rules_2                     9828        9812        9820          80
+
+================================================================================
+STRUCT SIZE: Fact vs FactRef (raw struct, no graph overhead)
+================================================================================
+  long_100: Fact=120B, FactRef=104B, savings=13.3%
+    value=280, hash=131501268
+  linear_50: Fact=120B, FactRef=104B, savings=13.3%
+    value=13, hash=2939155279
+  lg_linear_10_10k: Fact=248B, FactRef=104B, savings=58.1%
+    value=%{data: <<244, 11, ...>>, step: 0}, hash=155156212
+  lg_linear_10_100k: Fact=248B, FactRef=104B, savings=58.1%
+    value=%{data: <<52, 63, ...>>, step: 2}, hash=609784222
+
+================================================================================
+REHYDRATION BENCHMARK COMPLETE
+================================================================================
+    warning: unused alias FactProduced
+    │
+ 26 │ alias Runic.Workflow.Events.FactProduced
+    │ ~
+    │
+    └─ bench/rehydration_bench.exs:26:1
+

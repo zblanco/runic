@@ -85,7 +85,6 @@ defmodule Runic.Workflow.Serializer do
   def node_label(%Runic.Workflow.StateMachine{hash: hash}), do: "StateMachine(#{hash})"
 
   def node_label(%Runic.Workflow.Conjunction{hash: hash}), do: "AND(#{hash})"
-  def node_label(%Runic.Workflow.MemoryAssertion{hash: hash}), do: "Memory(#{hash})"
 
   def node_label(%Runic.Workflow.Fact{value: value, hash: hash}) do
     val_str =
@@ -115,7 +114,6 @@ defmodule Runic.Workflow.Serializer do
   def node_shape(%Runic.Workflow.Reduce{}), do: {:stadium, "([", "])"}
   def node_shape(%Runic.Workflow.StateMachine{}), do: {:cylinder, "[(", ")]"}
   def node_shape(%Runic.Workflow.Conjunction{}), do: {:diamond, "{", "}"}
-  def node_shape(%Runic.Workflow.MemoryAssertion{}), do: {:trapezoid, "[/", "\\]"}
   def node_shape(%Runic.Workflow.Fact{}), do: {:rounded, "(", ")"}
   def node_shape(_), do: {:rect, "[", "]"}
 
@@ -134,7 +132,6 @@ defmodule Runic.Workflow.Serializer do
   def node_class(%Runic.Workflow.Reduce{}), do: "reduce"
   def node_class(%Runic.Workflow.StateMachine{}), do: "statemachine"
   def node_class(%Runic.Workflow.Conjunction{}), do: "conjunction"
-  def node_class(%Runic.Workflow.MemoryAssertion{}), do: "memory"
   def node_class(%Runic.Workflow.Fact{}), do: "fact"
   def node_class(_), do: "default"
 

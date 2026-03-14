@@ -4,7 +4,7 @@ defmodule Runic.Workflow.MergeableTest do
   require Runic
 
   alias Runic.Workflow
-  alias Runic.Workflow.{Accumulator, FanIn, StateReaction, CausalContext, Fact, Invokable}
+  alias Runic.Workflow.{Accumulator, FanIn, CausalContext, Fact, Invokable}
 
   describe "Accumulator.mergeable" do
     test "defaults to false" do
@@ -74,27 +74,6 @@ defmodule Runic.Workflow.MergeableTest do
       }
 
       assert fan_in.mergeable == true
-    end
-  end
-
-  describe "StateReaction.mergeable" do
-    test "defaults to false" do
-      sr = StateReaction.new(hash: 123, state_hash: 456, work: fn x -> x end, arity: 1)
-
-      assert sr.mergeable == false
-    end
-
-    test "can be set to true" do
-      sr =
-        StateReaction.new(
-          hash: 123,
-          state_hash: 456,
-          work: fn x -> x end,
-          arity: 1,
-          mergeable: true
-        )
-
-      assert sr.mergeable == true
     end
   end
 

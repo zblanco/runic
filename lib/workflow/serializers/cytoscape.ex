@@ -207,7 +207,6 @@ defmodule Runic.Workflow.Serializers.Cytoscape do
   defp node_cytoscape_style(%Workflow.Reduce{}), do: {"round-rectangle", "#234e52"}
   defp node_cytoscape_style(%Workflow.StateMachine{}), do: {"barrel", "#44337a"}
   defp node_cytoscape_style(%Workflow.Conjunction{}), do: {"diamond", "#5a3e1b"}
-  defp node_cytoscape_style(%Workflow.MemoryAssertion{}), do: {"tag", "#2d3748"}
   defp node_cytoscape_style(%Workflow.Fact{}), do: {"ellipse", "#1e3a5f"}
   defp node_cytoscape_style(_), do: {"rectangle", "#2d3748"}
 end

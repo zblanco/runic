@@ -109,7 +109,39 @@ defmodule Runic.Runner.Store.ETSTest do
     end
   end
 
-  # --- E. Concurrent access ---
+  # --- E. Fact Storage ---
+
+  describe "fact storage" do
+    test "save_fact and load_fact round-trip", %{store_state: state} do
+      assert :ok = ETS.save_fact(:hash_1, "value_1", state)
+      assert {:ok, "value_1"} = ETS.load_fact(:hash_1, state)
+    end
+
+    test "load_fact returns {:error, :not_found} for unknown hash", %{store_state: state} do
+      assert {:error, :not_found} = ETS.load_fact(:nonexistent, state)
+    end
+
+    test "save_fact is idempotent (upsert)", %{store_state: state} do
+      ETS.save_fact(:hash_1, "first", state)
+      ETS.save_fact(:hash_1, "second", state)
+      assert {:ok, "second"} = ETS.load_fact(:hash_1, state)
+    end
+
+    test "stores raw values, not Fact structs", %{store_state: state} do
+      value = %{complex: [1, 2, 3], nested: %{data: true}}
+      ETS.save_fact(42, value, state)
+      assert {:ok, ^value} = ETS.load_fact(42, state)
+    end
+
+    test "different hashes store independently", %{store_state: state} do
+      ETS.save_fact(:a, "alpha", state)
+      ETS.save_fact(:b, "beta", state)
+      assert {:ok, "alpha"} = ETS.load_fact(:a, state)
+      assert {:ok, "beta"} = ETS.load_fact(:b, state)
+    end
+  end
+
+  # --- F. Concurrent access ---
 
   describe "concurrent access" do
     test "multiple processes writing different IDs don't interfere", %{store_state: state} do

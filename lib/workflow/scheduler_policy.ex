@@ -71,7 +71,9 @@ defmodule Runic.Workflow.SchedulerPolicy do
     :priority,
     :idempotency_key,
     :deadline_ms,
-    :circuit_breaker
+    :circuit_breaker,
+    :executor,
+    :executor_opts
   ]
 
   defstruct max_retries: 0,
@@ -85,7 +87,9 @@ defmodule Runic.Workflow.SchedulerPolicy do
             priority: :normal,
             idempotency_key: nil,
             deadline_ms: nil,
-            circuit_breaker: nil
+            circuit_breaker: nil,
+            executor: nil,
+            executor_opts: []
 
   @type fallback_return ::
           Runnable.t()
@@ -106,7 +110,9 @@ defmodule Runic.Workflow.SchedulerPolicy do
           priority: :low | :normal | :high | :critical,
           idempotency_key: term() | nil,
           deadline_ms: non_neg_integer() | nil,
-          circuit_breaker: map() | nil
+          circuit_breaker: map() | nil,
+          executor: module() | :inline | nil,
+          executor_opts: keyword()
         }
 
   @doc """

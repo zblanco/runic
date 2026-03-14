@@ -241,7 +241,7 @@ defmodule Runic.RunnableEventsTest do
         |> Enum.reduce(workflow, &Workflow.apply_runnable(&2, &1))
         |> Workflow.append_runnable_events(events)
 
-      log = Workflow.log(workflow)
+      log = Workflow.event_log(workflow)
 
       runnable_events_in_log =
         Enum.filter(log, fn
@@ -288,8 +288,8 @@ defmodule Runic.RunnableEventsTest do
 
       workflow = Workflow.append_runnable_events(workflow, events)
 
-      log = Workflow.log(workflow)
-      restored = Workflow.from_log(log)
+      log = Workflow.event_log(workflow)
+      restored = Workflow.from_events(log)
 
       assert length(restored.runnable_events) == 2
 
@@ -520,8 +520,8 @@ defmodule Runic.RunnableEventsTest do
       assert length(workflow.runnable_events) > 0
 
       # Round-trip through log
-      log = Workflow.log(workflow)
-      restored = Workflow.from_log(log)
+      log = Workflow.event_log(workflow)
+      restored = Workflow.from_events(log)
 
       assert length(restored.runnable_events) == length(workflow.runnable_events)
 

@@ -1,0 +1,691 @@
+     warning: Runic.Workflow.log/1 is deprecated. Use build_log/1 + workflow.uncommitted_events with from_events/2 instead
+     │
+ 486 │         log = Workflow.log(state.workflow)
+     │                        ~
+     │
+     └─ lib/runic/runner/worker.ex:486:24: Runic.Runner.Worker.do_checkpoint/1
+
+     warning: Runic.Workflow.log/1 is deprecated. Use build_log/1 + workflow.uncommitted_events with from_events/2 instead
+     │
+ 531 │         store_mod.save(id, Workflow.log(state.workflow), store_state)
+     │                                     ~
+     │
+     └─ lib/runic/runner/worker.ex:531:37: Runic.Runner.Worker.maybe_persist/1
+
+
+================================================================================
+LEAN REPLAY & RESUME PIPELINE BENCHMARK
+Date: 2026-02-27T22:07:11.668262Z
+================================================================================
+
+Building and executing workflows with event emission...
+
+  Scenario                Events   Facts   Full KB    Ext KB
+  ------------------------------------------------------------------
+  lg_linear_10_10k            31      11      35.6    1218.7
+  lg_linear_20_10k            61      21      72.7    4436.2
+  lg_long_50_100k            351     151     258.3   55815.8
+  lg_long_50_10k             351     151     263.8    6067.1
+  lg_long_50_1k              351     151     253.4     636.0
+  linear_20                   61      21      65.7      34.6
+  linear_50                  151      51     164.1      84.7
+  long_100                   701     301     341.7     186.9
+  long_50                    351     151     174.9      95.4
+
+================================================================================
+BENCHMARK 1: Lean Replay vs Full Replay Speed
+from_events(events) vs from_events(events, nil, fact_mode: :ref)
+================================================================================
+Benchmarking linear_20 full replay ...
+Benchmarking linear_20 lean replay (full events) ...
+Benchmarking linear_20 lean replay (stripped) ...
+Calculating statistics...
+Formatting results...
+
+Name                                          ips        average  deviation         median         99th %
+linear_20 lean replay (stripped)          12.83 K       77.93 μs    ±20.06%       74.20 μs      142.37 μs
+linear_20 lean replay (full events)       12.55 K       79.70 μs    ±17.14%       76.34 μs      145.31 μs
+linear_20 full replay                     11.61 K       86.11 μs    ±18.21%       82.22 μs      153.87 μs
+
+Comparison: 
+linear_20 lean replay (stripped)          12.83 K
+linear_20 lean replay (full events)       12.55 K - 1.02x slower +1.78 μs
+linear_20 full replay                     11.61 K - 1.11x slower +8.19 μs
+
+Memory usage statistics:
+
+Name                                   Memory usage
+linear_20 lean replay (stripped)          184.40 KB
+linear_20 lean replay (full events)       188.37 KB - 1.02x memory usage +3.97 KB
+linear_20 full replay                     188.37 KB - 1.02x memory usage +3.97 KB
+
+**All measurements for memory usage were the same**
+Benchmarking linear_50 full replay ...
+Benchmarking linear_50 lean replay (full events) ...
+Benchmarking linear_50 lean replay (stripped) ...
+Calculating statistics...
+Formatting results...
+
+Name                                          ips        average  deviation         median         99th %
+linear_50 full replay                      5.26 K      190.16 μs    ±23.15%      181.22 μs      348.42 μs
+linear_50 lean replay (stripped)           5.23 K      191.22 μs    ±25.53%      179.69 μs      388.35 μs
+linear_50 lean replay (full events)        4.81 K      207.90 μs    ±26.64%      194.03 μs      402.58 μs
+
+Comparison: 
+linear_50 full replay                      5.26 K
+linear_50 lean replay (stripped)           5.23 K - 1.01x slower +1.05 μs
+linear_50 lean replay (full events)        4.81 K - 1.09x slower +17.73 μs
+
+Memory usage statistics:
+
+Name                                   Memory usage
+linear_50 full replay                     434.08 KB
+linear_50 lean replay (stripped)          423.05 KB - 0.97x memory usage -11.02344 KB
+linear_50 lean replay (full events)       434.08 KB - 1.00x memory usage +0 KB
+
+**All measurements for memory usage were the same**
+Benchmarking long_50 full replay ...
+Benchmarking long_50 lean replay (full events) ...
+Benchmarking long_50 lean replay (stripped) ...
+Calculating statistics...
+Formatting results...
+
+Name                                        ips        average  deviation         median         99th %
+long_50 full replay                      1.90 K      526.82 μs    ±23.23%      488.31 μs     1082.38 μs
+long_50 lean replay (full events)        1.68 K      595.46 μs    ±24.93%      552.33 μs     1250.99 μs
+long_50 lean replay (stripped)           1.67 K      599.90 μs    ±26.95%      557.87 μs     1267.94 μs
+
+Comparison: 
+long_50 full replay                      1.90 K
+long_50 lean replay (full events)        1.68 K - 1.13x slower +68.64 μs
+long_50 lean replay (stripped)           1.67 K - 1.14x slower +73.08 μs
+
+Memory usage statistics:
+
+Name                                 Memory usage
+long_50 full replay                    1010.26 KB
+long_50 lean replay (full events)      1010.26 KB - 1.00x memory usage +0 KB
+long_50 lean replay (stripped)          981.98 KB - 0.97x memory usage -28.27344 KB
+
+**All measurements for memory usage were the same**
+Benchmarking long_100 full replay ...
+Benchmarking long_100 lean replay (full events) ...
+Benchmarking long_100 lean replay (stripped) ...
+Calculating statistics...
+Formatting results...
+
+Name                                         ips        average  deviation         median         99th %
+long_100 lean replay (stripped)           998.90        1.00 ms    ±23.44%        0.91 ms        1.95 ms
+long_100 lean replay (full events)        926.55        1.08 ms    ±23.45%        0.98 ms        2.03 ms
+long_100 full replay                      887.67        1.13 ms    ±24.35%        1.05 ms        2.20 ms
+
+Comparison: 
+long_100 lean replay (stripped)           998.90
+long_100 lean replay (full events)        926.55 - 1.08x slower +0.0782 ms
+long_100 full replay                      887.67 - 1.13x slower +0.125 ms
+
+Memory usage statistics:
+
+Name                                  Memory usage
+long_100 lean replay (stripped)            1.92 MB
+long_100 lean replay (full events)         1.98 MB - 1.03x memory usage +0.0616 MB
+long_100 full replay                       1.98 MB - 1.03x memory usage +0.0616 MB
+
+**All measurements for memory usage were the same**
+Benchmarking lg_linear_10_10k full replay ...
+Benchmarking lg_linear_10_10k lean replay (full events) ...
+Benchmarking lg_linear_10_10k lean replay (stripped) ...
+Calculating statistics...
+Formatting results...
+
+Name                                                 ips        average  deviation         median         99th %
+lg_linear_10_10k lean replay (stripped)          11.45 K       87.31 μs    ±59.06%       74.66 μs      244.50 μs
+lg_linear_10_10k lean replay (full events)       11.10 K       90.07 μs    ±57.89%       75.04 μs      244.01 μs
+lg_linear_10_10k full replay                     10.46 K       95.60 μs    ±54.71%       88.41 μs      244.11 μs
+
+Comparison: 
+lg_linear_10_10k lean replay (stripped)          11.45 K
+lg_linear_10_10k lean replay (full events)       11.10 K - 1.03x slower +2.77 μs
+lg_linear_10_10k full replay                     10.46 K - 1.09x slower +8.29 μs
+
+Memory usage statistics:
+
+Name                                          Memory usage
+lg_linear_10_10k lean replay (stripped)           89.83 KB
+lg_linear_10_10k lean replay (full events)        91.98 KB - 1.02x memory usage +2.16 KB
+lg_linear_10_10k full replay                      91.98 KB - 1.02x memory usage +2.16 KB
+
+**All measurements for memory usage were the same**
+Benchmarking lg_linear_20_10k full replay ...
+Benchmarking lg_linear_20_10k lean replay (full events) ...
+Benchmarking lg_linear_20_10k lean replay (stripped) ...
+Calculating statistics...
+Formatting results...
+
+Name                                                 ips        average  deviation         median         99th %
+lg_linear_20_10k lean replay (stripped)           5.65 K      177.13 μs    ±30.89%      176.55 μs      316.82 μs
+lg_linear_20_10k lean replay (full events)        5.21 K      192.06 μs    ±31.90%      187.26 μs      348.50 μs
+lg_linear_20_10k full replay                      4.75 K      210.62 μs    ±29.17%      209.30 μs      375.97 μs
+
+Comparison: 
+lg_linear_20_10k lean replay (stripped)           5.65 K
+lg_linear_20_10k lean replay (full events)        5.21 K - 1.08x slower +14.93 μs
+lg_linear_20_10k full replay                      4.75 K - 1.19x slower +33.49 μs
+
+Memory usage statistics:
+
+Name                                          Memory usage
+lg_linear_20_10k lean replay (stripped)          187.24 KB
+lg_linear_20_10k lean replay (full events)       190.76 KB - 1.02x memory usage +3.52 KB
+lg_linear_20_10k full replay                     190.76 KB - 1.02x memory usage +3.52 KB
+
+**All measurements for memory usage were the same**
+Benchmarking lg_long_50_1k full replay ...
+Benchmarking lg_long_50_1k lean replay (full events) ...
+Benchmarking lg_long_50_1k lean replay (stripped) ...
+Calculating statistics...
+Formatting results...
+
+Name                                              ips        average  deviation         median         99th %
+lg_long_50_1k full replay                      789.53        1.27 ms    ±14.95%        1.24 ms        1.83 ms
+lg_long_50_1k lean replay (full events)        762.75        1.31 ms    ±17.42%        1.26 ms        2.01 ms
+lg_long_50_1k lean replay (stripped)           756.62        1.32 ms    ±16.07%        1.29 ms        1.92 ms
+
+Comparison: 
+lg_long_50_1k full replay                      789.53
+lg_long_50_1k lean replay (full events)        762.75 - 1.04x slower +0.0445 ms
+lg_long_50_1k lean replay (stripped)           756.62 - 1.04x slower +0.0551 ms
+
+Memory usage statistics:
+
+Name                                       Memory usage
+lg_long_50_1k full replay                    1016.43 KB
+lg_long_50_1k lean replay (full events)      1016.43 KB - 1.00x memory usage +0 KB
+lg_long_50_1k lean replay (stripped)             985 KB - 0.97x memory usage -31.42969 KB
+
+**All measurements for memory usage were the same**
+Benchmarking lg_long_50_10k full replay ...
+Benchmarking lg_long_50_10k lean replay (full events) ...
+Benchmarking lg_long_50_10k lean replay (stripped) ...
+Calculating statistics...
+Formatting results...
+
+Name                                               ips        average  deviation         median         99th %
+lg_long_50_10k lean replay (full events)        790.16        1.27 ms    ±13.35%        1.28 ms        1.65 ms
+lg_long_50_10k lean replay (stripped)           770.82        1.30 ms    ±19.81%        1.25 ms        2.10 ms
+lg_long_50_10k full replay                      724.70        1.38 ms    ±16.63%        1.37 ms        2.05 ms
+
+Comparison: 
+lg_long_50_10k lean replay (full events)        790.16
+lg_long_50_10k lean replay (stripped)           770.82 - 1.03x slower +0.0318 ms
+lg_long_50_10k full replay                      724.70 - 1.09x slower +0.114 ms
+
+Memory usage statistics:
+
+Name                                        Memory usage
+lg_long_50_10k lean replay (full events)      1023.45 KB
+lg_long_50_10k lean replay (stripped)          992.54 KB - 0.97x memory usage -30.90625 KB
+lg_long_50_10k full replay                    1023.45 KB - 1.00x memory usage +0 KB
+
+**All measurements for memory usage were the same**
+
+================================================================================
+BENCHMARK 2: Full Resume Pipeline — End-to-End
+Simulates Runner.resume_from_events for each strategy
+================================================================================
+Benchmarking long_100 resume :full ...
+Benchmarking long_100 resume :hybrid ...
+Benchmarking long_100 resume :lazy ...
+Calculating statistics...
+Formatting results...
+
+Name                              ips        average  deviation         median         99th %
+long_100 resume :lazy          881.88        1.13 ms    ±23.05%        1.03 ms        2.16 ms
+long_100 resume :hybrid        780.19        1.28 ms    ±23.57%        1.20 ms        2.47 ms
+long_100 resume :full          736.73        1.36 ms    ±21.83%        1.24 ms        2.47 ms
+
+Comparison: 
+long_100 resume :lazy          881.88
+long_100 resume :hybrid        780.19 - 1.13x slower +0.148 ms
+long_100 resume :full          736.73 - 1.20x slower +0.22 ms
+
+Memory usage statistics:
+
+Name                       Memory usage
+long_100 resume :lazy           1.92 MB
+long_100 resume :hybrid         2.15 MB - 1.12x memory usage +0.23 MB
+long_100 resume :full           2.15 MB - 1.12x memory usage +0.23 MB
+
+**All measurements for memory usage were the same**
+Benchmarking lg_linear_10_10k resume :full ...
+Benchmarking lg_linear_10_10k resume :hybrid ...
+Benchmarking lg_linear_10_10k resume :lazy ...
+Calculating statistics...
+Formatting results...
+
+Name                                      ips        average  deviation         median         99th %
+lg_linear_10_10k resume :lazy         12.29 K       81.35 μs    ±58.70%       73.54 μs      224.57 μs
+lg_linear_10_10k resume :full         12.17 K       82.17 μs    ±55.43%       69.91 μs      223.75 μs
+lg_linear_10_10k resume :hybrid       11.22 K       89.13 μs    ±56.55%       76.67 μs      243.48 μs
+
+Comparison: 
+lg_linear_10_10k resume :lazy         12.29 K
+lg_linear_10_10k resume :full         12.17 K - 1.01x slower +0.82 μs
+lg_linear_10_10k resume :hybrid       11.22 K - 1.10x slower +7.78 μs
+
+Memory usage statistics:
+
+Name                               Memory usage
+lg_linear_10_10k resume :lazy          89.90 KB
+lg_linear_10_10k resume :full          98.23 KB - 1.09x memory usage +8.33 KB
+lg_linear_10_10k resume :hybrid        95.68 KB - 1.06x memory usage +5.78 KB
+
+**All measurements for memory usage were the same**
+Benchmarking lg_linear_20_10k resume :full ...
+Benchmarking lg_linear_20_10k resume :hybrid ...
+Benchmarking lg_linear_20_10k resume :lazy ...
+Calculating statistics...
+Formatting results...
+
+Name                                      ips        average  deviation         median         99th %
+lg_linear_20_10k resume :lazy          5.93 K      168.62 μs    ±31.55%      169.50 μs      298.47 μs
+lg_linear_20_10k resume :hybrid        4.99 K      200.36 μs    ±27.68%      198.11 μs      359.88 μs
+lg_linear_20_10k resume :full          4.89 K      204.62 μs    ±25.56%      203.18 μs      354.63 μs
+
+Comparison: 
+lg_linear_20_10k resume :lazy          5.93 K
+lg_linear_20_10k resume :hybrid        4.99 K - 1.19x slower +31.74 μs
+lg_linear_20_10k resume :full          4.89 K - 1.21x slower +36.00 μs
+
+Memory usage statistics:
+
+Name                               Memory usage
+lg_linear_20_10k resume :lazy         187.27 KB
+lg_linear_20_10k resume :hybrid       201.31 KB - 1.08x memory usage +14.05 KB
+lg_linear_20_10k resume :full         205.59 KB - 1.10x memory usage +18.32 KB
+
+**All measurements for memory usage were the same**
+Benchmarking lg_long_50_1k resume :full ...
+Benchmarking lg_long_50_1k resume :hybrid ...
+Benchmarking lg_long_50_1k resume :lazy ...
+Calculating statistics...
+Formatting results...
+
+Name                                   ips        average  deviation         median         99th %
+lg_long_50_1k resume :lazy          774.13        1.29 ms    ±15.80%        1.23 ms        1.96 ms
+lg_long_50_1k resume :hybrid        743.30        1.35 ms    ±13.24%        1.36 ms        1.80 ms
+lg_long_50_1k resume :full          731.64        1.37 ms    ±14.45%        1.39 ms        1.76 ms
+
+Comparison: 
+lg_long_50_1k resume :lazy          774.13
+lg_long_50_1k resume :hybrid        743.30 - 1.04x slower +0.0536 ms
+lg_long_50_1k resume :full          731.64 - 1.06x slower +0.0750 ms
+
+Memory usage statistics:
+
+Name                            Memory usage
+lg_long_50_1k resume :lazy           0.96 MB
+lg_long_50_1k resume :hybrid         1.09 MB - 1.13x memory usage +0.127 MB
+lg_long_50_1k resume :full           1.11 MB - 1.15x memory usage +0.145 MB
+
+**All measurements for memory usage were the same**
+Benchmarking lg_long_50_10k resume :full ...
+Benchmarking lg_long_50_10k resume :hybrid ...
+Benchmarking lg_long_50_10k resume :lazy ...
+Calculating statistics...
+Formatting results...
+
+Name                                    ips        average  deviation         median         99th %
+lg_long_50_10k resume :lazy          790.68        1.26 ms    ±17.57%        1.23 ms        1.94 ms
+lg_long_50_10k resume :full          727.88        1.37 ms    ±15.61%        1.38 ms        1.91 ms
+lg_long_50_10k resume :hybrid        723.33        1.38 ms    ±15.20%        1.39 ms        1.93 ms
+
+Comparison: 
+lg_long_50_10k resume :lazy          790.68
+lg_long_50_10k resume :full          727.88 - 1.09x slower +0.109 ms
+lg_long_50_10k resume :hybrid        723.33 - 1.09x slower +0.118 ms
+
+Memory usage statistics:
+
+Name                             Memory usage
+lg_long_50_10k resume :lazy           0.97 MB
+lg_long_50_10k resume :full           1.12 MB - 1.16x memory usage +0.153 MB
+lg_long_50_10k resume :hybrid         1.10 MB - 1.13x memory usage +0.130 MB
+
+**All measurements for memory usage were the same**
+Benchmarking lg_long_50_100k resume :full ...
+Benchmarking lg_long_50_100k resume :hybrid ...
+Benchmarking lg_long_50_100k resume :lazy ...
+Calculating statistics...
+Formatting results...
+
+Name                                     ips        average  deviation         median         99th %
+lg_long_50_100k resume :lazy          818.37        1.22 ms    ±13.85%        1.22 ms        1.81 ms
+lg_long_50_100k resume :hybrid        737.35        1.36 ms    ±13.64%        1.38 ms        1.79 ms
+lg_long_50_100k resume :full          658.58        1.52 ms    ±15.99%        1.54 ms        2.19 ms
+
+Comparison: 
+lg_long_50_100k resume :lazy          818.37
+lg_long_50_100k resume :hybrid        737.35 - 1.11x slower +0.134 ms
+lg_long_50_100k resume :full          658.58 - 1.24x slower +0.30 ms
+
+Memory usage statistics:
+
+Name                              Memory usage
+lg_long_50_100k resume :lazy           0.97 MB
+lg_long_50_100k resume :hybrid         1.10 MB - 1.13x memory usage +0.129 MB
+lg_long_50_100k resume :full           1.12 MB - 1.15x memory usage +0.150 MB
+
+**All measurements for memory usage were the same**
+
+================================================================================
+PEAK MEMORY DURING RECOVERY
+Process memory snapshots around resume paths
+(external_size of result workflow = steady-state memory)
+================================================================================
+
+  Scenario                Strategy  Proc ΔKB Result KB   Full KB   Ratio
+  ----------------------------------------------------------------------------
+  long_100                    full    1312.2      98.0     186.9   52.4%
+  long_100                  hybrid    1312.2      96.8     186.9   51.8%
+  long_100                    lazy    1312.2      96.1     186.9   51.4%
+  lg_linear_10_10k            full     362.7     664.5    1218.7   54.5%
+  lg_linear_10_10k          hybrid       0.0     214.3    1218.7   17.6%
+  lg_linear_10_10k            lazy       0.0     114.2    1218.7    9.4%
+  lg_linear_20_10k            full    -949.5    2328.1    4436.2   52.5%
+  lg_linear_20_10k          hybrid       0.0     427.5    4436.2    9.6%
+  lg_linear_20_10k            lazy       0.0     227.5    4436.2    5.1%
+  lg_long_50_1k               full    3072.7     322.7     636.0   50.7%
+  lg_long_50_1k             hybrid    3072.7     106.1     636.0   16.7%
+  lg_long_50_1k               lazy    3072.7      53.5     636.0    8.4%
+  lg_long_50_10k              full    -949.5    3042.7    6067.1   50.2%
+  lg_long_50_10k            hybrid    1173.6     565.2    6067.1    9.3%
+  lg_long_50_10k              lazy       0.0      62.6    6067.1    1.0%
+  lg_long_50_100k             full       0.0   27961.9   55815.8   50.1%
+  lg_long_50_100k           hybrid     969.7    5154.9   55815.8    9.2%
+  lg_long_50_100k             lazy       0.0     152.3   55815.8    0.3%
+
+================================================================================
+BENCHMARK 4: Fused vs Two-Pass Rehydration — Direct Comparison
+================================================================================
+Benchmarking long_100 fused (rehydrate_fused) ...
+Benchmarking long_100 two-pass (classify+dehydrate) ...
+Calculating statistics...
+Formatting results...
+
+Name                                             ips        average  deviation         median         99th %
+long_100 fused (rehydrate_fused)             22.13 K       45.20 μs    ±14.29%       44.45 μs       72.44 μs
+long_100 two-pass (classify+dehydrate)       12.09 K       82.71 μs    ±11.28%       80.53 μs      128.33 μs
+
+Comparison: 
+long_100 fused (rehydrate_fused)             22.13 K
+long_100 two-pass (classify+dehydrate)       12.09 K - 1.83x slower +37.51 μs
+
+Memory usage statistics:
+
+Name                                      Memory usage
+long_100 fused (rehydrate_fused)             153.57 KB
+long_100 two-pass (classify+dehydrate)       242.30 KB - 1.58x memory usage +88.73 KB
+
+**All measurements for memory usage were the same**
+Benchmarking lg_long_50_1k fused (rehydrate_fused) ...
+Benchmarking lg_long_50_1k two-pass (classify+dehydrate) ...
+Calculating statistics...
+Formatting results...
+
+Name                                                  ips        average  deviation         median         99th %
+lg_long_50_1k fused (rehydrate_fused)             14.53 K       68.81 μs   ±122.20%       28.82 μs      385.29 μs
+lg_long_50_1k two-pass (classify+dehydrate)        8.24 K      121.36 μs    ±75.92%       84.30 μs      403.50 μs
+
+Comparison: 
+lg_long_50_1k fused (rehydrate_fused)             14.53 K
+lg_long_50_1k two-pass (classify+dehydrate)        8.24 K - 1.76x slower +52.55 μs
+
+Memory usage statistics:
+
+Name                                           Memory usage
+lg_long_50_1k fused (rehydrate_fused)              74.12 KB
+lg_long_50_1k two-pass (classify+dehydrate)       121.13 KB - 1.63x memory usage +47.02 KB
+
+**All measurements for memory usage were the same**
+Benchmarking lg_long_50_10k fused (rehydrate_fused) ...
+Benchmarking lg_long_50_10k two-pass (classify+dehydrate) ...
+Calculating statistics...
+Formatting results...
+
+Name                                                   ips        average  deviation         median         99th %
+lg_long_50_10k fused (rehydrate_fused)             15.89 K       62.92 μs   ±128.77%       25.20 μs      358.35 μs
+lg_long_50_10k two-pass (classify+dehydrate)        8.77 K      114.04 μs    ±80.49%       78.07 μs      422.46 μs
+
+Comparison: 
+lg_long_50_10k fused (rehydrate_fused)             15.89 K
+lg_long_50_10k two-pass (classify+dehydrate)        8.77 K - 1.81x slower +51.12 μs
+
+Memory usage statistics:
+
+Name                                            Memory usage
+lg_long_50_10k fused (rehydrate_fused)              74.55 KB
+lg_long_50_10k two-pass (classify+dehydrate)       121.11 KB - 1.62x memory usage +46.55 KB
+
+**All measurements for memory usage were the same**
+
+================================================================================
+BENCHMARK 5: should_rehydrate? Heuristic Sampling Cost
+================================================================================
+Benchmarking lg_linear_10_10k (→false) ...
+Benchmarking lg_long_50_10k (→true) ...
+Benchmarking lg_long_50_1k (→true) ...
+Benchmarking linear_20 (→false) ...
+Benchmarking long_100 (→false) ...
+Calculating statistics...
+Formatting results...
+
+Name                                ips        average  deviation         median         99th %
+lg_linear_10_10k (âfalse    1109.81 K        0.90 μs  ±4142.91%        0.38 μs        2.27 μs
+linear_20 (âfalse)          1077.76 K        0.93 μs  ±1541.62%        0.79 μs        1.61 μs
+long_100 (âfalse)             54.21 K       18.45 μs    ±17.42%       17.92 μs       29.20 μs
+lg_long_50_10k (âtrue)        33.37 K       29.97 μs   ±211.57%       15.19 μs      381.16 μs
+lg_long_50_1k (âtrue)         33.25 K       30.07 μs   ±204.26%       14.43 μs      363.77 μs
+
+Comparison: 
+lg_linear_10_10k (âfalse    1109.81 K
+linear_20 (âfalse)          1077.76 K - 1.03x slower +0.0268 μs
+long_100 (âfalse)             54.21 K - 20.47x slower +17.55 μs
+lg_long_50_10k (âtrue)        33.37 K - 33.26x slower +29.07 μs
+lg_long_50_1k (âtrue)         33.25 K - 33.37x slower +29.17 μs
+
+Memory usage statistics:
+
+Name                              average  deviation         median         99th %
+lg_linear_10_10k (→false)         0.52 KB     ±0.00%        0.52 KB        0.52 KB
+linear_20 (→false)                0.98 KB     ±0.00%        0.98 KB        0.98 KB
+long_100 (→false)                41.54 KB     ±5.80%       41.27 KB       47.27 KB
+lg_long_50_10k (→true)           27.51 KB     ±7.76%       27.22 KB       32.72 KB
+lg_long_50_1k (→true)            27.54 KB     ±7.77%       27.72 KB       32.72 KB
+
+Comparison: 
+lg_linear_10_10k (âfalse        0.52 KB
+linear_20 (âfalse)              0.98 KB - 1.91x memory usage +0.47 KB
+long_100 (âfalse)              41.54 KB - 80.56x memory usage +41.03 KB
+lg_long_50_10k (âtrue)         27.51 KB - 53.36x memory usage +27.00 KB
+lg_long_50_1k (âtrue)          27.54 KB - 53.42x memory usage +27.03 KB
+
+================================================================================
+BENCHMARK 6: Value Stripping Cost (strip_fact_values at persist time)
+================================================================================
+Benchmarking strip lg_linear_10_10k (11 FP events) ...
+Benchmarking strip lg_long_50_100k (150 FP events) ...
+Benchmarking strip lg_long_50_10k (150 FP events) ...
+Benchmarking strip long_100 (300 FP events) ...
+Calculating statistics...
+Formatting results...
+
+Name                                            ips        average  deviation         median         99th %
+strip lg_linear_10_10k (11 FP events)      548.68 K        1.82 μs  ±2828.84%        0.44 μs        3.00 μs
+strip long_100 (300 FP events)             103.74 K        9.64 μs    ±37.57%        8.48 μs       18.52 μs
+strip lg_long_50_100k (150 FP events)       83.22 K       12.02 μs   ±478.43%        5.80 μs       25.49 μs
+strip lg_long_50_10k (150 FP events)        51.56 K       19.39 μs   ±322.50%        6.34 μs      400.48 μs
+
+Comparison: 
+strip lg_linear_10_10k (11 FP events)      548.68 K
+strip long_100 (300 FP events)             103.74 K - 5.29x slower +7.82 μs
+strip lg_long_50_100k (150 FP events)       83.22 K - 6.59x slower +10.19 μs
+strip lg_long_50_10k (150 FP events)        51.56 K - 10.64x slower +17.57 μs
+
+Memory usage statistics:
+
+Name                                     Memory usage
+strip lg_linear_10_10k (11 FP events)         1.26 KB
+strip long_100 (300 FP events)               32.05 KB - 25.48x memory usage +30.79 KB
+strip lg_long_50_100k (150 FP events)        16.03 KB - 12.75x memory usage +14.77 KB
+strip lg_long_50_10k (150 FP events)         16.03 KB - 12.75x memory usage +14.77 KB
+
+**All measurements for memory usage were the same**
+
+================================================================================
+BENCHMARK 7: resolve_hot Performance (post-lean-replay)
+================================================================================
+Benchmarking long_100 resolve_all (300 refs) ...
+Benchmarking long_100 resolve_hot (101 hot) ...
+Calculating statistics...
+Formatting results...
+
+Name                                      ips        average  deviation         median         99th %
+long_100 resolve_hot (101 hot)        35.89 K       27.86 μs    ±20.12%       26.42 μs       49.13 μs
+long_100 resolve_all (300 refs)       11.57 K       86.43 μs    ±14.88%       83.03 μs      129.92 μs
+
+Comparison: 
+long_100 resolve_hot (101 hot)        35.89 K
+long_100 resolve_all (300 refs)       11.57 K - 3.10x slower +58.56 μs
+
+Memory usage statistics:
+
+Name                               Memory usage
+long_100 resolve_hot (101 hot)         67.62 KB
+long_100 resolve_all (300 refs)       189.45 KB - 2.80x memory usage +121.84 KB
+
+**All measurements for memory usage were the same**
+Benchmarking lg_linear_10_10k resolve_all (11 refs) ...
+Benchmarking lg_linear_10_10k resolve_hot (1 hot) ...
+Calculating statistics...
+Formatting results...
+
+Name                                             ips        average  deviation         median         99th %
+lg_linear_10_10k resolve_hot (1 hot)          1.65 M        0.61 μs  ±2944.39%        0.43 μs        1.67 μs
+lg_linear_10_10k resolve_all (11 refs)        0.35 M        2.89 μs   ±501.62%        2.82 μs        5.23 μs
+
+Comparison: 
+lg_linear_10_10k resolve_hot (1 hot)          1.65 M
+lg_linear_10_10k resolve_all (11 refs)        0.35 M - 4.77x slower +2.28 μs
+
+Memory usage statistics:
+
+Name                                      Memory usage
+lg_linear_10_10k resolve_hot (1 hot)           1.03 KB
+lg_linear_10_10k resolve_all (11 refs)         7.52 KB - 7.29x memory usage +6.48 KB
+
+**All measurements for memory usage were the same**
+Benchmarking lg_linear_20_10k resolve_all (21 refs) ...
+Benchmarking lg_linear_20_10k resolve_hot (1 hot) ...
+Calculating statistics...
+Formatting results...
+
+Name                                             ips        average  deviation         median         99th %
+lg_linear_20_10k resolve_hot (1 hot)          1.39 M        0.72 μs  ±3237.07%        0.76 μs        1.67 μs
+lg_linear_20_10k resolve_all (21 refs)       0.180 M        5.55 μs    ±94.82%        5.13 μs        9.28 μs
+
+Comparison: 
+lg_linear_20_10k resolve_hot (1 hot)          1.39 M
+lg_linear_20_10k resolve_all (21 refs)       0.180 M - 7.72x slower +4.83 μs
+
+Memory usage statistics:
+
+Name                                      Memory usage
+lg_linear_20_10k resolve_hot (1 hot)           0.99 KB
+lg_linear_20_10k resolve_all (21 refs)        15.57 KB - 15.69x memory usage +14.58 KB
+
+**All measurements for memory usage were the same**
+Benchmarking lg_long_50_1k resolve_all (150 refs) ...
+Benchmarking lg_long_50_1k resolve_hot (51 hot) ...
+Calculating statistics...
+Formatting results...
+
+Name                                           ips        average  deviation         median         99th %
+lg_long_50_1k resolve_hot (51 hot)         57.85 K       17.28 μs    ±23.86%       15.69 μs       31.51 μs
+lg_long_50_1k resolve_all (150 refs)       18.15 K       55.09 μs    ±40.72%       45.32 μs      143.76 μs
+
+Comparison: 
+lg_long_50_1k resolve_hot (51 hot)         57.85 K
+lg_long_50_1k resolve_all (150 refs)       18.15 K - 3.19x slower +37.80 μs
+
+Memory usage statistics:
+
+Name                                    Memory usage
+lg_long_50_1k resolve_hot (51 hot)          44.27 KB
+lg_long_50_1k resolve_all (150 refs)       130.63 KB - 2.95x memory usage +86.37 KB
+
+**All measurements for memory usage were the same**
+Benchmarking lg_long_50_10k resolve_all (150 refs) ...
+Benchmarking lg_long_50_10k resolve_hot (51 hot) ...
+Calculating statistics...
+Formatting results...
+
+Name                                            ips        average  deviation         median         99th %
+lg_long_50_10k resolve_hot (51 hot)         56.39 K       17.73 μs    ±21.38%       17.66 μs       29.90 μs
+lg_long_50_10k resolve_all (150 refs)        8.51 K      117.51 μs    ±54.20%       75.78 μs      269.27 μs
+
+Comparison: 
+lg_long_50_10k resolve_hot (51 hot)         56.39 K
+lg_long_50_10k resolve_all (150 refs)        8.51 K - 6.63x slower +99.77 μs
+
+Memory usage statistics:
+
+Name                                     Memory usage
+lg_long_50_10k resolve_hot (51 hot)          44.95 KB
+lg_long_50_10k resolve_all (150 refs)       136.95 KB - 3.05x memory usage +91.99 KB
+
+**All measurements for memory usage were the same**
+
+================================================================================
+EVENT STREAM SIZE: Full vs Stripped
+================================================================================
+
+  Scenario                Events FP evts   Full KB  Strip KB  Savings%
+  ------------------------------------------------------------------------
+  lg_linear_10_10k            31      11     554.2       4.0     99.3%
+  lg_linear_20_10k            61      21    2108.2       7.8     99.6%
+  lg_long_50_100k            351     150   27853.8      45.5     99.8%
+  lg_long_50_10k             351     150    3024.4      45.6     98.5%
+  lg_long_50_1k              351     150     313.4      45.5     85.5%
+  linear_20                   61      21       7.7       7.8     -0.8%
+  linear_50                  151      51      19.1      19.2     -0.8%
+  long_100                   701     300      88.9      89.6     -0.8%
+  long_50                    351     150      44.5      44.9     -1.0%
+
+================================================================================
+LEAN REPLAY MEMORY: Workflow size after each replay mode
+(external_size — includes binary content)
+================================================================================
+
+  Scenario                 Full KB   Lean KB   Hybrid KB Lean sav% Hybr sav%   Hot  Cold
+  --------------------------------------------------------------------------------------
+  lg_linear_10_10k           664.5     114.2       214.3     82.8%     67.8%     1    10
+  lg_linear_20_10k          2328.1     227.5       427.5     90.2%     81.6%     1    20
+  lg_long_50_100k          27961.9     152.3      5154.9     99.5%     81.6%    51   100
+  lg_long_50_10k            3042.7      62.6       565.2     97.9%     81.4%    51   100
+  lg_long_50_1k              322.7      53.5       106.1     83.4%     67.1%    51   100
+  linear_20                   26.8      26.7        26.7      0.5%      0.4%     1    20
+  linear_50                   65.7      65.4        65.4      0.5%      0.4%     1    50
+  long_100                    98.0      96.1        96.8      2.0%      1.3%   101   200
+  long_50                     51.0      50.1        50.4      1.7%      1.1%    51   100
+
+================================================================================
+LEAN REPLAY BENCHMARK COMPLETE
+================================================================================
+    warning: unused alias Facts
+    │
+ 18 │ alias Runic.Workflow.{Fact, FactRef, Facts, FactResolver, Rehydration}
+    │ ~
+    │
+    └─ bench/lean_replay_bench.exs:18:1
+
