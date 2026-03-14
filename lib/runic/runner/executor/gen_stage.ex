@@ -40,21 +40,12 @@ defmodule Runic.Runner.Executor.GenStage do
 
   Failures are caught inside the consumer via `try/catch`, so individual work
   item failures do not crash the consumer process.
-
-  Requires the `:gen_stage` dependency. Raises at init if not available.
   """
 
   @behaviour Runic.Runner.Executor
 
   @impl true
   def init(opts) do
-    unless Code.ensure_loaded?(GenStage) do
-      raise RuntimeError, """
-      The GenStage executor requires the :gen_stage dependency.
-      Add {:gen_stage, "~> 1.2"} to your mix.exs deps.
-      """
-    end
-
     max_demand = Keyword.get(opts, :max_demand, System.schedulers_online())
     buffer_size = Keyword.get(opts, :buffer_size, :infinity)
 

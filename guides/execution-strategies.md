@@ -100,7 +100,7 @@ Runic.Runner.start_workflow(runner, :my_workflow, workflow,
 
 **Trade-off:** More infrastructure than Task executor. Work items execute inside long-lived consumer processes rather than ephemeral tasks. Individual work item failures are caught via `try/catch` inside the consumer (the consumer doesn't crash), so failure behavior is slightly different from Task's crash-based isolation.
 
-**Requires:** `{:gen_stage, "~> 1.2"}` as a dependency. Raises at init if not available.
+**Requires:** `{:gen_stage, "~> 1.2"}` as a dependency.
 
 ### Per-Component Executor Overrides
 
@@ -268,27 +268,17 @@ Runic.Runner.start_workflow(runner, :my_workflow, workflow,
 
 Hook exceptions are logged but never crash the Worker. `transform_runnables` receives the full runnable list before the scheduler sees it.
 
-## Optional Dependencies
+## Execution Dependencies
 
-The `gen_stage` and `flow` packages are **optional** dependencies. Most features work without them:
-
-| Feature | Without `gen_stage` | Without `flow` |
-|---|---|---|
-| `Executor.Task` | ✅ Works | ✅ Works |
-| `Executor.GenStage` | ❌ Raises at init | ✅ Works |
-| `Scheduler.Default` | ✅ Works | ✅ Works |
-| `Scheduler.ChainBatching` | ✅ Works | ✅ Works |
-| `Scheduler.FlowBatch` | ✅ Works | ✅ Works (falls back to `Task.async_stream`) |
-
-To enable Flow-powered parallel execution and/or the GenStage executor:
+Runic depends on both `gen_stage` and `flow` for its execution strategies:
 
 ```elixir
 # mix.exs
 defp deps do
   [
     {:runic, "~> 0.1"},
-    {:flow, "~> 1.2"},       # optional: parallel promise execution
-    {:gen_stage, "~> 1.2"}   # optional: GenStage executor
+    {:flow, "~> 1.2"},
+    {:gen_stage, "~> 1.2"}
   ]
 end
 ```

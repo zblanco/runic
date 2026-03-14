@@ -1,27 +1,29 @@
 defmodule Runic.MixProject do
   use Mix.Project
 
+  @repo_url "https://github.com/zblanco/runic"
+  @version "0.1.0-alpha.4"
+
   def project do
     [
       app: :runic,
-      version: "0.1.0-alpha.3",
+      version: @version,
       elixir: "~> 1.18",
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       aliases: aliases(),
-
-      # Docs
+      description: "Powerful workflow graph composition and runtime for Elixir",
       name: "Runic",
-      source_url: "https://github.com/zblanco/runic",
+      package: package(),
       docs: docs()
     ]
   end
 
   defp docs do
     [
-      main: "readme",
       logo: "logo.png",
+      source_url: @repo_url,
       extras: [
         "README.md",
         "guides/cheatsheet.md",
@@ -111,8 +113,8 @@ defmodule Runic.MixProject do
       {:tidewave, "~> 0.4", only: :dev},
       {:bandit, "~> 1.0", only: :dev},
       {:benchee, "~> 1.3", only: :dev},
-      {:gen_stage, "~> 1.2", optional: true},
-      {:flow, "~> 1.2", optional: true}
+      {:gen_stage, "~> 1.2"},
+      {:flow, "~> 1.2"}
     ]
   end
 
@@ -123,6 +125,14 @@ defmodule Runic.MixProject do
     [
       tidewave:
         "run --no-halt -e 'Agent.start(fn -> Bandit.start_link(plug: Tidewave, port: 4000) end)'"
+    ]
+  end
+
+  defp package do
+    [
+      maintainers: ["Zack White"],
+      licenses: ["Apache-2.0"],
+      links: %{"Github" => @repo_url}
     ]
   end
 end

@@ -859,12 +859,7 @@ defmodule Runic.Runner.Worker do
       end
     end
 
-    results =
-      if Code.ensure_loaded?(Flow) do
-        resolve_with_flow(runnables, execute_fn, stages, max_demand)
-      else
-        resolve_with_async_stream(runnables, execute_fn, stages)
-      end
+    results = resolve_with_flow(runnables, execute_fn, stages, max_demand)
 
     {:promise_result, promise.id, results}
   end
@@ -874,15 +869,6 @@ defmodule Runic.Runner.Worker do
     |> Flow.from_enumerable(stages: stages, max_demand: max_demand)
     |> Flow.map(execute_fn)
     |> Enum.to_list()
-  end
-
-  defp resolve_with_async_stream(runnables, execute_fn, max_concurrency) do
-    runnables
-    |> Task.async_stream(execute_fn,
-      max_concurrency: max_concurrency,
-      timeout: :infinity
-    )
-    |> Enum.map(fn {:ok, result} -> result end)
   end
 
   defp handle_promise_result_inline(ref, promise_id, executed, state) do
