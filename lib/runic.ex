@@ -1197,10 +1197,11 @@ defmodule Runic do
 
     arity = Components.arity_of(reaction)
 
+    {rewritten_condition, condition_bindings} = traverse_expression(condition, env)
     {rewritten_reaction, reaction_bindings} = traverse_expression(reaction, env)
 
     variable_bindings =
-      (reaction_bindings ++ opts_bindings)
+      (condition_bindings ++ reaction_bindings ++ opts_bindings)
       |> Enum.uniq()
 
     # Detect meta expressions in condition and reaction
@@ -1211,10 +1212,10 @@ defmodule Runic do
     # If meta expressions found, rewrite work functions to arity-2
     {final_condition, condition_meta_refs} =
       if condition_meta_refs != [] do
-        {rewritten, _refs} = maybe_compile_meta_work(condition, condition, env)
+        {rewritten, _refs} = maybe_compile_meta_work(condition, rewritten_condition, env)
         {rewritten, condition_meta_refs}
       else
-        {condition, []}
+        {rewritten_condition, []}
       end
 
     {final_reaction, reaction_meta_refs} =
@@ -1673,6 +1674,7 @@ defmodule Runic do
     outputs = validate_port_schema(rewritten_opts[:outputs], "state_machine")
 
     {rewritten_reducer, reducer_bindings} = traverse_expression(reducer, __CALLER__)
+    {rewritten_reactors, reactor_bindings} = traverse_reactors(reactors, __CALLER__)
 
     # Detect meta expressions in reducer for accumulator
     {final_reducer, reducer_meta_refs} =
@@ -1681,12 +1683,12 @@ defmodule Runic do
     escaped_reducer_meta_refs = escape_meta_refs(reducer_meta_refs)
 
     variable_bindings =
-      (reducer_bindings ++ opts_bindings)
+      (reducer_bindings ++ reactor_bindings ++ opts_bindings)
       |> Enum.uniq()
 
     bindings = build_bindings(variable_bindings, __CALLER__)
 
-    state_machine_hash = Components.fact_hash({init, rewritten_reducer, reactors})
+    state_machine_hash = Components.fact_hash({init, rewritten_reducer, rewritten_reactors})
     state_machine_name = name || default_component_name("state_machine", state_machine_hash)
 
     # Build the accumulator AST
@@ -1699,7 +1701,7 @@ defmodule Runic do
       )
 
     # Build reactor rules AST
-    reactor_rules_ast = build_reactor_rules(reactors, state_machine_name, __CALLER__)
+    reactor_rules_ast = build_reactor_rules(rewritten_reactors, state_machine_name, __CALLER__)
 
     # Build derived workflow AST
     workflow_ast =
@@ -1720,7 +1722,7 @@ defmodule Runic do
         name: unquote(state_machine_name),
         init: unquote(init),
         reducer: unquote(rewritten_reducer),
-        reactors: unquote(reactors),
+        reactors: unquote(rewritten_reactors),
         accumulator: sm_accumulator,
         reactor_rules: sm_reactor_rules,
         workflow: unquote(workflow_ast),
@@ -1799,7 +1801,7 @@ defmodule Runic do
 
     accumulator_ast = build_saga_accumulator(init_ast, reducer_ast, name)
 
-    terminal_rules_ast = build_saga_terminal_rules(on_complete, on_abort, name)
+    terminal_rules_ast = build_saga_terminal_rules(on_complete, on_abort, name, __CALLER__)
 
     workflow_ast =
       build_saga_workflow_simple(accumulator_ast, terminal_rules_ast, name)
@@ -2035,19 +2037,19 @@ defmodule Runic do
     end
   end
 
-  defp build_saga_terminal_rules(on_complete, on_abort, saga_name) do
+  defp build_saga_terminal_rules(on_complete, on_abort, saga_name, env) do
     rules = []
 
     rules =
       if on_complete do
-        rules ++ [build_saga_on_complete_rule(on_complete, saga_name)]
+        rules ++ [build_saga_on_complete_rule(on_complete, saga_name, env)]
       else
         rules
       end
 
     rules =
       if on_abort do
-        rules ++ [build_saga_on_abort_rule(on_abort, saga_name)]
+        rules ++ [build_saga_on_abort_rule(on_abort, saga_name, env)]
       else
         rules
       end
@@ -2057,7 +2059,7 @@ defmodule Runic do
     end
   end
 
-  defp build_saga_on_complete_rule(on_complete_fn, saga_name) do
+  defp build_saga_on_complete_rule(on_complete_fn, saga_name, env) do
     acc_ref = :__saga_accumulator__
 
     condition_fn =
@@ -2068,17 +2070,10 @@ defmodule Runic do
         end
       end
 
-    condition_meta_refs = detect_meta_expressions(condition_fn)
-    rewritten_condition = rewrite_meta_refs_in_ast(condition_fn, condition_meta_refs)
-    escaped_condition_meta_refs = escape_meta_refs(condition_meta_refs)
-
-    final_condition =
-      quote generated: true do
-        fn input, var!(meta_ctx, Runic) ->
-          _ = var!(meta_ctx, Runic)
-          unquote(rewritten_condition).(input)
-        end
-      end
+    %{
+      final_work: final_condition,
+      escaped_meta_refs: escaped_condition_meta_refs
+    } = compile_meta_rule_work(condition_fn, env)
 
     condition_hash = Components.fact_hash({condition_fn, saga_name, :on_complete})
 
@@ -2091,17 +2086,10 @@ defmodule Runic do
         end
       end
 
-    reaction_meta_refs = detect_meta_expressions(reaction_fn)
-    rewritten_reaction = rewrite_meta_refs_in_ast(reaction_fn, reaction_meta_refs)
-    escaped_reaction_meta_refs = escape_meta_refs(reaction_meta_refs)
-
-    final_reaction =
-      quote generated: true do
-        fn input, var!(meta_ctx, Runic) ->
-          _ = var!(meta_ctx, Runic)
-          unquote(rewritten_reaction).(input)
-        end
-      end
+    %{
+      final_work: final_reaction,
+      escaped_meta_refs: escaped_reaction_meta_refs
+    } = compile_meta_rule_work(reaction_fn, env)
 
     reaction_hash = Components.fact_hash({reaction_fn, saga_name, :on_complete})
 
@@ -2139,7 +2127,7 @@ defmodule Runic do
     end
   end
 
-  defp build_saga_on_abort_rule(on_abort_fn, saga_name) do
+  defp build_saga_on_abort_rule(on_abort_fn, saga_name, env) do
     acc_ref = :__saga_accumulator__
 
     condition_fn =
@@ -2150,17 +2138,10 @@ defmodule Runic do
         end
       end
 
-    condition_meta_refs = detect_meta_expressions(condition_fn)
-    rewritten_condition = rewrite_meta_refs_in_ast(condition_fn, condition_meta_refs)
-    escaped_condition_meta_refs = escape_meta_refs(condition_meta_refs)
-
-    final_condition =
-      quote generated: true do
-        fn input, var!(meta_ctx, Runic) ->
-          _ = var!(meta_ctx, Runic)
-          unquote(rewritten_condition).(input)
-        end
-      end
+    %{
+      final_work: final_condition,
+      escaped_meta_refs: escaped_condition_meta_refs
+    } = compile_meta_rule_work(condition_fn, env)
 
     condition_hash = Components.fact_hash({condition_fn, saga_name, :on_abort})
 
@@ -2173,17 +2154,10 @@ defmodule Runic do
         end
       end
 
-    reaction_meta_refs = detect_meta_expressions(reaction_fn)
-    rewritten_reaction = rewrite_meta_refs_in_ast(reaction_fn, reaction_meta_refs)
-    escaped_reaction_meta_refs = escape_meta_refs(reaction_meta_refs)
-
-    final_reaction =
-      quote generated: true do
-        fn input, var!(meta_ctx, Runic) ->
-          _ = var!(meta_ctx, Runic)
-          unquote(rewritten_reaction).(input)
-        end
-      end
+    %{
+      final_work: final_reaction,
+      escaped_meta_refs: escaped_reaction_meta_refs
+    } = compile_meta_rule_work(reaction_fn, env)
 
     reaction_hash = Components.fact_hash({reaction_fn, saga_name, :on_abort})
 
@@ -2328,7 +2302,7 @@ defmodule Runic do
 
     accumulator_ast = build_aggregate_accumulator(initial_state, reducer_ast, name)
 
-    command_rules_ast = build_aggregate_command_rules(command_handlers, name)
+    command_rules_ast = build_aggregate_command_rules(command_handlers, name, __CALLER__)
 
     workflow_ast = build_aggregate_workflow(accumulator_ast, command_rules_ast, name)
 
@@ -2471,15 +2445,27 @@ defmodule Runic do
   defp normalize_tuple_pattern(other), do: other
 
   # Reset variable contexts in AST to Runic so they resolve in the generated code scope
-  defp reset_var_context(ast) do
-    Macro.prewalk(ast, fn
-      {name, meta, context} when is_atom(name) and is_atom(context) ->
-        {name, Keyword.put(meta, :generated, true), Runic}
+  defp reset_var_context({:^, meta, [pinned_expr]}), do: {:^, meta, [pinned_expr]}
 
-      other ->
-        other
-    end)
+  defp reset_var_context({name, meta, context})
+       when is_atom(name) and is_list(meta) and is_atom(context) do
+    {name, Keyword.put(meta, :generated, true), Runic}
   end
+
+  defp reset_var_context({form, meta, args}) when is_list(meta) and is_list(args) do
+    {form, meta, Enum.map(args, &reset_var_context/1)}
+  end
+
+  defp reset_var_context(list) when is_list(list), do: Enum.map(list, &reset_var_context/1)
+
+  defp reset_var_context(tuple) when is_tuple(tuple) do
+    tuple
+    |> Tuple.to_list()
+    |> Enum.map(&reset_var_context/1)
+    |> List.to_tuple()
+  end
+
+  defp reset_var_context(other), do: other
 
   defp build_aggregate_accumulator(initial_state, reducer_ast, agg_name) do
     literal_init_ast =
@@ -2500,10 +2486,10 @@ defmodule Runic do
     end
   end
 
-  defp build_aggregate_command_rules(command_handlers, agg_name) do
+  defp build_aggregate_command_rules(command_handlers, agg_name, env) do
     rule_asts =
       Enum.map(command_handlers, fn {cmd_name, where_fn, emit_fn} ->
-        build_aggregate_command_rule(cmd_name, where_fn, emit_fn, agg_name)
+        build_aggregate_command_rule(cmd_name, where_fn, emit_fn, agg_name, env)
       end)
 
     quote do
@@ -2511,53 +2497,25 @@ defmodule Runic do
     end
   end
 
-  defp build_aggregate_command_rule(cmd_name, where_fn, emit_fn, agg_name) do
+  defp build_aggregate_command_rule(cmd_name, where_fn, emit_fn, agg_name, env) do
     acc_ref = :__agg_accumulator__
 
     condition_fn = build_aggregate_condition(cmd_name, where_fn, acc_ref)
 
-    condition_meta_refs = detect_meta_expressions(condition_fn)
-    rewritten_condition = rewrite_meta_refs_in_ast(condition_fn, condition_meta_refs)
-    escaped_condition_meta_refs = escape_meta_refs(condition_meta_refs)
-
-    # Only use arity-2 wrapper if there are actual meta_refs to resolve
-    has_condition_meta_refs = condition_meta_refs != []
-
-    final_condition =
-      if has_condition_meta_refs do
-        quote generated: true do
-          fn input, var!(meta_ctx, Runic) ->
-            _ = var!(meta_ctx, Runic)
-            unquote(rewritten_condition).(input)
-          end
-        end
-      else
-        rewritten_condition
-      end
-
-    condition_arity = if has_condition_meta_refs, do: 2, else: 1
+    %{
+      final_work: final_condition,
+      escaped_meta_refs: escaped_condition_meta_refs,
+      arity: condition_arity
+    } = compile_meta_rule_work(condition_fn, env)
 
     condition_hash = Components.fact_hash({condition_fn, agg_name, cmd_name})
 
     reaction_fn = build_aggregate_reaction(cmd_name, emit_fn, acc_ref)
 
-    reaction_meta_refs = detect_meta_expressions(reaction_fn)
-    rewritten_reaction = rewrite_meta_refs_in_ast(reaction_fn, reaction_meta_refs)
-    escaped_reaction_meta_refs = escape_meta_refs(reaction_meta_refs)
-
-    has_reaction_meta_refs = reaction_meta_refs != []
-
-    final_reaction =
-      if has_reaction_meta_refs do
-        quote generated: true do
-          fn input, var!(meta_ctx, Runic) ->
-            _ = var!(meta_ctx, Runic)
-            unquote(rewritten_reaction).(input)
-          end
-        end
-      else
-        rewritten_reaction
-      end
+    %{
+      final_work: final_reaction,
+      escaped_meta_refs: escaped_reaction_meta_refs
+    } = compile_meta_rule_work(reaction_fn, env)
 
     reaction_hash = Components.fact_hash({reaction_fn, agg_name, cmd_name})
 
@@ -2775,8 +2733,8 @@ defmodule Runic do
       )
 
     accumulator_ast = build_pm_accumulator(initial_state, event_handlers, name)
-    event_rules_ast = build_pm_event_rules(event_handlers, name)
-    completion_rule_ast = build_pm_completion_rule(completion_check, name)
+    event_rules_ast = build_pm_event_rules(event_handlers, name, __CALLER__)
+    completion_rule_ast = build_pm_completion_rule(completion_check, name, __CALLER__)
     workflow_ast = build_pm_workflow(accumulator_ast, event_rules_ast, completion_rule_ast, name)
 
     source =
@@ -2945,7 +2903,7 @@ defmodule Runic do
   # Build event handler rules for ProcessManager.
   # Each `on` block with an `emit` compiles to a Rule that matches the event pattern
   # and produces command facts.
-  defp build_pm_event_rules(event_handlers, pm_name) do
+  defp build_pm_event_rules(event_handlers, pm_name, env) do
     rule_asts =
       event_handlers
       |> Enum.with_index()
@@ -2954,7 +2912,7 @@ defmodule Runic do
           # No commands to emit — no rule needed (state update is handled by accumulator)
           []
         else
-          [build_pm_event_rule(pattern, emits, pm_name, idx)]
+          [build_pm_event_rule(pattern, emits, pm_name, idx, env)]
         end
       end)
 
@@ -2963,7 +2921,7 @@ defmodule Runic do
     end
   end
 
-  defp build_pm_event_rule(pattern, emits, pm_name, idx) do
+  defp build_pm_event_rule(pattern, emits, pm_name, idx, env) do
     acc_ref = :__pm_accumulator__
     rule_name = :"#{pm_name}_on_#{idx}"
 
@@ -3002,25 +2960,10 @@ defmodule Runic do
         end
       end
 
-    reaction_meta_refs = detect_meta_expressions(reaction_fn)
-    rewritten_reaction = rewrite_meta_refs_in_ast(reaction_fn, reaction_meta_refs)
-    escaped_reaction_meta_refs = escape_meta_refs(reaction_meta_refs)
-
-    final_reaction =
-      if reaction_meta_refs != [] do
-        quote generated: true do
-          fn input, var!(meta_ctx, Runic) ->
-            _ = var!(meta_ctx, Runic)
-            unquote(rewritten_reaction).(input)
-          end
-        end
-      else
-        quote generated: true do
-          fn input ->
-            unquote(rewritten_reaction).(input)
-          end
-        end
-      end
+    %{
+      final_work: final_reaction,
+      escaped_meta_refs: escaped_reaction_meta_refs
+    } = compile_meta_rule_work(reaction_fn, env)
 
     reaction_hash = Components.fact_hash({reaction_fn, pm_name, idx, :reaction})
 
@@ -3058,11 +3001,11 @@ defmodule Runic do
 
   # Build completion rule for ProcessManager.
   # Fires when the completion check function returns true for the current state.
-  defp build_pm_completion_rule(nil, _pm_name) do
+  defp build_pm_completion_rule(nil, _pm_name, _env) do
     quote do: nil
   end
 
-  defp build_pm_completion_rule(completion_fn, pm_name) do
+  defp build_pm_completion_rule(completion_fn, pm_name, env) do
     acc_ref = :__pm_accumulator__
 
     condition_fn =
@@ -3074,17 +3017,10 @@ defmodule Runic do
         end
       end
 
-    condition_meta_refs = detect_meta_expressions(condition_fn)
-    rewritten_condition = rewrite_meta_refs_in_ast(condition_fn, condition_meta_refs)
-    escaped_condition_meta_refs = escape_meta_refs(condition_meta_refs)
-
-    final_condition =
-      quote generated: true do
-        fn input, var!(meta_ctx, Runic) ->
-          _ = var!(meta_ctx, Runic)
-          unquote(rewritten_condition).(input)
-        end
-      end
+    %{
+      final_work: final_condition,
+      escaped_meta_refs: escaped_condition_meta_refs
+    } = compile_meta_rule_work(condition_fn, env)
 
     condition_hash = Components.fact_hash({condition_fn, pm_name, :complete})
 
@@ -3242,9 +3178,9 @@ defmodule Runic do
 
     accumulator_ast = build_fsm_accumulator(initial_state, fsm_name)
 
-    transition_rules_ast = build_fsm_transition_rules(states, fsm_name)
+    transition_rules_ast = build_fsm_transition_rules(states, fsm_name, __CALLER__)
 
-    entry_rules_ast = build_fsm_entry_rules(states, fsm_name)
+    entry_rules_ast = build_fsm_entry_rules(states, fsm_name, __CALLER__)
 
     workflow_ast =
       build_fsm_workflow(accumulator_ast, transition_rules_ast, entry_rules_ast, fsm_name)
@@ -3399,11 +3335,11 @@ defmodule Runic do
     end
   end
 
-  defp build_fsm_transition_rules(states, fsm_name) do
+  defp build_fsm_transition_rules(states, fsm_name, env) do
     rule_asts =
       Enum.flat_map(states, fn {from_state, %{transitions: transitions}} ->
         Enum.map(transitions, fn {event, target, guard} ->
-          build_fsm_transition_rule(from_state, event, target, guard, fsm_name)
+          build_fsm_transition_rule(from_state, event, target, guard, fsm_name, env)
         end)
       end)
 
@@ -3412,7 +3348,7 @@ defmodule Runic do
     end
   end
 
-  defp build_fsm_transition_rule(from_state, event, target, guard, fsm_name) do
+  defp build_fsm_transition_rule(from_state, event, target, guard, fsm_name, env) do
     acc_ref = :__fsm_accumulator__
     rule_name = :"#{fsm_name}_#{from_state}_on_#{event}"
 
@@ -3434,17 +3370,10 @@ defmodule Runic do
         end
       end
 
-    condition_meta_refs = detect_meta_expressions(condition_fn)
-    rewritten_condition = rewrite_meta_refs_in_ast(condition_fn, condition_meta_refs)
-    escaped_condition_meta_refs = escape_meta_refs(condition_meta_refs)
-
-    final_condition =
-      quote generated: true do
-        fn input, var!(meta_ctx, Runic) ->
-          _ = var!(meta_ctx, Runic)
-          unquote(rewritten_condition).(input)
-        end
-      end
+    %{
+      final_work: final_condition,
+      escaped_meta_refs: escaped_condition_meta_refs
+    } = compile_meta_rule_work(condition_fn, env)
 
     condition_hash = Components.fact_hash({condition_fn, fsm_name, from_state, event})
 
@@ -3487,12 +3416,12 @@ defmodule Runic do
     end
   end
 
-  defp build_fsm_entry_rules(states, fsm_name) do
+  defp build_fsm_entry_rules(states, fsm_name, env) do
     entry_asts =
       states
       |> Enum.filter(fn {_name, %{on_entry: on_entry}} -> on_entry != nil end)
       |> Enum.map(fn {state_name, %{on_entry: on_entry_fn}} ->
-        build_fsm_entry_rule(state_name, on_entry_fn, fsm_name)
+        build_fsm_entry_rule(state_name, on_entry_fn, fsm_name, env)
       end)
 
     quote do
@@ -3500,7 +3429,7 @@ defmodule Runic do
     end
   end
 
-  defp build_fsm_entry_rule(state_name, on_entry_fn, fsm_name) do
+  defp build_fsm_entry_rule(state_name, on_entry_fn, fsm_name, env) do
     acc_ref = :__fsm_accumulator__
     rule_name = :"#{fsm_name}_#{state_name}_entry"
 
@@ -3511,17 +3440,10 @@ defmodule Runic do
         end
       end
 
-    condition_meta_refs = detect_meta_expressions(condition_fn)
-    rewritten_condition = rewrite_meta_refs_in_ast(condition_fn, condition_meta_refs)
-    escaped_condition_meta_refs = escape_meta_refs(condition_meta_refs)
-
-    final_condition =
-      quote generated: true do
-        fn input, var!(meta_ctx, Runic) ->
-          _ = var!(meta_ctx, Runic)
-          unquote(rewritten_condition).(input)
-        end
-      end
+    %{
+      final_work: final_condition,
+      escaped_meta_refs: escaped_condition_meta_refs
+    } = compile_meta_rule_work(condition_fn, env)
 
     condition_hash = Components.fact_hash({condition_fn, fsm_name, state_name, :entry})
 
@@ -4670,6 +4592,28 @@ defmodule Runic do
     end
   end
 
+  defp traverse_reactors(nil, _env), do: {nil, []}
+
+  defp traverse_reactors(reactors, env) when is_list(reactors) do
+    {rewritten_reactors, bindings} =
+      Enum.reduce(reactors, {[], []}, fn
+        {name, {:fn, _, _} = reactor_fn}, {reactors_acc, bindings_acc} when is_atom(name) ->
+          {rewritten_fn, fn_bindings} = traverse_expression(reactor_fn, env)
+          {[{name, rewritten_fn} | reactors_acc], fn_bindings ++ bindings_acc}
+
+        {:fn, _, _} = reactor_fn, {reactors_acc, bindings_acc} ->
+          {rewritten_fn, fn_bindings} = traverse_expression(reactor_fn, env)
+          {[rewritten_fn | reactors_acc], fn_bindings ++ bindings_acc}
+
+        reactor, {reactors_acc, bindings_acc} ->
+          {[reactor | reactors_acc], bindings_acc}
+      end)
+
+    {Enum.reverse(rewritten_reactors), bindings}
+  end
+
+  defp traverse_reactors(reactors, _env), do: {reactors, []}
+
   defp build_reactor_rules(nil, _sm_name, _env), do: quote(do: [])
 
   defp build_reactor_rules(reactors, sm_name, env) when is_list(reactors) do
@@ -4695,9 +4639,10 @@ defmodule Runic do
          {:fn, _, [{:->, _, [[lhs], rhs]}]},
          sm_name,
          rule_name_or_idx,
-         _env
+         env
        ) do
     lhs = mark_vars_generated(lhs)
+    {rhs, _rhs_bindings} = traverse_expression(rhs, env)
     rhs = mark_vars_generated(rhs)
 
     # Use a placeholder atom for state_of target; at connect time, the meta_ref
@@ -4716,18 +4661,10 @@ defmodule Runic do
       end
 
     # Detect meta expressions in the condition (state_of)
-    condition_meta_refs = detect_meta_expressions(condition_fn)
-    rewritten_condition = rewrite_meta_refs_in_ast(condition_fn, condition_meta_refs)
-    escaped_condition_meta_refs = escape_meta_refs(condition_meta_refs)
-
-    # Wrap condition to be arity-2 (input, meta_ctx)
-    final_condition =
-      quote generated: true do
-        fn input, var!(meta_ctx, Runic) ->
-          _ = var!(meta_ctx, Runic)
-          unquote(rewritten_condition).(input)
-        end
-      end
+    %{
+      final_work: final_condition,
+      escaped_meta_refs: escaped_condition_meta_refs
+    } = compile_meta_rule_work(condition_fn, env)
 
     condition_hash = Components.fact_hash({condition_fn, sm_name})
 
@@ -4743,18 +4680,10 @@ defmodule Runic do
       end
 
     # Detect meta expressions in the reaction (state_of)
-    reaction_meta_refs = detect_meta_expressions(reaction_fn)
-    rewritten_reaction = rewrite_meta_refs_in_ast(reaction_fn, reaction_meta_refs)
-    escaped_reaction_meta_refs = escape_meta_refs(reaction_meta_refs)
-
-    # Wrap reaction to be arity-2 (input, meta_ctx)
-    final_reaction =
-      quote generated: true do
-        fn input, var!(meta_ctx, Runic) ->
-          _ = var!(meta_ctx, Runic)
-          unquote(rewritten_reaction).(input)
-        end
-      end
+    %{
+      final_work: final_reaction,
+      escaped_meta_refs: escaped_reaction_meta_refs
+    } = compile_meta_rule_work(reaction_fn, env)
 
     reaction_hash = Components.fact_hash({reaction_fn, sm_name})
 
@@ -4797,7 +4726,7 @@ defmodule Runic do
   end
 
   # Handle multi-clause reactor fns
-  defp build_single_reactor_rule({:fn, _, clauses}, sm_name, rule_name_or_idx, _env)
+  defp build_single_reactor_rule({:fn, _, clauses}, sm_name, rule_name_or_idx, env)
        when length(clauses) > 1 do
     acc_ref = :__sm_accumulator__
 
@@ -4827,17 +4756,10 @@ defmodule Runic do
         end
       end
 
-    condition_meta_refs = detect_meta_expressions(condition_fn)
-    rewritten_condition = rewrite_meta_refs_in_ast(condition_fn, condition_meta_refs)
-    escaped_condition_meta_refs = escape_meta_refs(condition_meta_refs)
-
-    final_condition =
-      quote generated: true do
-        fn input, var!(meta_ctx, Runic) ->
-          _ = var!(meta_ctx, Runic)
-          unquote(rewritten_condition).(input)
-        end
-      end
+    %{
+      final_work: final_condition,
+      escaped_meta_refs: escaped_condition_meta_refs
+    } = compile_meta_rule_work(condition_fn, env)
 
     condition_hash = Components.fact_hash({condition_fn, sm_name})
 
@@ -4845,6 +4767,7 @@ defmodule Runic do
     reaction_clauses =
       Enum.map(clauses, fn {:->, _, [[lhs], rhs]} ->
         lhs = mark_vars_generated(lhs)
+        {rhs, _rhs_bindings} = traverse_expression(rhs, env)
         rhs = mark_vars_generated(rhs)
 
         quote generated: true do
@@ -4868,17 +4791,10 @@ defmodule Runic do
         end
       end
 
-    reaction_meta_refs = detect_meta_expressions(reaction_fn)
-    rewritten_reaction = rewrite_meta_refs_in_ast(reaction_fn, reaction_meta_refs)
-    escaped_reaction_meta_refs = escape_meta_refs(reaction_meta_refs)
-
-    final_reaction =
-      quote generated: true do
-        fn input, var!(meta_ctx, Runic) ->
-          _ = var!(meta_ctx, Runic)
-          unquote(rewritten_reaction).(input)
-        end
-      end
+    %{
+      final_work: final_reaction,
+      escaped_meta_refs: escaped_reaction_meta_refs
+    } = compile_meta_rule_work(reaction_fn, env)
 
     reaction_hash = Components.fact_hash({reaction_fn, sm_name})
 
@@ -6400,6 +6316,20 @@ defmodule Runic do
     end
   end
 
+  defp compile_meta_rule_work(work_ast, env) do
+    {rewritten_work, bindings} = traverse_expression(work_ast, env)
+    {final_work, meta_refs} = maybe_compile_meta_work(work_ast, rewritten_work, env)
+
+    %{
+      rewritten_work: rewritten_work,
+      final_work: final_work,
+      bindings: bindings,
+      meta_refs: meta_refs,
+      escaped_meta_refs: escape_meta_refs(meta_refs),
+      arity: if(meta_refs != [], do: 2, else: 1)
+    }
+  end
+
   defp maybe_compile_meta_reducer(reducer_ast, rewritten_reducer, _env) do
     meta_refs = detect_meta_expressions(reducer_ast)
 
@@ -6486,7 +6416,8 @@ defmodule Runic do
 
       _ ->
         # Raw expression - wrap in a function, rewrite meta expressions
-        rewritten_expr = rewrite_meta_refs_in_ast(then_expr, meta_refs)
+        {rewritten_expr, _bindings} = traverse_expression(then_expr, env)
+        rewritten_expr = rewrite_meta_refs_in_ast(rewritten_expr, meta_refs)
         rewritten_expr = mark_vars_generated(rewritten_expr)
 
         quote generated: true do
@@ -6504,8 +6435,9 @@ defmodule Runic do
   end
 
   @doc false
-  def compile_meta_when_clause(when_expr, pattern, top_binding, _binding_vars, _env, meta_refs) do
-    rewritten_body = rewrite_meta_refs_in_ast(when_expr, meta_refs)
+  def compile_meta_when_clause(when_expr, pattern, top_binding, _binding_vars, env, meta_refs) do
+    {rewritten_when_expr, _when_bindings} = traverse_expression(when_expr, env)
+    rewritten_body = rewrite_meta_refs_in_ast(rewritten_when_expr, meta_refs)
     rewritten_body = mark_vars_generated(rewritten_body)
 
     case_pattern =

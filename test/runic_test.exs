@@ -256,6 +256,102 @@ defmodule RunicTest do
       refute Condition.check_with_meta_context(condition, input, meta_ctx_disabled)
     end
 
+    test "where clause supports pinned variable alongside state_of/1" do
+      minimum_counter = 5
+
+      counter = Runic.accumulator(0, fn x, acc -> acc + x end, name: :counter)
+
+      {rule, _binding} =
+        Code.eval_quoted(
+          quote bind_quoted: [minimum_counter: minimum_counter] do
+            require Runic
+
+            Runic.rule do
+              given(x: x)
+              where(state_of(:counter) > ^minimum_counter)
+              then(fn %{x: x} -> {:counter_above_minimum, x} end)
+            end
+          end
+        )
+
+      workflow =
+        Workflow.new()
+        |> Workflow.add(counter)
+        |> Workflow.add(rule)
+
+      result =
+        workflow
+        |> Workflow.react_until_satisfied(10)
+        |> Workflow.react_until_satisfied(1)
+        |> Workflow.raw_productions()
+
+      assert {:counter_above_minimum, 1} in result
+    end
+
+    test "where clause supports pinned variable with state_of/1 field access" do
+      expected_mode = :enabled
+
+      config =
+        Runic.accumulator(%{mode: :disabled}, fn update, _acc -> update end, name: :config)
+
+      {rule, _binding} =
+        Code.eval_quoted(
+          quote bind_quoted: [expected_mode: expected_mode] do
+            require Runic
+
+            Runic.rule do
+              given(event: event)
+              where(state_of(:config).mode == ^expected_mode)
+              then(fn %{event: event} -> {:config_mode_matched, event} end)
+            end
+          end
+        )
+
+      workflow =
+        Workflow.new()
+        |> Workflow.add(config)
+        |> Workflow.add(rule)
+
+      result =
+        workflow
+        |> Workflow.react_until_satisfied(%{mode: :enabled})
+        |> Workflow.react_until_satisfied(:ready)
+        |> Workflow.raw_productions()
+
+      assert {:config_mode_matched, :ready} in result
+    end
+
+    test "condition form supports pinned variable alongside state_of/1" do
+      minimum_counter = 5
+
+      counter = Runic.accumulator(0, fn x, acc -> acc + x end, name: :counter)
+
+      {rule, _binding} =
+        Code.eval_quoted(
+          quote bind_quoted: [minimum_counter: minimum_counter] do
+            require Runic
+
+            Runic.rule(
+              condition: fn _x -> state_of(:counter) > ^minimum_counter end,
+              reaction: fn x -> {:counter_condition_matched, x} end
+            )
+          end
+        )
+
+      workflow =
+        Workflow.new()
+        |> Workflow.add(counter)
+        |> Workflow.add(rule)
+
+      result =
+        workflow
+        |> Workflow.react_until_satisfied(10)
+        |> Workflow.react_until_satisfied(1)
+        |> Workflow.raw_productions()
+
+      assert {:counter_condition_matched, 1} in result
+    end
+
     test "state_of/1 returns nil for missing context key" do
       # When the referenced component doesn't exist, meta_context won't have the key
       # The condition should handle this gracefully (return false, not crash)
@@ -1097,6 +1193,145 @@ defmodule RunicTest do
       assert Enum.count(Workflow.productions(workflow_after_2_cycles)) == 4
 
       assert "ham" in Workflow.raw_reactions(workflow_after_2_cycles)
+    end
+
+    test "reactor bodies support pinned bindings alongside state_of-based matching" do
+      multiplier = 2
+
+      {state_machine, _binding} =
+        Code.eval_quoted(
+          quote bind_quoted: [multiplier: multiplier] do
+            require Runic
+
+            Runic.state_machine(
+              name: :pinned_reactor,
+              init: 0,
+              reducer: fn x, acc -> acc + x end,
+              reactors: [
+                scaled: fn state when state > 0 -> state * ^multiplier end
+              ]
+            )
+          end
+        )
+
+      wrk =
+        Workflow.new()
+        |> Workflow.add(state_machine)
+        |> Workflow.react_until_satisfied(3)
+
+      prods = Workflow.raw_productions(wrk)
+      assert 6 in prods
+    end
+  end
+
+  describe "Runic.aggregate/2" do
+    test "command handlers support pinned bindings alongside aggregate state access" do
+      minimum = 5
+      tag = :accepted
+
+      agg =
+        Runic.aggregate name: :pinned_guarded do
+          state(10)
+
+          command :decrement do
+            where(fn state -> state > ^minimum end)
+            emit(fn state -> {^tag, state} end)
+          end
+
+          event {:accepted, n}, state do
+            state - n
+          end
+        end
+
+      wrk =
+        Workflow.new()
+        |> Workflow.add(agg)
+        |> Workflow.react_until_satisfied(:decrement)
+
+      prods = Workflow.raw_productions(wrk)
+      assert {:accepted, 10} in prods
+    end
+  end
+
+  describe "Runic.process_manager/2" do
+    test "emit and completion handlers support pinned bindings alongside process manager state access" do
+      command = :dispatch
+      min_count = 1
+
+      pm =
+        Runic.process_manager name: :pinned_pm do
+          state(%{count: 0})
+
+          on :start do
+            update(%{count: 1})
+            emit({^command, :do_work})
+          end
+
+          complete?(fn state -> state.count >= ^min_count end)
+        end
+
+      wrk =
+        Workflow.new()
+        |> Workflow.add(pm)
+        |> Workflow.react_until_satisfied(:start)
+
+      prods = Workflow.raw_productions(wrk)
+      assert {:dispatch, :do_work} in prods
+      assert {:process_completed, :pinned_pm} in prods
+    end
+  end
+
+  describe "Runic.fsm/2" do
+    test "transition guards support pinned bindings alongside current state checks" do
+      allowed_event = :go
+
+      fsm =
+        Runic.fsm name: :guarded_toggle do
+          initial_state(:idle)
+
+          state :idle do
+            on(:go, to: :running, guard: fn event -> event == ^allowed_event end)
+          end
+
+          state :running do
+            on(:stop, to: :idle)
+          end
+        end
+
+      wrk =
+        Workflow.new()
+        |> Workflow.add(fsm)
+        |> Workflow.react_until_satisfied(:go)
+
+      prods = Workflow.raw_productions(wrk)
+      assert :running in prods
+    end
+  end
+
+  describe "Runic.saga/2" do
+    test "on_complete supports pinned bindings alongside saga state access" do
+      label = :saga_done
+
+      saga =
+        Runic.saga name: :pinned_complete_handler do
+          transaction :step_one do
+            fn _input -> {:ok, :done} end
+          end
+
+          compensate :step_one do
+            fn _ -> :undone end
+          end
+
+          on_complete(fn results -> {^label, map_size(results)} end)
+        end
+
+      wrk =
+        Workflow.new()
+        |> Workflow.add(saga)
+        |> Workflow.react_until_satisfied(:start)
+
+      prods = Workflow.raw_productions(wrk)
+      assert {:saga_done, 1} in prods
     end
   end
 
