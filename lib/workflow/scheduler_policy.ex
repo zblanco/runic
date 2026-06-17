@@ -5,9 +5,15 @@ defmodule Runic.Workflow.SchedulerPolicy do
   A `SchedulerPolicy` controls retry behavior, timeouts, failure handling,
   execution mode, and other scheduling concerns for individual workflow nodes.
 
-  Policies are resolved at runtime by matching against runnable nodes using
-  a list of `{matcher, policy_map}` tuples. The first matching rule wins,
-  and its policy map is merged over the default policy.
+  Flat policy lists are resolved by merging the first matching policy over
+  Runic defaults and component defaults. Layered policy resolution, used by
+  `Runic.Workflow.run/3` and `Runic.Workflow.step/3`, applies these sources
+  from lowest to highest precedence:
+
+  1. Runic defaults
+  2. The first matching workflow policy
+  3. Component defaults from `Runic.Workflow.PolicyProvider`
+  4. The first matching runtime policy
 
   ## Matcher Types
 
@@ -57,7 +63,8 @@ defmodule Runic.Workflow.SchedulerPolicy do
       policy = SchedulerPolicy.resolve(runnable, policies)
   """
 
-  alias Runic.Workflow.Runnable
+  alias Runic.Workflow.{PolicyProvider, Runnable}
+  alias Runic.Workflow.SchedulerPolicy.Layers
 
   @known_keys [
     :max_retries,
@@ -138,24 +145,30 @@ defmodule Runic.Workflow.SchedulerPolicy do
   def default_policy, do: %__MODULE__{}
 
   @doc """
-  Resolves a `SchedulerPolicy` for a given runnable by walking a list of
-  `{matcher, policy_map}` tuples top-to-bottom. First match wins.
+  Resolves a `SchedulerPolicy` for a given runnable.
 
-  The matched policy map is merged over the default policy. If no match is
-  found or `policies` is `nil` or `[]`, returns the default policy.
+  Component policy defaults from `Runic.Workflow.PolicyProvider` are merged over
+  Runic defaults. The first matching policy rule, if any, is merged last and
+  takes precedence over both.
   """
-  @spec resolve(Runnable.t(), list() | nil) :: t()
-  def resolve(%Runnable{}, nil), do: %__MODULE__{}
-  def resolve(%Runnable{}, []), do: %__MODULE__{}
+  @spec resolve(Runnable.t(), list() | Layers.t() | nil) :: t()
+  def resolve(%Runnable{} = runnable, nil), do: resolve(runnable, [])
+
+  def resolve(%Runnable{node: node}, %Layers{} = layers) do
+    %__MODULE__{}
+    |> Map.from_struct()
+    |> Map.merge(matching_policy_map(node, layers.workflow))
+    |> Map.merge(provider_policy_map(node))
+    |> Map.merge(matching_policy_map(node, layers.runtime))
+    |> new()
+  end
 
   def resolve(%Runnable{node: node}, policies) when is_list(policies) do
-    case Enum.find(policies, fn {matcher, _policy_map} -> matches?(matcher, node) end) do
-      {_matcher, policy_map} ->
-        struct!(__MODULE__, Map.merge(Map.from_struct(%__MODULE__{}), policy_map))
-
-      nil ->
-        %__MODULE__{}
-    end
+    %__MODULE__{}
+    |> Map.from_struct()
+    |> Map.merge(provider_policy_map(node))
+    |> Map.merge(matching_policy_map(node, policies))
+    |> new()
   end
 
   @doc """
@@ -176,6 +189,24 @@ defmodule Runic.Workflow.SchedulerPolicy do
   def merge_policies([], workflow_base, _mode), do: workflow_base
   def merge_policies(overrides, _workflow_base, :replace), do: overrides
   def merge_policies(overrides, workflow_base, :merge), do: overrides ++ workflow_base
+
+  @doc """
+  Builds layered policy configuration for workflow execution.
+
+  Layered policy resolution lets `Workflow.run/3` preserve runtime overrides as
+  a distinct layer above component-provided policy defaults while keeping
+  workflow scheduler policies below component policy.
+  """
+  @spec policy_layers(list() | nil, list() | nil, :merge | :replace) :: Layers.t()
+  def policy_layers(runtime_overrides, workflow_base, mode \\ :merge)
+
+  def policy_layers(runtime_overrides, _workflow_base, :replace) do
+    %Layers{workflow: [], runtime: runtime_overrides || []}
+  end
+
+  def policy_layers(runtime_overrides, workflow_base, :merge) do
+    %Layers{workflow: workflow_base || [], runtime: runtime_overrides || []}
+  end
 
   # ---------------------------------------------------------------------------
   # Presets
@@ -235,6 +266,24 @@ defmodule Runic.Workflow.SchedulerPolicy do
   # ---------------------------------------------------------------------------
   # Matchers
   # ---------------------------------------------------------------------------
+
+  defp provider_policy_map(node) do
+    node
+    |> PolicyProvider.scheduler_policy()
+    |> normalize_policy_map()
+  end
+
+  defp matching_policy_map(node, policies) do
+    case Enum.find(policies, fn {matcher, _policy_map} -> matches?(matcher, node) end) do
+      {_matcher, policy_map} -> normalize_policy_map(policy_map)
+      nil -> %{}
+    end
+  end
+
+  defp normalize_policy_map(nil), do: %{}
+  defp normalize_policy_map(%__MODULE__{} = policy), do: Map.from_struct(policy)
+  defp normalize_policy_map(policy) when is_list(policy), do: Map.new(policy)
+  defp normalize_policy_map(policy) when is_map(policy), do: policy
 
   defp matches?(matcher, node) when is_atom(matcher) and matcher != :default do
     case Map.get(node, :name) do

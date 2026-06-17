@@ -3,6 +3,7 @@ defmodule Runic.Workflow.SchedulerPolicyTest do
 
   alias Runic.Workflow.SchedulerPolicy
   alias Runic.Workflow.{Step, Condition, Fact, CausalContext, Runnable}
+  alias Runic.Test.PolicyProviderNode
 
   defp make_runnable(name, struct_mod \\ Step) do
     node =
@@ -11,6 +12,13 @@ defmodule Runic.Workflow.SchedulerPolicyTest do
         Condition -> Condition.new(work: fn _ -> true end, name: name, arity: 1)
       end
 
+    fact = Fact.new(value: :test)
+    context = CausalContext.new(node_hash: node.hash, input_fact: fact, ancestry_depth: 0)
+    Runnable.new(node, fact, context)
+  end
+
+  defp make_policy_provider_runnable(name, policy) do
+    node = %PolicyProviderNode{name: name, hash: :erlang.phash2({name, policy}), policy: policy}
     fact = Fact.new(value: :test)
     context = CausalContext.new(node_hash: node.hash, input_fact: fact, ancestry_depth: 0)
     Runnable.new(node, fact, context)
@@ -262,6 +270,77 @@ defmodule Runic.Workflow.SchedulerPolicyTest do
       assert result.max_retries == 3
       assert result.backoff == :none
       assert result.timeout_ms == :infinity
+      assert result.on_failure == :halt
+    end
+
+    test "component policy provider is merged over defaults without explicit policies" do
+      runnable = make_policy_provider_runnable(:provided, max_retries: 2, timeout_ms: 1_000)
+
+      result = SchedulerPolicy.resolve(runnable, [])
+
+      assert result.max_retries == 2
+      assert result.timeout_ms == 1_000
+      assert result.backoff == :none
+    end
+
+    test "matching explicit policy overrides component policy provider" do
+      runnable = make_policy_provider_runnable(:provided, max_retries: 2, timeout_ms: 1_000)
+
+      result = SchedulerPolicy.resolve(runnable, provided: %{max_retries: 5})
+
+      assert result.max_retries == 5
+      assert result.timeout_ms == 1_000
+    end
+
+    test "policy provider accepts SchedulerPolicy structs" do
+      provider_policy = SchedulerPolicy.fast_fail()
+      runnable = make_policy_provider_runnable(:provided, provider_policy)
+
+      result = SchedulerPolicy.resolve(runnable, [])
+
+      assert result.max_retries == 0
+      assert result.timeout_ms == 5_000
+      assert result.on_failure == :halt
+    end
+
+    test "policy provider validates unknown keys" do
+      runnable = make_policy_provider_runnable(:provided, bogus_key: true)
+
+      assert_raise ArgumentError, ~r/unknown keys/, fn ->
+        SchedulerPolicy.resolve(runnable, [])
+      end
+    end
+
+    test "layered policies put provider defaults above workflow and below runtime" do
+      runnable =
+        make_policy_provider_runnable(:provided, max_retries: 2, timeout_ms: 1_000)
+
+      policies =
+        SchedulerPolicy.policy_layers(
+          [provided: %{max_retries: 5}],
+          provided: %{max_retries: 0, timeout_ms: 100}
+        )
+
+      result = SchedulerPolicy.resolve(runnable, policies)
+
+      assert result.max_retries == 5
+      assert result.timeout_ms == 1_000
+    end
+
+    test "layered replace mode ignores workflow policies" do
+      runnable = make_policy_provider_runnable(:provided, max_retries: 2)
+
+      policies =
+        SchedulerPolicy.policy_layers(
+          [provided: %{timeout_ms: 50}],
+          [provided: %{timeout_ms: 10, on_failure: :skip}],
+          :replace
+        )
+
+      result = SchedulerPolicy.resolve(runnable, policies)
+
+      assert result.max_retries == 2
+      assert result.timeout_ms == 50
       assert result.on_failure == :halt
     end
   end

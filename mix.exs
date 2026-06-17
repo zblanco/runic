@@ -82,6 +82,7 @@ defmodule Runic.MixProject do
         ],
         Protocols: [
           Runic.Workflow.Invokable,
+          Runic.Workflow.PolicyProvider,
           Runic.Component,
           Runic.Transmutable
         ],
