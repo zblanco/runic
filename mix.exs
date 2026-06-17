@@ -55,6 +55,7 @@ defmodule Runic.MixProject do
           Runic.Workflow.Join
         ],
         "Scheduling & Execution": [
+          Runic.Workflow.RunResult,
           Runic.Workflow.SchedulerPolicy,
           Runic.Workflow.PolicyDriver,
           Runic.Workflow.RunnableDispatched,

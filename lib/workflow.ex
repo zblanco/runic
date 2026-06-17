@@ -231,6 +231,7 @@ defmodule Runic.Workflow do
   alias Runic.Workflow.Runnable
   alias Runic.Workflow.SchedulerPolicy
   alias Runic.Workflow.PolicyDriver
+  alias Runic.Workflow.RunResult
   alias Runic.Workflow.RunnableDispatched
   alias Runic.Workflow.RunnableCompleted
   alias Runic.Workflow.RunnableFailed
@@ -2716,17 +2717,9 @@ defmodule Runic.Workflow do
   def react(workflow, opts \\ [])
 
   def react(%__MODULE__{} = workflow, opts) when is_list(opts) do
-    if is_runnable?(workflow) do
-      {workflow, runnables} = prepare_for_dispatch(workflow)
-
-      if Keyword.get(opts, :async, false) do
-        execute_runnables_async(workflow, runnables, opts)
-      else
-        execute_runnables_serial(workflow, runnables, opts)
-      end
-    else
-      workflow
-    end
+    workflow
+    |> step(opts)
+    |> unwrap_run_result()
   end
 
   def react(%__MODULE__{} = wrk, %Fact{ancestry: nil} = fact) do
@@ -2754,29 +2747,102 @@ defmodule Runic.Workflow do
   @spec react(t(), Fact.t() | term(), keyword()) :: t()
   def react(%__MODULE__{} = wrk, %Fact{ancestry: nil} = fact, opts) do
     wrk
-    |> maybe_apply_run_context(opts)
-    |> invoke(root(), fact)
-    |> react(opts)
+    |> step(fact, opts)
+    |> unwrap_run_result()
   end
 
   def react(%__MODULE__{} = wrk, raw_fact, opts) do
     react(wrk, Fact.new(value: raw_fact), opts)
   end
 
+  @doc """
+  Executes one workflow reaction cycle and returns structured execution metadata.
+
+  Unlike `react/2`, this function returns `{:ok, %Runic.Workflow.RunResult{}}`
+  or `{:error, %Runic.Workflow.RunResult{}}`, preserving the updated workflow
+  together with cycle count, failed runnable information, and event metadata.
+  """
+  @spec step(t(), keyword()) :: {:ok, RunResult.t()} | {:error, RunResult.t()}
+  def step(workflow, opts \\ [])
+
+  def step(%__MODULE__{} = workflow, opts) when is_list(opts) do
+    opts = maybe_convert_deadline(opts)
+
+    workflow
+    |> maybe_apply_run_context(opts)
+    |> execute_step(opts)
+  end
+
+  def step(%__MODULE__{} = wrk, %Fact{ancestry: nil} = fact) do
+    step(wrk, fact, [])
+  end
+
+  def step(%__MODULE__{} = wrk, raw_fact) when not is_list(raw_fact) do
+    step(wrk, Fact.new(value: raw_fact), [])
+  end
+
+  @doc """
+  Plans input into the workflow, executes one reaction cycle, and returns
+  structured execution metadata.
+  """
+  @spec step(t(), Fact.t() | term(), keyword()) ::
+          {:ok, RunResult.t()} | {:error, RunResult.t()}
+  def step(%__MODULE__{} = wrk, %Fact{ancestry: nil} = fact, opts) do
+    opts = maybe_convert_deadline(opts)
+
+    wrk
+    |> maybe_apply_run_context(opts)
+    |> invoke(root(), fact)
+    |> execute_step(opts)
+  end
+
+  def step(%__MODULE__{} = wrk, raw_fact, opts) do
+    step(wrk, Fact.new(value: raw_fact), opts)
+  end
+
+  defp execute_step(%__MODULE__{} = workflow, opts) do
+    if is_runnable?(workflow) do
+      {workflow, runnables} = prepare_for_dispatch(workflow)
+
+      {workflow, executed, events} =
+        if Keyword.get(opts, :async, false) do
+          execute_runnables_async(workflow, runnables, opts)
+        else
+          execute_runnables_serial(workflow, runnables, opts)
+        end
+
+      step_result(workflow, executed, events)
+    else
+      {:ok, RunResult.new(workflow, :ok, cycles: 0)}
+    end
+  end
+
+  defp step_result(workflow, executed, events) do
+    case Enum.find(executed, &match?(%Runnable{status: :failed}, &1)) do
+      nil ->
+        {:ok, RunResult.new(workflow, :ok, cycles: 1, events: event_log(workflow) ++ events)}
+
+      %Runnable{} = runnable ->
+        {:error,
+         RunResult.new(workflow, :error,
+           cycles: 1,
+           failed_runnable: runnable,
+           error: runnable.error,
+           events: event_log(workflow) ++ events
+         )}
+    end
+  end
+
   defp execute_runnables_serial(workflow, runnables, opts) do
     policies = resolve_effective_policies(workflow, opts)
     driver_opts = build_driver_opts(opts)
 
-    runnables
-    |> Enum.map(fn runnable ->
-      if policies == [] do
-        Invokable.execute(runnable.node, runnable)
-      else
-        policy = SchedulerPolicy.resolve(runnable, policies)
-        PolicyDriver.execute(runnable, policy, driver_opts)
-      end
-    end)
-    |> Enum.reduce(workflow, fn executed, wrk -> apply_runnable(wrk, executed) end)
+    executed =
+      Enum.map(runnables, fn runnable ->
+        execute_runnable_with_policy(runnable, policies, driver_opts)
+      end)
+
+    apply_executed_runnables(workflow, executed)
   end
 
   defp execute_runnables_async(workflow, runnables, opts) do
@@ -2785,28 +2851,59 @@ defmodule Runic.Workflow do
     policies = resolve_effective_policies(workflow, opts)
     driver_opts = build_driver_opts(opts)
 
-    runnables
-    |> Task.async_stream(
-      fn runnable ->
-        if policies == [] do
-          Invokable.execute(runnable.node, runnable)
-        else
-          policy = SchedulerPolicy.resolve(runnable, policies)
-          PolicyDriver.execute(runnable, policy, driver_opts)
-        end
-      end,
-      max_concurrency: max_concurrency,
-      timeout: timeout
-    )
-    |> Enum.reduce(workflow, fn
-      {:ok, executed}, wrk ->
-        apply_runnable(wrk, executed)
+    executed =
+      runnables
+      |> Task.async_stream(
+        fn runnable ->
+          execute_runnable_with_policy(runnable, policies, driver_opts)
+        end,
+        max_concurrency: max_concurrency,
+        timeout: timeout
+      )
+      |> Enum.flat_map(fn
+        {:ok, executed} ->
+          [executed]
 
-      {:exit, reason}, wrk ->
-        Logger.warning("Async execution failed: #{inspect(reason)}")
-        wrk
-    end)
+        {:exit, reason} ->
+          Logger.warning("Async execution failed: #{inspect(reason)}")
+          []
+      end)
+
+    apply_executed_runnables(workflow, executed)
   end
+
+  defp execute_runnable_with_policy(runnable, policies, driver_opts) do
+    policy = SchedulerPolicy.resolve(runnable, policies)
+    PolicyDriver.execute(runnable, policy, policy_driver_opts(policy, driver_opts))
+  end
+
+  defp policy_driver_opts(%SchedulerPolicy{execution_mode: :durable}, driver_opts) do
+    Keyword.put(driver_opts, :emit_events, true)
+  end
+
+  defp policy_driver_opts(_policy, driver_opts), do: driver_opts
+
+  defp apply_executed_runnables(workflow, executed) do
+    {runnables, events} =
+      executed
+      |> Enum.map(&split_executed_runnable/1)
+      |> Enum.unzip()
+
+    workflow =
+      Enum.reduce(runnables, workflow, fn executed, wrk ->
+        apply_runnable(wrk, executed)
+      end)
+
+    {workflow, runnables, List.flatten(events)}
+  end
+
+  defp split_executed_runnable({%Runnable{} = runnable, events}) when is_list(events),
+    do: {runnable, events}
+
+  defp split_executed_runnable(%Runnable{} = runnable), do: {runnable, []}
+
+  defp unwrap_run_result({:ok, %RunResult{workflow: workflow}}), do: workflow
+  defp unwrap_run_result({:error, %RunResult{workflow: workflow}}), do: workflow
 
   defp build_driver_opts(opts) do
     case Keyword.get(opts, :deadline_at) do
@@ -2827,11 +2924,7 @@ defmodule Runic.Workflow do
     mode = Keyword.get(opts, :scheduler_policies_mode, :merge)
     base = workflow.scheduler_policies
 
-    case {runtime, mode} do
-      {nil, _} -> base
-      {_, :replace} -> runtime
-      {_, :merge} -> SchedulerPolicy.merge_policies(runtime, base)
-    end
+    SchedulerPolicy.policy_layers(runtime, base, mode)
   end
 
   @doc """
@@ -2885,25 +2978,42 @@ defmodule Runic.Workflow do
   with a custom scheduler process.
   """
   @spec react_until_satisfied(t(), Fact.t() | term(), keyword()) :: t()
-  def react_until_satisfied(workflow, fact_or_value \\ nil, opts \\ [])
-
-  def react_until_satisfied(%__MODULE__{} = workflow, nil, opts) do
-    opts = maybe_convert_deadline(opts)
-    workflow = maybe_apply_run_context(workflow, opts)
-    do_react_until_satisfied(workflow, is_runnable?(workflow), opts)
+  def react_until_satisfied(workflow, fact_or_value \\ nil, opts \\ []) do
+    workflow
+    |> run(fact_or_value, opts)
+    |> unwrap_run_result()
   end
 
-  def react_until_satisfied(%__MODULE__{} = wrk, %Fact{ancestry: nil} = fact, opts) do
+  @doc """
+  Executes the workflow until no more runnables remain and returns structured
+  execution metadata.
+
+  Options are the same as `react_until_satisfied/3`, with one addition:
+
+  - `:max_cycles` - Maximum number of reaction cycles before returning
+    `{:error, %Runic.Workflow.RunResult{status: :max_cycles}}`. Defaults to
+    `:infinity`, matching `react_until_satisfied/3` compatibility behavior.
+  """
+  @spec run(t(), Fact.t() | term(), keyword()) :: {:ok, RunResult.t()} | {:error, RunResult.t()}
+  def run(workflow, fact_or_value \\ nil, opts \\ [])
+
+  def run(%__MODULE__{} = workflow, nil, opts) do
+    opts = maybe_convert_deadline(opts)
+    workflow = maybe_apply_run_context(workflow, opts)
+    do_run(workflow, is_runnable?(workflow), opts, 0, [])
+  end
+
+  def run(%__MODULE__{} = wrk, %Fact{ancestry: nil} = fact, opts) do
     opts = maybe_convert_deadline(opts)
     wrk = maybe_apply_run_context(wrk, opts)
 
     wrk
-    |> react(fact, opts)
-    |> react_until_satisfied(nil, opts)
+    |> step(fact, opts)
+    |> continue_run(opts, 0, [])
   end
 
-  def react_until_satisfied(%__MODULE__{} = wrk, raw_fact, opts) do
-    react_until_satisfied(wrk, Fact.new(value: raw_fact), opts)
+  def run(%__MODULE__{} = wrk, raw_fact, opts) do
+    run(wrk, Fact.new(value: raw_fact), opts)
   end
 
   defp maybe_convert_deadline(opts) do
@@ -2923,19 +3033,87 @@ defmodule Runic.Workflow do
     end
   end
 
-  defp do_react_until_satisfied(%__MODULE__{} = workflow, true = _is_runnable?, opts) do
-    checkpoint = Keyword.get(opts, :checkpoint)
-
-    workflow
-    |> react(opts)
-    |> then(fn wrk ->
-      if is_function(checkpoint, 1), do: checkpoint.(wrk)
-      do_react_until_satisfied(wrk, is_runnable?(wrk), opts)
-    end)
+  defp continue_run({:error, %RunResult{} = result}, _opts, cycles_before_step, events) do
+    {:error,
+     %{
+       result
+       | cycles: cycles_before_step + result.cycles,
+         events: merge_run_events(events, result.events)
+     }}
   end
 
-  defp do_react_until_satisfied(%__MODULE__{} = workflow, false = _is_runnable?, _opts),
-    do: workflow
+  defp continue_run(
+         {:ok, %RunResult{workflow: workflow, cycles: cycles, events: step_events}},
+         opts,
+         cycles_before_step,
+         events
+       ) do
+    if cycles > 0, do: maybe_checkpoint(opts, workflow)
+
+    do_run(
+      workflow,
+      is_runnable?(workflow),
+      opts,
+      cycles_before_step + cycles,
+      merge_run_events(events, step_events)
+    )
+  end
+
+  defp do_run(%__MODULE__{} = workflow, true = _is_runnable?, opts, cycles, events) do
+    max_cycles = Keyword.get(opts, :max_cycles, :infinity)
+
+    if max_cycles != :infinity and cycles >= max_cycles do
+      {:error,
+       RunResult.new(workflow, :max_cycles,
+         cycles: cycles,
+         error: {:max_cycles, max_cycles},
+         events: merge_run_events(events, event_log(workflow))
+       )}
+    else
+      workflow
+      |> step(opts)
+      |> then(fn
+        {:ok, %RunResult{workflow: wrk, cycles: step_cycles, events: step_events}} ->
+          maybe_checkpoint(opts, wrk)
+
+          do_run(
+            wrk,
+            is_runnable?(wrk),
+            opts,
+            cycles + step_cycles,
+            merge_run_events(events, step_events)
+          )
+
+        {:error, %RunResult{} = result} ->
+          {:error,
+           %{
+             result
+             | cycles: cycles + result.cycles,
+               events: merge_run_events(events, result.events)
+           }}
+      end)
+    end
+  end
+
+  defp do_run(%__MODULE__{} = workflow, false = _is_runnable?, _opts, cycles, events) do
+    {:ok,
+     RunResult.new(workflow, :ok,
+       cycles: cycles,
+       events: merge_run_events(events, event_log(workflow))
+     )}
+  end
+
+  defp merge_run_events(left, right) do
+    (List.wrap(left) ++ List.wrap(right))
+    |> Enum.uniq()
+  end
+
+  defp maybe_checkpoint(opts, workflow) do
+    case Keyword.get(opts, :checkpoint) do
+      checkpoint when is_function(checkpoint, 1) -> checkpoint.(workflow)
+      _other -> :ok
+    end
+  end
 
   @doc """
   Removes all `%Fact{}` vertices and generation integers from the workflow graph.
