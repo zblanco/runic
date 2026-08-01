@@ -1,8 +1,10 @@
 # Runic Runner — Implementation Plan
 
-**Status:** Active  
+**Status:** Historical implementation record; managed-runtime contracts superseded
 **Depends on:** [Runner Proposal](runner-proposal.md), [Scheduler Policies (completed)](scheduler-policies-implementation-plan.md)  
-**Related:** [Scheduling Guide](../guides/scheduling.md)  
+**Related:** [Scheduling Guide](../guides/scheduling.md), [Runtime Contract Upgrade](runic-runtime-contract-upgrade-plan.md)
+
+> This document explains the current alpha Runner implementation. Its backward-compatibility constraint and `Runner.Store`/`Runner.Executor` target are not the forward plan. The intentional replacement path is defined in the Runtime Contract Upgrade.
 
 ---
 

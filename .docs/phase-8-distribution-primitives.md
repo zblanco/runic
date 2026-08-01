@@ -1,9 +1,11 @@
 # Phase 8: Distribution Primitives — Architectural Exploration & Implementation Plan
 
-**Status:** Planning  
+**Status:** Superseded exploration
 **Scope:** Distributed workflow execution via native OTP primitives, with Raft-based alternatives as separate packages  
 **Dependencies:** Phases 1 (Executor), 5 (Scheduler), Store behaviour  
 **Principle:** Runic's value is its expressive model for arbitrary runtime topologies — distribution serves this, not constrains it.
+
+> This exploration predates the event-authoritative `Runic.Runtime` design. Registry-led ownership, remote `work_fn` dispatch, and Store-based persistence below are historical inputs, not the implementation path. See the [Distributed Durable Runtime Core Plan](distributed-durable-runtime-core-plan.md), [Runtime Contract Upgrade](runic-runtime-contract-upgrade-plan.md), and [Ra Journal Plan](runic-raft-native-runtime-plan.md).
 
 ---
 

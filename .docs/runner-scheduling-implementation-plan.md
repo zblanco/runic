@@ -1,8 +1,10 @@
 # Runner Scheduling & Execution — Implementation Plan
 
-**Status:** Actionable  
+**Status:** Historical implementation record; contract direction superseded
 **Source:** [Full-Breadth Runner Scheduling Considerations](full-breadth-runner-scheduling-considerations.md)  
 **Scope:** Phases A–H, sequenced by priority tiers with concrete deliverables and open-question resolutions.
+
+> The Task/message-shaped Executor work recorded here informed the current alpha implementation. Do not use its Store/Executor or exactly-once/Raft language as the distributed target; follow the [Runtime Contract Upgrade](runic-runtime-contract-upgrade-plan.md) and [Distributed Durable Runtime Core Plan](distributed-durable-runtime-core-plan.md).
 
 ---
 
