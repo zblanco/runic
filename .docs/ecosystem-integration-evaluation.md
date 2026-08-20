@@ -480,6 +480,8 @@ EventStore's persistent subscriptions could power a **reactive workflow coordina
 
 ### 3.4 Postgres (via Postgrex / Ecto directly)
 
+> **Superseded implementation direction:** This minimal Store sketch predates the event-transaction, fencing, receipt, work-discovery, and PayloadStore contracts. Use it as historical exploration only. The actionable design is the [Runic PostgreSQL Journal, Store, Projection, and Managed Workflow Library Plan](runic-postgres-library-implementation-plan.md).
+
 **Deps:** `postgrex` (raw) or `ecto` + `ecto_sql` + `postgrex` (Ecto)  
 **What it is:** Direct Postgres integration without the EventStore abstraction.
 

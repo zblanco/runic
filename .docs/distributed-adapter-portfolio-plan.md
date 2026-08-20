@@ -2,10 +2,11 @@
 
 **Status:** Proposed package and delivery plan
 **Date:** 2026-07-31
-**Updated:** 2026-08-01
+**Updated:** 2026-08-02
 **Depends on:** [Distributed Durable Runtime Core Plan](distributed-durable-runtime-core-plan.md)
 **Contract migration:** [Runic Runtime Contract Upgrade Plan](runic-runtime-contract-upgrade-plan.md)
 **Native designs:** [Runic Ra Journal and Native Profile Plan](runic-raft-native-runtime-plan.md), [Runic CASPaxos Execution-Cell Journal and Registration Profile Plan](runic-caspaxos-native-runtime-plan.md)
+**Database design:** [Runic PostgreSQL Journal, Store, Projection, and Managed Workflow Library Plan](runic-postgres-library-implementation-plan.md)
 **Research context:** `~/wrk/libbit/.docs/runic-clustered-durable-execution-architecture.md`
 
 The Libbit reference is a consumer case study, not Runic's persistence model. Libbit's workspace-scoped workflow definitions and management context use SQLite repositories; PostgreSQL is reserved there for global cross-workspace/platform aggregation and global components. That reinforces the SQLite adapter's importance without making it the only Runic deployment profile.
@@ -233,6 +234,8 @@ CockroachDB also deserves a distinct adapter/profile because serializable retry 
 2. Hash virtual partitions across several PostgreSQL clusters/databases.
 3. Separate analytical/materialized queries from the coordination hot path.
 4. Move only measured bottlenecks to Ra or an external log; do not preemptively split every service.
+
+The concrete schema, commit/resolve protocol, PayloadStore role, Broadway backend, projection feed, managed models, Igniter installer, and DBA gates are defined in the [Runic PostgreSQL Library Implementation Plan](runic-postgres-library-implementation-plan.md).
 
 Sources: [PostgreSQL transaction isolation](https://www.postgresql.org/docs/current/transaction-iso.html), [`Ecto.Multi`](https://hexdocs.pm/ecto/Ecto.Multi.html).
 

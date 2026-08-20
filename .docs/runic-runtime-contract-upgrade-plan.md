@@ -2,9 +2,9 @@
 
 **Status:** Proposed near-term breaking upgrade
 **Date:** 2026-07-31
-**Updated:** 2026-08-01
+**Updated:** 2026-08-02
 **Target baseline:** Runic `0.1.0-alpha.8` at `75ed26f`
-**Companion plans:** [Distributed Durable Runtime Core](distributed-durable-runtime-core-plan.md), [Distributed Adapter Portfolio](distributed-adapter-portfolio-plan.md), [Runic Ra Journal and Native Profile](runic-raft-native-runtime-plan.md), [Runic CASPaxos Execution-Cell Journal and Registration Profile](runic-caspaxos-native-runtime-plan.md)
+**Companion plans:** [Distributed Durable Runtime Core](distributed-durable-runtime-core-plan.md), [Distributed Adapter Portfolio](distributed-adapter-portfolio-plan.md), [Runic PostgreSQL Library](runic-postgres-library-implementation-plan.md), [Runic Ra Journal and Native Profile](runic-raft-native-runtime-plan.md), [Runic CASPaxos Execution-Cell Journal and Registration Profile](runic-caspaxos-native-runtime-plan.md)
 **Implementation references:** Infinite Isekai, RunicAI, Compendium
 
 ## Executive decision
@@ -392,11 +392,19 @@ Capability groups add exact optional callbacks to the same deep Journal behaviou
             {:ok, [Runic.Runtime.WorkScopeRef.t()], next_cursor(), state()} | {:error, adapter_error(), state()}
 @callback scan_active(Runic.Runtime.WorkScopeRef.t(), cursor(), pos_integer(), state()) ::
             {:ok, [Runic.Runtime.StreamRef.t()], next_cursor(), state()} | {:error, adapter_error(), state()}
-@callback claim_dispatches(Runic.Runtime.WorkScopeRef.t(), claimant(), deadline(), pos_integer(), state()) ::
-            {:ok, [Runic.Runtime.DispatchClaim.t()], state()} | {:error, adapter_error(), state()}
-@callback ack_dispatch(Runic.Runtime.DispatchClaim.t(), delivery_receipt(), state()) ::
+@callback claim_deliveries(Runic.Runtime.WorkScopeRef.t(), claimant(), lease_duration(), pos_integer(), state()) ::
+            {:ok, [Runic.Runtime.DeliveryClaim.t()], state()} | {:error, adapter_error(), state()}
+@callback renew_delivery_claim(Runic.Runtime.DeliveryClaim.t(), lease_duration(), state()) ::
+            {:ok, Runic.Runtime.DeliveryClaim.t(), state()} | {:stale_claim, state()} | {:error, adapter_error(), state()}
+@callback release_delivery_claim(Runic.Runtime.DeliveryClaim.t(), delivery_disposition(), state()) ::
             :ok | {:stale_claim, state()} | {:error, adapter_error(), state()}
-@callback release_dispatch(Runic.Runtime.DispatchClaim.t(), state()) :: :ok | {:error, adapter_error()}
+
+@callback claim_dispatch_publications(Runic.Runtime.WorkScopeRef.t(), backend_target(), claimant(), lease_duration(), pos_integer(), state()) ::
+            {:ok, [Runic.Runtime.PublicationClaim.t()], state()} | {:error, adapter_error(), state()}
+@callback ack_dispatch_publication(Runic.Runtime.PublicationClaim.t(), delivery_receipt(), state()) ::
+            :ok | {:stale_claim, state()} | {:error, adapter_error(), state()}
+@callback release_dispatch_publication(Runic.Runtime.PublicationClaim.t(), state()) ::
+            :ok | {:stale_claim, state()} | {:error, adapter_error(), state()}
 @callback claim_due_timers(Runic.Runtime.WorkScopeRef.t(), claimant(), observed_time(), pos_integer(), state()) ::
             {:ok, [Runic.Runtime.TimerClaim.t()], state()} | {:error, adapter_error(), state()}
 @callback release_timer(Runic.Runtime.TimerClaim.t(), state()) :: :ok | {:error, adapter_error()}
@@ -408,7 +416,9 @@ Capability metadata advertises `authority_scope: :execution | :partition`. `Auth
 
 `WorkScopeRef` separately identifies the physical/logical storage shard over which active streams, pending dispatches, and due timers are enumerated. One work scope may contain many execution-scoped authority domains. Runtime obtains current scopes through paged `list_work_scopes/3` rather than overloading an authority reference as both an execution fence and a shard scan cursor. Scope identity and placement generation are stable cursor data; a topology change cannot silently drop a scope that still contains recoverable work.
 
-`claim_dispatches/5` and `claim_due_timers/5` return a bounded collection of individually durable claims; the callback does not promise one all-or-nothing transaction across several execution streams. SQL/Ra adapters may batch atomically when co-located. Per-key adapters may claim candidates independently and return only successful claims, while preserving stale-claim rejection and eventual recovery visibility.
+Direct delivery and external publication are separate capability groups. `claim_deliveries/5` leases canonical attempts to an in-process/direct queue; semantic Runtime completion resolves the pending obligation, while renewal/release use the exact claim token. `claim_dispatch_publications/6` leases an outbox handoff to a selected external backend, and `ack_dispatch_publication/3` records broker/backend acceptance without claiming the consumer completed. A Journal may implement either or both groups.
+
+Those claim callbacks and `claim_due_timers/5` return bounded collections of individually durable claims; no callback promises one all-or-nothing transaction across several execution streams. Lease inputs are durations and the authoritative adapter clock computes deadlines. SQL/Ra adapters may batch atomically when co-located. Per-key adapters may claim candidates independently and return only successful claims, while preserving stale-claim rejection and eventual recovery visibility.
 
 `scan_active/4` guarantees durable eventual completeness for its declared work scope, not necessarily a linearizable multi-stream snapshot. Cursor semantics must not permanently miss a concurrent marker inserted behind the current page: adapters use monotonic inventory revisions, repeatable generations, or a documented reconciliation pass.
 
@@ -491,7 +501,7 @@ defmodule Runic.Runtime.PayloadStore do
 end
 ```
 
-`EncodedPayload` contains namespace, codec/schema version, expected cryptographic digest, bytes, and bounded metadata. `put` is idempotent by namespace/digest and verifies rather than trusting a caller-supplied digest. A durability receipt is an assertion by the configured storage authority; Journal commit records that assertion but cannot atomically observe an S3 object.
+`EncodedPayload` contains namespace, payload domain/kind, codec/schema version, expected cryptographic digest, bytes, and bounded metadata. Core defines a canonical domain-separated digest preimage over kind, codec, schema version, and logical bytes. `put` is idempotent by namespace/digest and verifies both the digest and immutable semantic metadata rather than trusting caller input. A durability receipt is an assertion by the configured storage authority; Journal commit records that assertion but cannot atomically observe an S3 object.
 
 There is deliberately no general `delete(payload_ref)` callback. Content-addressed objects may be shared by facts, attempts, snapshots, and segments. Deletion belongs to a reachability/orphan collector with retention, lease, and authorization proof; it can become a separate optional capability after the reference model exists.
 

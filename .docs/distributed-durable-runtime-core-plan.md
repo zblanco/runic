@@ -2,9 +2,9 @@
 
 **Status:** Proposed implementation plan
 **Date:** 2026-07-31
-**Updated:** 2026-08-01
+**Updated:** 2026-08-02
 **Target baseline:** Runic `0.1.0-alpha.8` at `75ed26f`
-**Companion plans:** [Runtime Contract Upgrade](runic-runtime-contract-upgrade-plan.md), [Distributed Adapter Portfolio](distributed-adapter-portfolio-plan.md), [Runic Ra Journal and Native Profile](runic-raft-native-runtime-plan.md), [Runic CASPaxos Execution-Cell Journal and Registration Profile](runic-caspaxos-native-runtime-plan.md)
+**Companion plans:** [Runtime Contract Upgrade](runic-runtime-contract-upgrade-plan.md), [Distributed Adapter Portfolio](distributed-adapter-portfolio-plan.md), [Runic PostgreSQL Library](runic-postgres-library-implementation-plan.md), [Runic Ra Journal and Native Profile](runic-raft-native-runtime-plan.md), [Runic CASPaxos Execution-Cell Journal and Registration Profile](runic-caspaxos-native-runtime-plan.md)
 **Consumer research:** `~/wrk/libbit/.docs/runic-clustered-durable-execution-architecture.md`
 
 ## Executive decision
