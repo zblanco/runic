@@ -806,36 +806,14 @@ defmodule Runic.Workflow do
   """
   def add_with_events(%__MODULE__{} = workflow, component, opts \\ []) do
     to = opts[:to]
-
-    parent_step =
-      if not is_nil(to) do
-        get_component(workflow, to) ||
-          get_by_hash(workflow, to) ||
-          root()
-      else
-        root()
-      end
-
     events = build_events(component, to)
 
     workflow =
-      component
-      |> Component.connect(parent_step, workflow)
+      workflow
+      |> add(component, Keyword.put(opts, :log, false))
       |> append_build_log(events)
 
-    # |> maybe_put_component(component)
-
     {workflow, events}
-  end
-
-  defp build_events(component, parents) when is_list(parents) do
-    Enum.reduce(parents, [], fn parent, events ->
-      events ++ build_events(component, parent)
-    end)
-  end
-
-  defp build_events(component, %{name: name}) do
-    build_events(component, name)
   end
 
   defp build_events(component, parent) do
@@ -845,7 +823,7 @@ defmodule Runic.Workflow do
       %ComponentAdded{
         closure: closure,
         name: component.name,
-        to: parent,
+        to: durable_parent_ref(parent),
         hash: Map.get(component, :hash),
         # Backward compatibility: also set source/bindings for old deserialization
         source: Component.source(component),
@@ -854,30 +832,22 @@ defmodule Runic.Workflow do
     ]
   end
 
+  defp durable_parent_ref(parents) when is_list(parents),
+    do: Enum.map(parents, &durable_parent_ref/1)
+
+  defp durable_parent_ref(%Root{}), do: nil
+  defp durable_parent_ref(%{name: name}), do: name
+  defp durable_parent_ref(parent), do: parent
+
   defp append_build_log(%__MODULE__{build_log: bl} = workflow, events) when is_list(events) do
     %__MODULE__{
       workflow
-      | build_log: bl ++ events
+      | build_log: Enum.reverse(events) ++ bl
     }
   end
 
-  defp append_build_log(%__MODULE__{} = workflow, component, %Root{} = parent) do
-    do_append_build_log(workflow, component, parent)
-  end
-
-  defp append_build_log(%__MODULE__{} = workflow, component, parents) when is_list(parents) do
-    Enum.reduce(parents, workflow, fn parent, wrk ->
-      append_build_log(wrk, component, parent)
-    end)
-  end
-
-  defp append_build_log(%__MODULE__{} = workflow, component, %{name: name}) do
-    do_append_build_log(workflow, component, name)
-  end
-
-  defp append_build_log(%__MODULE__{} = workflow, component, to) do
-    do_append_build_log(workflow, component, to)
-  end
+  defp append_build_log(%__MODULE__{} = workflow, component, parent),
+    do: do_append_build_log(workflow, component, durable_parent_ref(parent))
 
   defp do_append_build_log(%__MODULE__{build_log: bl} = workflow, component, parent) do
     # Use new closure field if available, otherwise fall back to old format
@@ -1187,10 +1157,44 @@ defmodule Runic.Workflow do
       rebuilt = Workflow.apply_events(Workflow.new(), events1 ++ events2)
   """
   def apply_events(%__MODULE__{} = wrk, events) when is_list(events) do
-    Enum.reduce(events, wrk, fn event, acc ->
+    events
+    |> normalize_legacy_component_groups()
+    |> Enum.reduce(wrk, fn event, acc ->
       apply_event(acc, event)
     end)
   end
+
+  defp normalize_legacy_component_groups(events) do
+    events
+    |> Enum.reduce([], fn event, reversed ->
+      case reversed do
+        [%ComponentAdded{} = previous | rest] ->
+          if legacy_group_member?(previous, event) do
+            grouped_to = Enum.uniq(List.wrap(previous.to) ++ List.wrap(event.to))
+            [%ComponentAdded{previous | to: grouped_to} | rest]
+          else
+            [event | reversed]
+          end
+
+        _ ->
+          [event | reversed]
+      end
+    end)
+    |> Enum.reverse()
+  end
+
+  defp legacy_group_member?(%ComponentAdded{} = previous, %ComponentAdded{} = event) do
+    not is_nil(previous.to) and not is_nil(event.to) and
+      component_event_identity(previous) == component_event_identity(event) and
+      event.to not in List.wrap(previous.to)
+  end
+
+  defp legacy_group_member?(_previous, _event), do: false
+
+  defp component_event_identity(%ComponentAdded{hash: hash}) when not is_nil(hash),
+    do: {:hash, hash}
+
+  defp component_event_identity(%ComponentAdded{name: name}), do: {:name, name}
 
   defp component_from_added(
          %ComponentAdded{source: source, bindings: bindings, closure: closure} = event
@@ -1262,6 +1266,12 @@ defmodule Runic.Workflow do
   @doc """
   Rebuilds a workflow from a list of `%ComponentAdded{}` and/or `%ReactionOccurred{}` events.
 
+  Multi-parent additions are stored as one `%ComponentAdded{to: parents}` event.
+  For compatibility with older logs, consecutive `ComponentAdded` events with
+  the same component hash (or name when no hash is present) are treated as one
+  grouped addition. Non-consecutive events remain independent construction
+  decisions.
+
   ## Examples
 
       require Runic
@@ -1276,7 +1286,9 @@ defmodule Runic.Workflow do
       # => [10]
   """
   def from_log(events) do
-    Enum.reduce(events, new(), fn
+    events
+    |> normalize_legacy_component_groups()
+    |> Enum.reduce(new(), fn
       %ComponentAdded{} = event, wrk ->
         component = component_from_added(event)
 
