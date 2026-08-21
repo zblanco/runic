@@ -228,6 +228,7 @@ defmodule Runic.Workflow do
   alias Runic.Workflow.ComponentAdded
   alias Runic.Workflow.Connection
   alias Runic.Workflow.InputBinding
+  alias Runic.Workflow.CallContract
   alias Runic.Workflow.ComponentRemoved
   alias Runic.Workflow.ReactionOccurred
   alias Runic.Workflow.Runnable
@@ -699,7 +700,7 @@ defmodule Runic.Workflow do
     resolved = Enum.map(connections, &resolve_connection!(workflow, &1))
 
     validate_connection_group!(component, resolved, opts)
-    validate_bound_invocation!(component)
+    validate_bound_call_contract!(component)
 
     source_nodes =
       resolved
@@ -975,32 +976,36 @@ defmodule Runic.Workflow do
     end
   end
 
-  defp validate_bound_invocation!(%Step{} = step) do
+  defp validate_bound_call_contract!(%Step{} = step) do
     input_count = length(Component.inputs(step))
-    arity = Components.arity_of(step.work)
+    contract = CallContract.for_step(step)
 
-    case {input_count, step.invocation} do
-      {count, :legacy} when count > 1 ->
+    case contract.style do
+      :zero_arity when input_count != 0 ->
         raise ArgumentError,
-              "port-bound step #{inspect(step.name)} has multiple inputs; declare invocation: :positional_inputs"
+              "port-bound zero-arity step #{inspect(step.name)} cannot declare input ports"
 
-      {count, :positional_inputs} when count != arity ->
+      :single_input when input_count != 1 ->
         raise ArgumentError,
-              "port-bound step #{inspect(step.name)} declares #{count} inputs but its positional work function has arity #{arity}"
+              "port-bound step #{inspect(step.name)} declares #{input_count} inputs but its work function accepts one input"
 
-      {count, :input_and_context} when count != 1 or arity != 2 ->
+      :positional when input_count != contract.authored_arity ->
         raise ArgumentError,
-              "port-bound step #{inspect(step.name)} using :input_and_context must declare one input and use an arity-2 work function"
+              "port-bound step #{inspect(step.name)} declares #{input_count} inputs but its work function accepts #{contract.authored_arity} positional inputs"
+
+      :input_and_context when input_count != 1 or contract.compiled_arity != 2 ->
+        raise ArgumentError,
+              "context-bound step #{inspect(step.name)} must declare one input and compile to an arity-2 work function"
 
       _ ->
         :ok
     end
   end
 
-  defp validate_bound_invocation!(component) do
+  defp validate_bound_call_contract!(component) do
     if length(Component.inputs(component)) > 1 do
       raise ArgumentError,
-            "multi-port lowering is currently supported only for Runic steps with invocation: :positional_inputs"
+            "multi-port lowering is currently supported only for Runic steps"
     end
   end
 

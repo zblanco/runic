@@ -7,6 +7,7 @@ defmodule Runic.Workflow.NamedConnectionTest do
 
   alias Runic.Workflow.{
     ComponentAdded,
+    CallContract,
     Connection,
     Fact,
     InputBinding,
@@ -43,8 +44,9 @@ defmodule Runic.Workflow.NamedConnectionTest do
           ]
         )
 
-      assert Workflow.raw_productions(Workflow.react_until_satisfied(workflow, 5), :consumer) ==
-               [21]
+      executed = Workflow.react_until_satisfied(workflow, 5)
+
+      assert Workflow.raw_productions(executed, :consumer) == [21]
 
       refute Enum.any?(Multigraph.vertices(workflow.graph), &match?(%Join{}, &1))
 
@@ -58,8 +60,22 @@ defmodule Runic.Workflow.NamedConnectionTest do
              ] =
                Multigraph.edges(workflow.graph, by: :connects_to)
 
-      assert [%{v2: %InputBinding{}, properties: %{kind: :input_binding}}] =
+      assert [%{v2: %InputBinding{} = binding, properties: %{kind: :input_binding}}] =
                Multigraph.out_edges(workflow.graph, consumer, by: :compiled_for)
+
+      assert [%{v2: %Fact{} = bound_fact}] =
+               Multigraph.out_edges(executed.graph, binding, by: :produced)
+
+      assert {:ok, runnable} = Invokable.prepare(consumer, executed, bound_fact)
+
+      assert [
+               %{
+                 id: "score-binding",
+                 source_port: :payload,
+                 target_port: :score,
+                 selector: [:score]
+               }
+             ] = runnable.invocation.bindings.sources
     end
 
     test "assembles multiple sources in target port order, independent of declaration order" do
@@ -108,8 +124,7 @@ defmodule Runic.Workflow.NamedConnectionTest do
       consumer =
         Runic.step(fn left, right -> left + right end,
           name: :consumer,
-          inputs: [left: [type: :integer], right: [type: :integer]],
-          invocation: :positional_inputs
+          inputs: [left: [type: :integer], right: [type: :integer]]
         )
 
       workflow =
@@ -296,8 +311,7 @@ defmodule Runic.Workflow.NamedConnectionTest do
       consumer =
         Runic.step(fn left, right -> {left, right} end,
           name: :consumer,
-          inputs: [left: [type: :any], right: [type: :any]],
-          invocation: :positional_inputs
+          inputs: [left: [type: :any], right: [type: :any]]
         )
 
       workflow = Workflow.new() |> Workflow.add(producer)
@@ -324,36 +338,44 @@ defmodule Runic.Workflow.NamedConnectionTest do
       end
     end
 
-    test "requires explicit positional invocation for bound multi-input steps" do
+    test "compiles bound multi-input steps as positional without a user invocation option" do
       left = Runic.step(fn input -> input end, name: :left)
       right = Runic.step(fn input -> input end, name: :right)
 
-      ambiguous =
+      sum =
         Runic.step(fn left, right -> left + right end,
-          name: :ambiguous,
+          name: :sum,
           inputs: [left: [type: :any], right: [type: :any]]
         )
 
-      workflow = Workflow.new() |> Workflow.add(left) |> Workflow.add(right)
-
-      assert_raise ArgumentError, ~r/declare invocation: :positional_inputs/, fn ->
-        Workflow.add(workflow, ambiguous,
+      workflow =
+        Workflow.new()
+        |> Workflow.add(left)
+        |> Workflow.add(right)
+        |> Workflow.add(sum,
           connections: [
             [from: {:left, :out}, to: :left],
             [from: {:right, :out}, to: :right]
           ]
         )
-      end
+        |> Workflow.put_run_context(%{_global: %{request_id: "request-1"}})
+
+      refute Map.has_key?(sum, :invocation)
+      assert %CallContract{style: :positional, input_order: [:left, :right]} = sum.call_contract
+
+      assert workflow
+             |> Workflow.react_until_satisfied(5)
+             |> Workflow.raw_productions(:sum) == [10]
     end
 
-    test "input_and_context is explicit and receives runtime context" do
+    test "context/1 compiles input-and-context calling without a user invocation option" do
       producer = Runic.step(fn input -> input + 1 end, name: :producer)
 
       consumer =
-        Runic.step(fn input, context -> input + Map.fetch!(context, :offset) end,
-          name: :consumer,
-          invocation: :input_and_context
-        )
+        Runic.step(fn input -> input + context(:offset) end, name: :consumer)
+
+      assert %CallContract{style: :input_and_context, input_order: [:in]} =
+               consumer.call_contract
 
       workflow =
         Workflow.new()
@@ -509,8 +531,7 @@ defmodule Runic.Workflow.NamedConnectionTest do
     sum =
       Runic.step(fn left_value, right_value -> left_value + right_value end,
         name: :sum,
-        inputs: [left: [type: :integer], right: [type: :integer]],
-        invocation: :positional_inputs
+        inputs: [left: [type: :integer], right: [type: :integer]]
       )
 
     Workflow.new()

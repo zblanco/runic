@@ -15,10 +15,11 @@ defmodule Runic.Workflow.Runnable do
   - The node to invoke
   - The input fact triggering invocation
   - Minimal causal context (no full workflow reference)
+  - A prepared, data-only invocation envelope when the node has a call contract
   - After execution: result, status, and events for reducing into workflow
   """
 
-  alias Runic.Workflow.{Fact, CausalContext}
+  alias Runic.Workflow.{Fact, CausalContext, Invocation}
 
   @type status :: :pending | :completed | :failed | :skipped
 
@@ -27,6 +28,7 @@ defmodule Runic.Workflow.Runnable do
           node: struct(),
           input_fact: Fact.t(),
           context: CausalContext.t() | nil,
+          invocation: map() | nil,
           status: status(),
           result: term() | nil,
           events: [struct()] | nil,
@@ -39,6 +41,7 @@ defmodule Runic.Workflow.Runnable do
     :node,
     :input_fact,
     :context,
+    :invocation,
     :status,
     :result,
     :events,
@@ -74,6 +77,12 @@ defmodule Runic.Workflow.Runnable do
       context: context,
       status: :pending
     }
+  end
+
+  @doc false
+  @spec with_invocation(t(), Invocation.t()) :: t()
+  def with_invocation(%__MODULE__{} = runnable, %Invocation{} = invocation) do
+    %{runnable | invocation: invocation}
   end
 
   @doc """

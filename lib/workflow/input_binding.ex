@@ -77,6 +77,24 @@ defmodule Runic.Workflow.InputBinding do
     end
   end
 
+  @doc false
+  @spec fact_meta(t()) :: map()
+  def fact_meta(%__MODULE__{} = binding) do
+    sources =
+      Enum.map(binding.bindings, fn source_binding ->
+        Map.take(source_binding, [
+          :id,
+          :source_hash,
+          :source_port,
+          :target_port,
+          :selector,
+          :target_path
+        ])
+      end)
+
+    %{runic: %{input_bindings: sources}}
+  end
+
   defp source_values([source_hash], input), do: %{source_hash => input}
 
   defp source_values(source_order, input) when is_list(input) do
