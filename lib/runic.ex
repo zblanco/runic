@@ -162,6 +162,7 @@ defmodule Runic do
           work_hash: unquote(work_hash),
           inputs: nil,
           outputs: nil,
+          invocation: :legacy,
           meta_refs: unquote(escaped_meta_refs)
         )
       end
@@ -185,6 +186,7 @@ defmodule Runic do
           work_hash: work_hash,
           inputs: nil,
           outputs: nil,
+          invocation: :legacy,
           meta_refs: unquote(escaped_meta_refs)
         )
       end
@@ -212,7 +214,8 @@ defmodule Runic do
         hash: unquote(step_hash),
         work_hash: unquote(work_hash),
         inputs: nil,
-        outputs: nil
+        outputs: nil,
+        invocation: :legacy
       )
     end
   end
@@ -262,6 +265,7 @@ defmodule Runic do
           work_hash: unquote(work_hash),
           inputs: unquote(rewritten_opts[:inputs]),
           outputs: unquote(rewritten_opts[:outputs]),
+          invocation: unquote(rewritten_opts[:invocation] || :legacy),
           meta_refs: unquote(escaped_meta_refs)
         )
       end
@@ -291,6 +295,7 @@ defmodule Runic do
           work_hash: work_hash,
           inputs: unquote(rewritten_opts[:inputs]),
           outputs: unquote(rewritten_opts[:outputs]),
+          invocation: unquote(rewritten_opts[:invocation] || :legacy),
           meta_refs: unquote(escaped_meta_refs)
         )
       end
@@ -343,6 +348,7 @@ defmodule Runic do
           work_hash: unquote(work_hash),
           inputs: unquote(rewritten_opts[:inputs]),
           outputs: unquote(rewritten_opts[:outputs]),
+          invocation: unquote(rewritten_opts[:invocation] || :legacy),
           meta_refs: unquote(escaped_meta_refs)
         )
       end
@@ -372,6 +378,7 @@ defmodule Runic do
           work_hash: work_hash,
           inputs: unquote(rewritten_opts[:inputs]),
           outputs: unquote(rewritten_opts[:outputs]),
+          invocation: unquote(rewritten_opts[:invocation] || :legacy),
           meta_refs: unquote(escaped_meta_refs)
         )
       end

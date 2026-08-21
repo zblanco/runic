@@ -451,6 +451,16 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Step do
     arity = Components.arity_of(step.work)
 
     cond do
+      step.invocation == :positional_inputs ->
+        Components.run(step.work, input, arity)
+
+      step.invocation == :input_and_context and arity == 2 ->
+        step.work.(input, effective_context)
+
+      step.invocation == :input_and_context ->
+        raise ArgumentError,
+              "step #{inspect(step.name)} uses :input_and_context but its work function has arity #{arity}"
+
       effective_context != %{} and arity >= 2 ->
         step.work.(input, effective_context)
 
@@ -647,6 +657,64 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Step do
   # def runnable_connection(_step), do: :runnable
   # def resolved_connection(_step), do: :ran
   # def causal_connection(_step), do: :produced
+end
+
+defimpl Runic.Workflow.Invokable, for: Runic.Workflow.InputBinding do
+  alias Runic.Workflow
+
+  alias Runic.Workflow.{CausalContext, Fact, InputBinding, Runnable}
+  alias Runic.Workflow.Events.{ActivationConsumed, FactProduced}
+
+  def match_or_execute(_binding), do: :execute
+
+  def invoke(%InputBinding{} = binding, %Workflow{} = workflow, %Fact{} = fact) do
+    result = InputBinding.bind(binding, fact.value)
+    result_fact = Fact.new(value: result, ancestry: {binding.hash, fact.hash})
+    causal_depth = Workflow.ancestry_depth(workflow, fact) + 1
+
+    workflow
+    |> Workflow.log_fact(result_fact)
+    |> Workflow.draw_connection(binding, result_fact, :produced, weight: causal_depth)
+    |> Workflow.mark_runnable_as_ran(binding, fact)
+    |> Workflow.prepare_next_runnables(binding, result_fact)
+  end
+
+  def prepare(%InputBinding{} = binding, %Workflow{} = workflow, %Fact{} = fact) do
+    context =
+      CausalContext.new(
+        node_hash: binding.hash,
+        input_fact: fact,
+        ancestry_depth: Workflow.ancestry_depth(workflow, fact)
+      )
+
+    {:ok, Runnable.new(binding, fact, context)}
+  end
+
+  def execute(%InputBinding{} = binding, %Runnable{input_fact: fact, context: ctx} = runnable) do
+    try do
+      result = InputBinding.bind(binding, fact.value)
+      result_fact = Fact.new(value: result, ancestry: {binding.hash, fact.hash})
+
+      events = [
+        %FactProduced{
+          hash: result_fact.hash,
+          value: result_fact.value,
+          ancestry: result_fact.ancestry,
+          producer_label: :produced,
+          weight: ctx.ancestry_depth + 1
+        },
+        %ActivationConsumed{
+          fact_hash: fact.hash,
+          node_hash: binding.hash,
+          from_label: :runnable
+        }
+      ]
+
+      Runnable.complete(runnable, result_fact, events)
+    rescue
+      error -> Runnable.fail(runnable, error)
+    end
+  end
 end
 
 defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Conjunction do

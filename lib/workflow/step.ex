@@ -24,6 +24,23 @@ defmodule Runic.Workflow.Step do
   When `context/1` is detected, the step's work function is rewritten to arity-2
   `(input, meta_ctx)` and `meta_refs` are populated with `kind: :context` entries.
   Values are resolved from the workflow's `run_context` during the prepare phase.
+
+  ## Explicit Invocation
+
+  An arity-2 function is otherwise ambiguous when a step may receive either two
+  joined inputs or `(input, runtime_context)`. Named multi-port connections
+  therefore require an explicit invocation mode:
+
+      Runic.step(fn left, right -> left + right end,
+        inputs: [left: [type: :integer], right: [type: :integer]],
+        invocation: :positional_inputs
+      )
+
+      Runic.step(fn input, context -> call_service(input, context) end,
+        invocation: :input_and_context
+      )
+
+  Existing steps default to `:legacy`, preserving the prior inference behavior.
   """
 
   alias Runic.Workflow.Step
@@ -46,6 +63,7 @@ defmodule Runic.Workflow.Step do
           closure: Closure.t() | nil,
           inputs: term(),
           outputs: term(),
+          invocation: :legacy | :positional_inputs | :input_and_context,
           meta_refs: list(meta_ref())
         }
 
@@ -57,13 +75,16 @@ defmodule Runic.Workflow.Step do
     :closure,
     :inputs,
     :outputs,
+    invocation: :legacy,
     meta_refs: []
   ]
 
   def new(params) do
     params_map = if Keyword.keyword?(params), do: Map.new(params), else: params
 
-    struct!(__MODULE__, params_map)
+    __MODULE__
+    |> struct!(params_map)
+    |> validate_invocation!()
     |> maybe_hash_work()
     |> maybe_set_name()
   end
@@ -113,5 +134,14 @@ defmodule Runic.Workflow.Step do
       1 -> work.(input)
       0 -> work.()
     end
+  end
+
+  defp validate_invocation!(%__MODULE__{invocation: invocation} = step)
+       when invocation in [:legacy, :positional_inputs, :input_and_context],
+       do: step
+
+  defp validate_invocation!(%__MODULE__{invocation: invocation}) do
+    raise ArgumentError,
+          ":invocation must be :legacy, :positional_inputs, or :input_and_context, got: #{inspect(invocation)}"
   end
 end

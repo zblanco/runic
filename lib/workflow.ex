@@ -226,6 +226,8 @@ defmodule Runic.Workflow do
   alias Runic.Workflow.Join
   alias Runic.Workflow.Invokable
   alias Runic.Workflow.ComponentAdded
+  alias Runic.Workflow.Connection
+  alias Runic.Workflow.InputBinding
   alias Runic.Workflow.ComponentRemoved
   alias Runic.Workflow.ReactionOccurred
   alias Runic.Workflow.Runnable
@@ -625,8 +627,38 @@ defmodule Runic.Workflow do
 
   Untyped components (all ports default to `type: :any`) always pass validation,
   preserving Runic's gradual typing philosophy.
+
+  ## Named Port Connections
+
+  Use `:connections` when multiple producers supply distinct target inputs or
+  when a safe value path must be selected:
+
+      Workflow.add(workflow, score,
+        connections: [
+          [from: {:order_source, :order}, to: :order],
+          [from: {:customer_source, :customer}, to: :customer]
+        ]
+      )
+
+  `:connections` and `:to` are mutually exclusive. Connections are validated as
+  one target assignment, retained on logical `:connects_to` edges, and lowered
+  through an internal `InputBinding` plus the existing `Join` when necessary.
+  Generated binding nodes are linked with `:compiled_for`; they are not
+  registered as authored components.
+
+  A single declared source output port names the complete produced value. With
+  multiple declared outputs, the runtime value must expose the port by map or
+  keyword key, or by tuple/list position. `:selector` and `:target_path` accept
+  only atom, string, and non-negative integer path segments.
   """
   def add(%__MODULE__{} = workflow, component, opts \\ []) do
+    case Keyword.fetch(opts, :connections) do
+      {:ok, connections} -> add_with_connections(workflow, component, connections, opts)
+      :error -> add_to_parent(workflow, component, opts)
+    end
+  end
+
+  defp add_to_parent(%__MODULE__{} = workflow, component, opts) do
     case opts[:to] do
       nil ->
         # If no parent is specified, we assume the component is a root step
@@ -654,6 +686,321 @@ defmodule Runic.Workflow do
         parent_steps = Enum.map(parent_steps, &get_component!(workflow, &1))
 
         do_add_component(workflow, component, parent_steps, opts)
+    end
+  end
+
+  defp add_with_connections(workflow, component, connection_specs, opts) do
+    if Keyword.has_key?(opts, :to) do
+      raise ArgumentError, ":connections and :to are mutually exclusive"
+    end
+
+    component = ensure_component(component)
+    connections = Connection.normalize_all!(connection_specs, component)
+    resolved = Enum.map(connections, &resolve_connection!(workflow, &1))
+
+    validate_connection_group!(component, resolved, opts)
+    validate_bound_invocation!(component)
+
+    source_nodes =
+      resolved
+      |> Enum.map(& &1.source_node)
+      |> Enum.uniq_by(&Components.vertex_id_of/1)
+
+    source_order = Enum.map(source_nodes, &Components.vertex_id_of/1)
+
+    bindings =
+      Enum.map(resolved, fn resolved_connection ->
+        connection = resolved_connection.connection
+
+        %{
+          id: connection.id,
+          source_hash: Components.vertex_id_of(resolved_connection.source_node),
+          source_port: connection.source_port,
+          source_port_index: resolved_connection.source_port_index,
+          source_port_count: length(resolved_connection.source_outputs),
+          target_port: connection.target_port,
+          selector: connection.selector,
+          target_path: connection.target_path
+        }
+      end)
+
+    input_binding =
+      InputBinding.new(
+        target_component_hash: Component.hash(component),
+        source_order: source_order,
+        bindings: bindings,
+        input_ports: Component.inputs(component)
+      )
+
+    {workflow, binding_parent} = connect_binding_sources(workflow, source_nodes)
+
+    workflow =
+      workflow
+      |> add_step(binding_parent, input_binding)
+      |> then(&Component.connect(component, input_binding, &1))
+      |> draw_connection(component, input_binding, :compiled_for,
+        properties: %{
+          kind: :input_binding,
+          connection_ids: Enum.map(connections, & &1.id)
+        }
+      )
+      |> draw_logical_connections(component, resolved)
+
+    if Keyword.get(opts, :log, true) do
+      append_build_log(workflow, build_events(component, nil, connections))
+    else
+      workflow
+    end
+  end
+
+  defp ensure_component(%{__struct__: _} = component) do
+    if Components.component?(component), do: component, else: transmute_component!(component)
+  end
+
+  defp ensure_component(component), do: transmute_component!(component)
+
+  defp resolve_connection!(workflow, %Connection{} = connection) do
+    source_component = resolve_component_ref!(workflow, connection.source)
+    source_outputs = Component.outputs(source_component)
+
+    source_port_index =
+      Enum.find_index(source_outputs, fn {port_name, _schema} ->
+        port_name == connection.source_port
+      end)
+
+    if is_nil(source_port_index) do
+      raise ArgumentError,
+            "component #{inspect(component_name(source_component))} has no output port #{inspect(connection.source_port)}"
+    end
+
+    %{
+      connection: connection,
+      source_component: source_component,
+      source_node: output_node!(workflow, source_component),
+      source_outputs: source_outputs,
+      source_port_index: source_port_index
+    }
+  end
+
+  defp resolve_component_ref!(_workflow, %{__struct__: _} = component), do: component
+
+  defp resolve_component_ref!(workflow, hash) when is_integer(hash) do
+    case get_by_hash(workflow, hash) do
+      nil -> raise KeyError, message: "No component found with hash #{inspect(hash)}"
+      component -> component
+    end
+  end
+
+  defp resolve_component_ref!(workflow, {name, kind}) do
+    workflow
+    |> get_component!({name, kind})
+    |> List.first()
+  end
+
+  defp resolve_component_ref!(workflow, name), do: get_component!(workflow, name)
+
+  defp output_node!(workflow, %Rule{} = rule) do
+    Map.fetch!(workflow.graph.vertices, rule.reaction_hash)
+  end
+
+  defp output_node!(workflow, %Runic.Workflow.Map{name: name}) do
+    case get_component!(workflow, {name, :leaf}) do
+      [leaf] ->
+        leaf
+
+      leaves ->
+        raise ArgumentError,
+              "map #{inspect(name)} has #{length(leaves)} leaf nodes; its output port cannot be lowered unambiguously"
+    end
+  end
+
+  defp output_node!(_workflow, %Runic.Workflow.Reduce{fan_in: fan_in}), do: fan_in
+
+  defp output_node!(workflow, component) do
+    if Components.invokable?(component) do
+      component
+    else
+      output_node_from_ownership!(workflow, component)
+    end
+  end
+
+  defp output_node_from_ownership!(workflow, component) do
+    preferred_kinds = [:reaction, :leaf, :fan_in, :accumulator, :step]
+
+    edges =
+      workflow.graph
+      |> Multigraph.out_edges(component, by: :component_of)
+      |> Enum.sort_by(fn edge ->
+        Enum.find_index(preferred_kinds, &(&1 == edge.properties[:kind])) ||
+          length(preferred_kinds)
+      end)
+
+    case edges do
+      [%{v2: node}] ->
+        node
+
+      [] ->
+        raise ArgumentError,
+              "cannot determine output node for #{inspect(component_name(component))}"
+
+      [%{v2: node} = first | rest] ->
+        kind = first.properties[:kind]
+
+        if Enum.any?(rest, &(&1.properties[:kind] == kind)) do
+          raise ArgumentError,
+                "component #{inspect(component_name(component))} has multiple #{inspect(kind)} output nodes"
+        else
+          node
+        end
+    end
+  end
+
+  defp connect_binding_sources(workflow, [source_node]), do: {workflow, source_node}
+
+  defp connect_binding_sources(workflow, source_nodes) do
+    join = source_nodes |> Enum.map(&Components.vertex_id_of/1) |> Join.new()
+    {add_step(workflow, source_nodes, join), join}
+  end
+
+  defp draw_logical_connections(workflow, component, resolved) do
+    resolved
+    |> Enum.group_by(&Component.hash(&1.source_component))
+    |> Enum.reduce(workflow, fn {_source_hash, source_connections}, wrk ->
+      source_component = source_connections |> List.first() |> Map.fetch!(:source_component)
+      connections = Enum.map(source_connections, & &1.connection)
+
+      draw_connection(wrk, source_component, component, :connects_to,
+        properties: %{kind: :port_binding, connections: connections}
+      )
+    end)
+  end
+
+  defp validate_connection_group!(component, resolved, opts) do
+    inputs = Component.inputs(component)
+
+    Enum.each(resolved, fn %{connection: connection, source_component: producer} ->
+      target_schema = Keyword.get(inputs, connection.target_port)
+
+      if is_nil(target_schema) do
+        raise ArgumentError,
+              "component #{inspect(component_name(component))} has no input port #{inspect(connection.target_port)}"
+      end
+
+      source_schema = Keyword.fetch!(Component.outputs(producer), connection.source_port)
+
+      validate_connection_types!(
+        producer,
+        component,
+        source_schema,
+        target_schema,
+        connection,
+        opts
+      )
+    end)
+
+    assigned_ports = resolved |> Enum.map(& &1.connection.target_port) |> MapSet.new()
+
+    missing_ports =
+      inputs
+      |> Enum.filter(fn {_port, schema} -> Keyword.get(schema, :required, true) end)
+      |> Enum.map(&elem(&1, 0))
+      |> Enum.reject(&MapSet.member?(assigned_ports, &1))
+
+    if missing_ports != [] do
+      raise ArgumentError,
+            "component #{inspect(component_name(component))} has unassigned required input ports: #{inspect(missing_ports)}"
+    end
+
+    validate_target_paths!(resolved)
+  end
+
+  defp validate_target_paths!(resolved) do
+    resolved
+    |> Enum.group_by(& &1.connection.target_port)
+    |> Enum.each(fn {port, port_connections} ->
+      indexed_connections = Enum.with_index(port_connections)
+
+      for {left, left_index} <- indexed_connections,
+          {right, right_index} <- indexed_connections,
+          left_index < right_index,
+          paths_overlap?(left.connection.target_path, right.connection.target_path) do
+        raise ArgumentError,
+              "target port #{inspect(port)} has overlapping assignments at #{inspect(left.connection.target_path)} and #{inspect(right.connection.target_path)}"
+      end
+    end)
+  end
+
+  defp paths_overlap?([], _path), do: true
+  defp paths_overlap?(_path, []), do: true
+
+  defp paths_overlap?(left, right) do
+    prefix_length = min(length(left), length(right))
+    Enum.take(left, prefix_length) == Enum.take(right, prefix_length)
+  end
+
+  defp validate_connection_types!(
+         producer,
+         consumer,
+         source_schema,
+         target_schema,
+         connection,
+         opts
+       ) do
+    validation = Keyword.get(opts, :validate, :error)
+    producer_type = Keyword.get(source_schema, :type, :any)
+    consumer_type = Keyword.get(target_schema, :type, :any)
+
+    routed? = connection.selector != [] or connection.target_path != []
+
+    compatible? =
+      routed? or Component.TypeCompatibility.types_compatible?(producer_type, consumer_type)
+
+    case {validation, compatible?} do
+      {:off, _} ->
+        :ok
+
+      {_, true} ->
+        :ok
+
+      {:warn, false} ->
+        Logger.warning(
+          "Port incompatibility connecting #{inspect(component_name(consumer))}.#{connection.target_port} to #{inspect(component_name(producer))}.#{connection.source_port}: #{inspect({producer_type, consumer_type})}"
+        )
+
+      {:error, false} ->
+        raise Runic.IncompatiblePortError,
+          producer: producer,
+          consumer: consumer,
+          reasons: [{:type_mismatch, producer_type, consumer_type}]
+    end
+  end
+
+  defp validate_bound_invocation!(%Step{} = step) do
+    input_count = length(Component.inputs(step))
+    arity = Components.arity_of(step.work)
+
+    case {input_count, step.invocation} do
+      {count, :legacy} when count > 1 ->
+        raise ArgumentError,
+              "port-bound step #{inspect(step.name)} has multiple inputs; declare invocation: :positional_inputs"
+
+      {count, :positional_inputs} when count != arity ->
+        raise ArgumentError,
+              "port-bound step #{inspect(step.name)} declares #{count} inputs but its positional work function has arity #{arity}"
+
+      {count, :input_and_context} when count != 1 or arity != 2 ->
+        raise ArgumentError,
+              "port-bound step #{inspect(step.name)} using :input_and_context must declare one input and use an arity-2 work function"
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp validate_bound_invocation!(component) do
+    if length(Component.inputs(component)) > 1 do
+      raise ArgumentError,
+            "multi-port lowering is currently supported only for Runic steps with invocation: :positional_inputs"
     end
   end
 
@@ -806,7 +1153,14 @@ defmodule Runic.Workflow do
   """
   def add_with_events(%__MODULE__{} = workflow, component, opts \\ []) do
     to = opts[:to]
-    events = build_events(component, to)
+
+    connections =
+      case Keyword.fetch(opts, :connections) do
+        {:ok, connection_specs} -> Connection.normalize_all!(connection_specs, component)
+        :error -> nil
+      end
+
+    events = build_events(component, to, connections)
 
     workflow =
       workflow
@@ -816,7 +1170,7 @@ defmodule Runic.Workflow do
     {workflow, events}
   end
 
-  defp build_events(component, parent) do
+  defp build_events(component, parent, connections) do
     closure = Map.get(component, :closure)
 
     [
@@ -824,6 +1178,7 @@ defmodule Runic.Workflow do
         closure: closure,
         name: component.name,
         to: durable_parent_ref(parent),
+        connections: connections,
         hash: Map.get(component, :hash),
         # Backward compatibility: also set source/bindings for old deserialization
         source: Component.source(component),
@@ -920,7 +1275,7 @@ defmodule Runic.Workflow do
   def apply_event(%__MODULE__{} = wrk, %ComponentAdded{} = event) do
     component = component_from_added(event)
 
-    add(wrk, component, to: event.to)
+    add_component_event(wrk, component, event)
   end
 
   def apply_event(%__MODULE__{} = wf, %FactProduced{} = e) do
@@ -1185,6 +1540,7 @@ defmodule Runic.Workflow do
 
   defp legacy_group_member?(%ComponentAdded{} = previous, %ComponentAdded{} = event) do
     not is_nil(previous.to) and not is_nil(event.to) and
+      is_nil(Map.get(previous, :connections)) and is_nil(Map.get(event, :connections)) and
       component_event_identity(previous) == component_event_identity(event) and
       event.to not in List.wrap(previous.to)
   end
@@ -1195,6 +1551,16 @@ defmodule Runic.Workflow do
     do: {:hash, hash}
 
   defp component_event_identity(%ComponentAdded{name: name}), do: {:name, name}
+
+  defp add_component_event(workflow, component, %ComponentAdded{} = event) do
+    case Map.get(event, :connections) do
+      connections when is_list(connections) and connections != [] ->
+        add(workflow, component, connections: connections)
+
+      _ ->
+        add(workflow, component, to: event.to)
+    end
+  end
 
   defp component_from_added(
          %ComponentAdded{source: source, bindings: bindings, closure: closure} = event
@@ -1292,8 +1658,7 @@ defmodule Runic.Workflow do
       %ComponentAdded{} = event, wrk ->
         component = component_from_added(event)
 
-        # Add the component to the workflow
-        add(wrk, component, to: event.to)
+        add_component_event(wrk, component, event)
 
       %ReactionOccurred{reaction: :generation}, wrk ->
         # Skip legacy generation edges - generation counters removed
@@ -1567,16 +1932,56 @@ defmodule Runic.Workflow do
 
     component_edges = Multigraph.edges(g, by: :connects_to)
 
-    Enum.reduce(component_edges, Multigraph.new(type: :directed), fn edge, cg ->
+    projected_graph =
+      Multigraph.new(
+        type: :directed,
+        multigraph: true,
+        vertex_identifier: &Components.vertex_id_of/1
+      )
+
+    Enum.reduce(component_edges, projected_graph, fn %Multigraph.Edge{} = edge, cg ->
       v1 = Map.get(component_vertices, edge.v1.hash, edge.v1)
       v2 = Map.get(component_vertices, edge.v2.hash, edge.v2)
-      Multigraph.add_edge(cg, v1, v2, label: :connects_to)
+      Multigraph.add_edge(cg, %Multigraph.Edge{edge | v1: v1, v2: v2})
     end)
     |> then(fn cg ->
       # Ensure all registered components appear as vertices, even if unconnected
       Enum.reduce(component_vertices, cg, fn {_hash, vertex}, acc ->
         if vertex, do: Multigraph.add_vertex(acc, vertex), else: acc
       end)
+    end)
+  end
+
+  @doc """
+  Returns the authored component graph.
+
+  This is the preferred name for `connected_components/1`. Logical
+  `:connects_to` edge properties, including named port connections, are
+  preserved in the projection.
+  """
+  @spec component_graph(t()) :: Multigraph.t()
+  def component_graph(%__MODULE__{} = workflow), do: connected_components(workflow)
+
+  @doc """
+  Returns the compiled executable graph containing `:flow` and `:fan_in` edges.
+
+  Authored `:connects_to` declarations and runtime fact history are excluded.
+  Generated `InputBinding` and `Join` nodes remain visible because they are
+  scheduler-visible invokables.
+  """
+  @spec flow_graph(t()) :: Multigraph.t()
+  def flow_graph(%__MODULE__{graph: graph}) do
+    projected_graph =
+      Multigraph.new(
+        type: :directed,
+        multigraph: true,
+        vertex_identifier: &Components.vertex_id_of/1
+      )
+
+    graph
+    |> Multigraph.edges(by: [:flow, :fan_in])
+    |> Enum.reduce(projected_graph, fn edge, projected ->
+      Multigraph.add_edge(projected, edge)
     end)
   end
 

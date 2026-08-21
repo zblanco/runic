@@ -13,6 +13,7 @@ defmodule Runic.Workflow.ComponentAdded do
           source: term() | nil,
           bindings: map(),
           to: term(),
+          connections: list(Runic.Workflow.Connection.t()) | nil,
           hash: term()
         }
 
@@ -23,6 +24,7 @@ defmodule Runic.Workflow.ComponentAdded do
     :source,
     :bindings,
     :to,
+    :connections,
     :hash
   ]
 
