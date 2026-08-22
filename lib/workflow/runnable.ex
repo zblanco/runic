@@ -29,7 +29,7 @@ defmodule Runic.Workflow.Runnable do
           node: struct(),
           input_fact: Fact.t(),
           context: CausalContext.t() | nil,
-          invocation: Plan.t() | nil,
+          invocation: map() | nil,
           status: status(),
           result: term() | nil,
           events: [struct()] | nil,
