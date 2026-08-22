@@ -1310,11 +1310,13 @@ defmodule Runic.Workflow do
         name: component.name,
         to: durable_parent_ref(parent),
         connections: connections,
+        input_ports: declared_ports(component, :inputs),
+        output_ports: declared_ports(component, :outputs),
         workflow_definition: workflow_definition,
         hash: Map.get(component, :hash),
         # Backward compatibility: also set source/bindings for old deserialization
         source: if(workflow_definition, do: nil, else: Component.source(component)),
-        bindings: if(closure, do: closure.bindings, else: %{})
+        bindings: if(closure, do: closure.bindings, else: Map.get(component, :bindings, %{}))
       }
     ]
   end
@@ -1324,6 +1326,12 @@ defmodule Runic.Workflow do
   end
 
   defp workflow_definition(_component), do: nil
+
+  defp declared_ports(component, field) when is_map(component) do
+    if Map.has_key?(component, field), do: Map.get(component, field)
+  end
+
+  defp declared_ports(_component, _field), do: nil
 
   defp workflow_boundary?(%__MODULE__{input_ports: input_ports, output_ports: output_ports}),
     do: not is_nil(input_ports) or not is_nil(output_ports)
@@ -1348,31 +1356,7 @@ defmodule Runic.Workflow do
     do: do_append_build_log(workflow, component, durable_parent_ref(parent))
 
   defp do_append_build_log(%__MODULE__{build_log: bl} = workflow, component, parent) do
-    # Use new closure field if available, otherwise fall back to old format
-    event =
-      case Map.get(component, :closure) do
-        %Closure{} = closure ->
-          %ComponentAdded{
-            closure: closure,
-            name: component.name,
-            to: parent,
-            hash: Map.get(component, :hash)
-          }
-
-        nil ->
-          workflow_definition = workflow_definition(component)
-
-          # Backward compatibility: non-workflow components without a closure
-          # continue to use the old source + bindings format.
-          %ComponentAdded{
-            source: if(workflow_definition, do: nil, else: Component.source(component)),
-            name: component.name,
-            to: parent,
-            workflow_definition: workflow_definition,
-            hash: Map.get(component, :hash),
-            bindings: Map.get(component, :bindings, %{})
-          }
-      end
+    [event] = build_events(component, parent, nil)
 
     %__MODULE__{
       workflow
@@ -1736,6 +1720,7 @@ defmodule Runic.Workflow do
     component =
       component
       |> Map.put(:name, event.name)
+      |> restore_declared_ports(event)
 
     # Restore original hash if stored — ensures hash stability across rebuilds
     if event.hash do
@@ -1743,6 +1728,18 @@ defmodule Runic.Workflow do
     else
       component
     end
+  end
+
+  defp restore_declared_ports(component, event) do
+    component
+    |> restore_declared_port(:inputs, Map.get(event, :input_ports))
+    |> restore_declared_port(:outputs, Map.get(event, :output_ports))
+  end
+
+  defp restore_declared_port(component, _field, nil), do: component
+
+  defp restore_declared_port(component, field, ports) do
+    if Map.has_key?(component, field), do: Map.put(component, field, ports), else: component
   end
 
   # Backward compatibility: evaluate source with old __caller_context__ approach

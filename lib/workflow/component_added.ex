@@ -4,6 +4,8 @@ defmodule Runic.Workflow.ComponentAdded do
 
   Executable components use `closure`; nested workflows use a versioned
   `workflow_definition` that retains their boundary ports and child build log.
+  `input_ports` and `output_ports` retain contracts applied outside the source
+  expression that originally constructed an executable component.
   The `source` and `bindings` fields remain as a compatibility path for older
   component events.
   """
@@ -19,6 +21,8 @@ defmodule Runic.Workflow.ComponentAdded do
           bindings: map(),
           to: term(),
           connections: list(Runic.Workflow.Connection.t()) | nil,
+          input_ports: keyword() | nil,
+          output_ports: keyword() | nil,
           workflow_definition: Runic.Workflow.Definition.t() | nil,
           hash: term()
         }
@@ -31,6 +35,8 @@ defmodule Runic.Workflow.ComponentAdded do
     :bindings,
     :to,
     :connections,
+    :input_ports,
+    :output_ports,
     :workflow_definition,
     :hash
   ]

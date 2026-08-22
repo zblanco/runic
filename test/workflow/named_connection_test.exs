@@ -230,6 +230,35 @@ defmodule Runic.Workflow.NamedConnectionTest do
       end
     end
 
+    test "replay preserves port contracts applied after component construction" do
+      producer =
+        Runic.step(fn input -> input + 1 end, name: :producer)
+        |> Map.put(:outputs, value: [type: :integer])
+
+      consumer =
+        Runic.step(fn input -> input * 2 end, name: :consumer)
+        |> Map.put(:inputs, value: [type: :integer])
+
+      original =
+        Workflow.new()
+        |> Workflow.add(producer)
+        |> Workflow.add(consumer,
+          connections: [[from: {:producer, :value}, to: :value]]
+        )
+
+      [producer_event, consumer_event] = Workflow.build_log(original)
+      assert producer_event.output_ports == [value: [type: :integer]]
+      assert consumer_event.input_ports == [value: [type: :integer]]
+
+      rebuilt = original |> Workflow.build_log() |> Workflow.from_log()
+
+      for workflow <- [original, rebuilt] do
+        assert workflow
+               |> Workflow.react_until_satisfied(5)
+               |> Workflow.raw_productions(:consumer) == [12]
+      end
+    end
+
     test "round-trips deterministic connection data and equivalent lowering" do
       original = positional_sum_workflow()
 
