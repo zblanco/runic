@@ -1,12 +1,17 @@
 defmodule Runic.Workflow.ComponentAdded do
-  # To be used as a serializable event log for rebuilding workflows from logs
+  @moduledoc """
+  Serializable construction event used to rebuild a workflow from its log.
+
+  Executable components use `closure`; nested workflows use a versioned
+  `workflow_definition` that retains their boundary ports and child build log.
+  The `source` and `bindings` fields remain as a compatibility path for older
+  component events.
+  """
 
   alias Runic.Closure
 
   @derive {Inspect, only: [:name, :closure]}
 
-  # New format uses :closure field (fully serializable)
-  # Old format uses :source + :bindings with __caller_context__ (deprecated)
   @type t :: %__MODULE__{
           name: String.t() | atom(),
           closure: Closure.t() | nil,
@@ -14,6 +19,7 @@ defmodule Runic.Workflow.ComponentAdded do
           bindings: map(),
           to: term(),
           connections: list(Runic.Workflow.Connection.t()) | nil,
+          workflow_definition: Runic.Workflow.Definition.t() | nil,
           hash: term()
         }
 
@@ -25,6 +31,7 @@ defmodule Runic.Workflow.ComponentAdded do
     :bindings,
     :to,
     :connections,
+    :workflow_definition,
     :hash
   ]
 

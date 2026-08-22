@@ -236,6 +236,7 @@ defmodule Runic.Workflow do
   alias Runic.Workflow.Invokable
   alias Runic.Workflow.ComponentAdded
   alias Runic.Workflow.Connection
+  alias Runic.Workflow.Definition
   alias Runic.Workflow.InputBinding
   alias Runic.Workflow.CallContract
   alias Runic.Workflow.ComponentRemoved
@@ -679,6 +680,19 @@ defmodule Runic.Workflow do
   See `Runic.Workflow.Connection`, the
   [Cheatsheet](cheatsheet.html#named-port-connections), and the
   [Usage Rules](usage-rules.html#prefer-connections-for-data-binding).
+
+  ## Nested Workflow Boundaries
+
+  A workflow that declares `input_ports`, `output_ports`, or both is treated as
+  an authored nested component. Its boundary ports and child build log are
+  stored as one versioned definition in the parent build log rather than
+  flattening the child's construction events into the parent.
+
+  An output port with `from: component_name` is compiled to that internal
+  component's output node. It can be used as a downstream named connection and
+  is the only internal production attributed to the child boundary. Output
+  ports without `:from` remain valid for contract-only use but are not guessed
+  when compiling downstream named connections.
   """
   def add(%__MODULE__{} = workflow, component, opts \\ []) do
     case Keyword.fetch(opts, :connections) do
@@ -688,6 +702,8 @@ defmodule Runic.Workflow do
   end
 
   defp add_to_parent(%__MODULE__{} = workflow, component, opts) do
+    component = if workflow_boundary?(component), do: ensure_component(component), else: component
+
     case opts[:to] do
       nil ->
         # If no parent is specified, we assume the component is a root step
@@ -766,7 +782,7 @@ defmodule Runic.Workflow do
     workflow =
       workflow
       |> add_step(binding_parent, input_binding)
-      |> then(&Component.connect(component, input_binding, &1))
+      |> then(&connect_component(&1, component, input_binding))
       |> draw_connection(component, input_binding, :compiled_for,
         properties: %{
           kind: :input_binding,
@@ -780,6 +796,10 @@ defmodule Runic.Workflow do
     else
       workflow
     end
+  end
+
+  defp ensure_component(%__MODULE__{hash: nil} = workflow) do
+    %{workflow | hash: Component.hash(workflow)}
   end
 
   defp ensure_component(%{__struct__: _} = component) do
@@ -805,7 +825,7 @@ defmodule Runic.Workflow do
     %{
       connection: connection,
       source_component: source_component,
-      source_node: output_node!(workflow, source_component),
+      source_node: output_node!(workflow, source_component, connection.source_port),
       source_outputs: source_outputs,
       source_port_index: source_port_index
     }
@@ -827,6 +847,31 @@ defmodule Runic.Workflow do
   end
 
   defp resolve_component_ref!(workflow, name), do: get_component!(workflow, name)
+
+  defp output_node!(workflow, %__MODULE__{} = child, source_port) do
+    output_edges =
+      Multigraph.out_edges(workflow.graph, child,
+        by: :component_of,
+        where: fn edge ->
+          edge.properties[:kind] == :output and source_port in edge.properties[:ports]
+        end
+      )
+
+    case output_edges do
+      [%{v2: output_node}] ->
+        output_node
+
+      [] ->
+        raise ArgumentError,
+              "nested workflow #{inspect(child.name)} has no compiled output node for port #{inspect(source_port)}"
+
+      edges ->
+        raise ArgumentError,
+              "nested workflow #{inspect(child.name)} has #{length(edges)} compiled output nodes for port #{inspect(source_port)}"
+    end
+  end
+
+  defp output_node!(workflow, component, _source_port), do: output_node!(workflow, component)
 
   defp output_node!(workflow, %Rule{} = rule) do
     Map.fetch!(workflow.graph.vertices, rule.reaction_hash)
@@ -854,7 +899,7 @@ defmodule Runic.Workflow do
   end
 
   defp output_node_from_ownership!(workflow, component) do
-    preferred_kinds = [:reaction, :leaf, :fan_in, :accumulator, :step]
+    preferred_kinds = [:output, :reaction, :leaf, :fan_in, :accumulator, :step]
 
     edges =
       workflow.graph
@@ -1043,7 +1088,7 @@ defmodule Runic.Workflow do
     case {component, parent} do
       {%{__struct__: _struct}, %Root{}} ->
         if Components.component?(component) do
-          workflow = Component.connect(component, parent, workflow)
+          workflow = connect_component(workflow, component, parent)
 
           if should_log do
             append_build_log(workflow, component, parent)
@@ -1061,8 +1106,8 @@ defmodule Runic.Workflow do
           validate_ports(component, parent, opts)
 
           workflow =
-            component
-            |> Component.connect(parent, workflow)
+            workflow
+            |> connect_component(component, parent)
             |> maybe_draw_connects_to(component, parent)
 
           if should_log do
@@ -1092,6 +1137,57 @@ defmodule Runic.Workflow do
     end
 
     transmuted
+  end
+
+  defp connect_component(
+         %__MODULE__{} = workflow,
+         %__MODULE__{input_ports: input_ports, output_ports: output_ports} = child,
+         parent
+       )
+       when not is_nil(input_ports) or not is_nil(output_ports) do
+    parent_build_log = workflow.build_log
+
+    %__MODULE__{} = workflow = Component.connect(child, parent, workflow)
+
+    workflow = %{
+      workflow
+      | build_log: parent_build_log,
+        graph: Multigraph.add_vertex(workflow.graph, child)
+    }
+
+    workflow
+    |> register_component(child)
+    |> register_workflow_outputs(child)
+  end
+
+  defp connect_component(%__MODULE__{} = workflow, component, parent) do
+    Component.connect(component, parent, workflow)
+  end
+
+  defp register_workflow_outputs(workflow, %__MODULE__{output_ports: output_ports} = child) do
+    outputs =
+      for {port, opts} <- output_ports || [],
+          {:ok, source_name} <- [Keyword.fetch(opts, :from)] do
+        source_component = get_component!(workflow, source_name)
+        output_node = output_node!(workflow, source_component)
+        {output_node, port, source_name}
+      end
+
+    outputs
+    |> Enum.group_by(fn {output_node, _port, _source_name} ->
+      Components.vertex_id_of(output_node)
+    end)
+    |> Enum.reduce(workflow, fn {_output_hash, grouped_outputs}, acc ->
+      [{output_node, _port, _source_name} | _] = grouped_outputs
+
+      draw_connection(acc, child, output_node, :component_of,
+        properties: %{
+          kind: :output,
+          ports: Enum.map(grouped_outputs, &elem(&1, 1)),
+          sources: Enum.map(grouped_outputs, &elem(&1, 2))
+        }
+      )
+    end)
   end
 
   defp validate_ports(consumer, parents, opts) when is_list(parents) do
@@ -1185,6 +1281,7 @@ defmodule Runic.Workflow do
       rebuilt = Workflow.apply_events(Workflow.new(), events)
   """
   def add_with_events(%__MODULE__{} = workflow, component, opts \\ []) do
+    component = if workflow_boundary?(component), do: ensure_component(component), else: component
     to = opts[:to]
 
     connections =
@@ -1205,6 +1302,7 @@ defmodule Runic.Workflow do
 
   defp build_events(component, parent, connections) do
     closure = Map.get(component, :closure)
+    workflow_definition = workflow_definition(component)
 
     [
       %ComponentAdded{
@@ -1212,13 +1310,25 @@ defmodule Runic.Workflow do
         name: component.name,
         to: durable_parent_ref(parent),
         connections: connections,
+        workflow_definition: workflow_definition,
         hash: Map.get(component, :hash),
         # Backward compatibility: also set source/bindings for old deserialization
-        source: Component.source(component),
+        source: if(workflow_definition, do: nil, else: Component.source(component)),
         bindings: if(closure, do: closure.bindings, else: %{})
       }
     ]
   end
+
+  defp workflow_definition(%__MODULE__{} = workflow) do
+    if workflow_boundary?(workflow), do: Definition.from_workflow(workflow)
+  end
+
+  defp workflow_definition(_component), do: nil
+
+  defp workflow_boundary?(%__MODULE__{input_ports: input_ports, output_ports: output_ports}),
+    do: not is_nil(input_ports) or not is_nil(output_ports)
+
+  defp workflow_boundary?(_component), do: false
 
   defp durable_parent_ref(parents) when is_list(parents),
     do: Enum.map(parents, &durable_parent_ref/1)
@@ -1250,11 +1360,15 @@ defmodule Runic.Workflow do
           }
 
         nil ->
-          # Backward compatibility: use old source + bindings format
+          workflow_definition = workflow_definition(component)
+
+          # Backward compatibility: non-workflow components without a closure
+          # continue to use the old source + bindings format.
           %ComponentAdded{
-            source: Component.source(component),
+            source: if(workflow_definition, do: nil, else: Component.source(component)),
             name: component.name,
             to: parent,
+            workflow_definition: workflow_definition,
             hash: Map.get(component, :hash),
             bindings: Map.get(component, :bindings, %{})
           }
@@ -1598,8 +1712,13 @@ defmodule Runic.Workflow do
   defp component_from_added(
          %ComponentAdded{source: source, bindings: bindings, closure: closure} = event
        ) do
+    workflow_definition = Map.get(event, :workflow_definition)
+
     component =
       cond do
+        match?(%Definition{}, workflow_definition) ->
+          Definition.rebuild(workflow_definition)
+
         # New format: use closure if available
         not is_nil(closure) ->
           {comp, _} = Closure.eval(closure)
@@ -1611,7 +1730,7 @@ defmodule Runic.Workflow do
 
         # Fallback: shouldn't happen
         true ->
-          raise "ComponentAdded event has neither closure nor source"
+          raise "ComponentAdded event has no reconstructable component definition"
       end
 
     component =

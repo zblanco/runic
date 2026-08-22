@@ -86,6 +86,7 @@ defmodule Runic.MixProject do
         ],
         Internal: [
           Runic.Workflow.Fact,
+          Runic.Workflow.Definition,
           Runic.Workflow.FanOut,
           Runic.Workflow.FanIn,
           Runic.Workflow.Runnable,
