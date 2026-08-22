@@ -2,6 +2,7 @@ defmodule Runic.Workflow.Invocation do
   @moduledoc false
 
   alias Runic.Workflow.{CallContract, CausalContext}
+  alias Runic.Workflow.Invocation.Plan
 
   @type context :: %{
           runtime: map(),
@@ -29,8 +30,18 @@ defmodule Runic.Workflow.Invocation do
   defstruct [:value, :arguments, :context, :bindings, :contract, version: 1]
 
   @doc false
-  @spec prepare(CallContract.t(), term(), CausalContext.t()) :: t()
-  def prepare(%CallContract{} = contract, value, %CausalContext{} = causal_context) do
+  @spec plan(CallContract.t()) :: Plan.t()
+  def plan(%CallContract{} = contract) do
+    %Plan{contract: CallContract.validate!(contract)}
+  end
+
+  @doc false
+  @spec materialize(Plan.t(), term(), CausalContext.t()) :: t()
+  def materialize(
+        %Plan{version: 1, contract: contract},
+        value,
+        %CausalContext{} = causal_context
+      ) do
     contract = CallContract.validate!(contract)
     arguments = prepare_arguments(contract, value)
     effective_context = merge_context(causal_context.meta_context, causal_context.run_context)
@@ -51,6 +62,10 @@ defmodule Runic.Workflow.Invocation do
       },
       contract: contract
     }
+  end
+
+  def materialize(%Plan{version: version}, _value, %CausalContext{}) do
+    raise ArgumentError, "unsupported invocation plan version: #{inspect(version)}"
   end
 
   @doc false

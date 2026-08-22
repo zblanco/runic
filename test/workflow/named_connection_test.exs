@@ -11,6 +11,7 @@ defmodule Runic.Workflow.NamedConnectionTest do
     Connection,
     Fact,
     InputBinding,
+    Invocation,
     Invokable,
     Join,
     Root
@@ -68,6 +69,9 @@ defmodule Runic.Workflow.NamedConnectionTest do
 
       assert {:ok, runnable} = Invokable.prepare(consumer, executed, bound_fact)
 
+      invocation =
+        Invocation.materialize(runnable.invocation, bound_fact.value, runnable.context)
+
       assert [
                %{
                  id: "score-binding",
@@ -75,7 +79,7 @@ defmodule Runic.Workflow.NamedConnectionTest do
                  target_port: :score,
                  selector: [:score]
                }
-             ] = runnable.invocation.bindings.sources
+             ] = invocation.bindings.sources
     end
 
     test "assembles multiple sources in target port order, independent of declaration order" do

@@ -98,7 +98,8 @@ defmodule Runic.Workflow.Step do
     invocation =
       step
       |> CallContract.for_step()
-      |> Invocation.prepare(input, CausalContext.new())
+      |> Invocation.plan()
+      |> Invocation.materialize(input, CausalContext.new())
 
     Invocation.call(invocation, step.work)
   end
@@ -122,7 +123,8 @@ defmodule Runic.Workflow.Step do
     invocation =
       step
       |> CallContract.for_step()
-      |> Invocation.prepare(input, CausalContext.new(meta_context: meta_context))
+      |> Invocation.plan()
+      |> Invocation.materialize(input, CausalContext.new(meta_context: meta_context))
 
     Invocation.call(invocation, step.work)
   end

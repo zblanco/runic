@@ -69,14 +69,18 @@ defmodule Runic.Workflow.InvocationTest do
       invocation =
         old_step
         |> CallContract.for_step()
-        |> Invocation.prepare([2, 3], CausalContext.new(run_context: %{ignored: true}))
+        |> Invocation.plan()
+        |> Invocation.materialize(
+          [2, 3],
+          CausalContext.new(run_context: %{ignored: true})
+        )
 
       assert Invocation.call(invocation, old_step.work) == 5
 
       workflow = Workflow.new() |> Workflow.add(old_step)
       fact = Fact.new(value: [2, 3])
 
-      assert {:ok, %Runnable{invocation: %Invocation{}} = runnable} =
+      assert {:ok, %Runnable{invocation: %Invocation.Plan{}} = runnable} =
                Invokable.prepare(old_step, workflow, fact)
 
       assert %Runnable{status: :completed, result: %Fact{value: 5}} =
@@ -84,8 +88,8 @@ defmodule Runic.Workflow.InvocationTest do
     end
   end
 
-  describe "prepared invocation envelope" do
-    test "keeps the domain fact intact while exposing ordered and named bindings" do
+  describe "compact plans and materialized invocation envelopes" do
+    test "keeps payloads out of the scheduled plan and materializes binding views on demand" do
       step =
         Step.new(
           work: fn left, right -> left + right end,
@@ -100,8 +104,17 @@ defmodule Runic.Workflow.InvocationTest do
 
       fact = Fact.new(value: [4, 7])
 
-      assert {:ok, %Runnable{invocation: %Invocation{} = invocation}} =
+      assert {:ok, %Runnable{invocation: %Invocation.Plan{} = plan} = runnable} =
                Invokable.prepare(step, workflow, fact)
+
+      assert plan.contract.style == :positional
+      refute Map.has_key?(plan, :value)
+      refute Map.has_key?(plan, :arguments)
+      refute Map.has_key?(plan, :context)
+      refute Map.has_key?(plan, :bindings)
+      assert plan |> :erlang.term_to_binary() |> :erlang.binary_to_term() == plan
+
+      invocation = Invocation.materialize(plan, fact.value, runnable.context)
 
       assert invocation.value == [4, 7]
       assert invocation.arguments == [4, 7]
@@ -126,10 +139,15 @@ defmodule Runic.Workflow.InvocationTest do
       fact = Fact.new(value: %{prompt: "hello"})
       {:ok, runnable} = Invokable.prepare(step, workflow, fact)
 
-      assert runnable.invocation.value == %{prompt: "hello"}
-      assert runnable.invocation.arguments == [%{prompt: "hello"}]
+      assert %Invocation.Plan{} = runnable.invocation
 
-      assert runnable.invocation.context.effective == %{
+      invocation =
+        Invocation.materialize(runnable.invocation, fact.value, runnable.context)
+
+      assert invocation.value == %{prompt: "hello"}
+      assert invocation.arguments == [%{prompt: "hello"}]
+
+      assert invocation.context.effective == %{
                model: "model-1",
                request_id: "request-1"
              }
@@ -138,6 +156,23 @@ defmodule Runic.Workflow.InvocationTest do
                Invokable.execute(step, runnable)
 
       assert result == {%{prompt: "hello"}, "model-1"}
+    end
+
+    test "does not retain the materialized envelope after execution" do
+      step =
+        Step.new(
+          work: fn left, right -> left + right end,
+          inputs: [left: [type: :integer], right: [type: :integer]]
+        )
+
+      fact = Fact.new(value: [4, 7])
+      {:ok, runnable} = Invokable.prepare(step, Workflow.new() |> Workflow.add(step), fact)
+
+      assert %Runnable{
+               status: :completed,
+               invocation: %Invocation.Plan{},
+               result: %Fact{value: 11}
+             } = Invokable.execute(step, runnable)
     end
   end
 end

@@ -385,7 +385,8 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Step do
     result =
       step
       |> CallContract.for_step()
-      |> Invocation.prepare(fact.value, context)
+      |> Invocation.plan()
+      |> Invocation.materialize(fact.value, context)
       |> Invocation.call(step.work)
 
     result_fact = Fact.new(value: result, ancestry: {step.hash, fact.hash})
@@ -407,7 +408,7 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Step do
     invocation =
       step
       |> CallContract.for_step()
-      |> Invocation.prepare(fact.value, context)
+      |> Invocation.plan()
 
     runnable =
       step
@@ -422,10 +423,11 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Step do
       runnable.invocation ||
         step
         |> CallContract.for_step()
-        |> Invocation.prepare(fact.value, ctx)
+        |> Invocation.plan()
 
     with {:ok, before_apply_fns} <- HookRunner.run_before(ctx, step, fact) do
       try do
+        invocation = Invocation.materialize(invocation, fact.value, ctx)
         result = Invocation.call(invocation, step.work)
 
         result_fact = Fact.new(value: result, ancestry: {step.hash, fact.hash})
