@@ -8,12 +8,44 @@ defmodule Runic.Workflow.Connection do
   and in `%Runic.Workflow.ComponentAdded{}` events.
 
   The compact keyword form accepted by `Runic.Workflow.add/3` is normalized
-  into this struct:
+  into this struct. The component being added supplies the target component:
 
       [from: {:orders, :order}, to: :order]
 
+  `:from` identifies `{source_component, source_port}` and `:to` identifies the
+  target input port. The long source form is also accepted:
+
+      [from: :orders, source_port: :order, to: :order]
+
+  ## Projection and assembly
+
+  `:selector` reads a path from the selected source value. `:target_path`
+  places that value inside a structure assembled for the target port:
+
+      [
+        id: "customer-id",
+        from: {:orders, :payload},
+        to: :request,
+        selector: [:customer, :id],
+        target_path: [:customer_id]
+      ]
+
+  A source with one declared output treats that port as the complete produced
+  value. A source with several outputs exposes values by map or keyword key, or
+  by tuple/list position. The target's declared input-port order, not connection
+  declaration order, determines positional arguments for multi-arity steps.
+
   Safe `:selector` and `:target_path` lists may contain atom, string, or
   non-negative integer segments. They never contain executable functions.
+  Target paths assigned within one connection group must not overlap.
+
+  `:id` is optional in the keyword form. If omitted, Runic derives a stable ID
+  from the normalized connection data. Authored IDs may be atoms, strings, or
+  non-negative integers.
+
+  See the [Cheatsheet](cheatsheet.html#named-port-connections) and
+  [Usage Rules](usage-rules.html#prefer-connections-for-data-binding) for full
+  construction examples and API-selection guidance.
   """
 
   alias Runic.Workflow.Components

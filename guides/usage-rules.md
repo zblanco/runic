@@ -70,6 +70,19 @@ Runic workflows are **data structures** (decorated directed acyclic graphs) that
 | **Parallel I/O-bound work** | `async: true` option | Uses `Task.async_stream` |
 | **Distributed execution** | `prepare_for_dispatch/1` | Extract runnables for remote execution |
 
+### Which Connection API to Use?
+
+| Intent | API | Why |
+|--------|-----|-----|
+| Pass one component's complete result to another | `Workflow.add(component, to: parent)` | Concise whole-value topology |
+| Wait for several complete parent results | `Workflow.add(component, to: parents)` | Creates the ordinary fan-in join |
+| Bind declared source and target ports | `Workflow.add(component, connections: specs)` | Durable, validated data contract |
+| Select part of a produced value | A connection with `selector: path` | Data-only projection, no executable edge callback |
+| Assemble a structured target input | Connections with `target_path: path` | Deterministic input construction |
+
+Do not pass both `:to` and `:connections`. A connection group describes the
+complete input assignment for the component being added.
+
 ### Three-Phase Execution APIs
 
 For custom schedulers, GenServers, or distributed execution:
@@ -235,6 +248,91 @@ else
 end
 ```
 
+### Prefer: Connections for Data Binding
+
+Keep ordinary Elixir responsible for building the workflow. Use connection data
+to describe how component outputs become component inputs:
+
+```elixir
+total = Runic.step(fn subtotal, tax -> subtotal + tax end,
+  name: :total,
+  inputs: [subtotal: [type: :money], tax: [type: :money]]
+)
+
+workflow =
+  workflow
+  |> Workflow.add(total,
+    connections: [
+      [from: {:pricing, :subtotal}, to: :subtotal],
+      [from: {:tax_service, :tax}, to: :tax]
+    ]
+  )
+```
+
+Avoid adding a `Runic.step/2` whose only job is to read and write a workflow-state
+map. That turns workflow construction into runtime domain work, hides the actual
+component relationship, and makes replay and graph inspection less precise.
+
+Connection groups are checked before graph mutation:
+
+- Source components and named ports must exist.
+- Every required target port must be bound.
+- Direct whole-port source and target types must be compatible unless either is `:any`.
+- Assignments to the same target port cannot overlap.
+- `selector` and `target_path` segments must be atoms, strings, or non-negative integers.
+
+Because a selector or target path changes the value shape, Runic cannot infer
+the resulting type statically and leaves that routed value to runtime validation.
+
+Use `validate: :warn` or `validate: :off` only for gradual prototyping. They
+relax type compatibility; they do not make invalid component references, ports,
+paths, or incomplete required inputs valid.
+
+### Declare Multi-Input Call Order Explicitly
+
+A multi-arity step's declared input-port order is its positional call order.
+Connection order is intentionally irrelevant:
+
+```elixir
+sum = Runic.step(fn left, right -> left + right end,
+  inputs: [left: [type: :integer], right: [type: :integer]]
+)
+```
+
+Use the documented `context/1` macro for runtime context. Do not add an implicit
+context positional argument; a plain arity-two step represents two domain inputs:
+
+```elixir
+# Two domain inputs
+Runic.step(fn request, options -> call(request, options) end,
+  inputs: [request: [type: :map], options: [type: :map]]
+)
+
+# One domain input plus runtime context
+Runic.step(fn request -> call(request, context(:api_key)) end,
+  inputs: [request: [type: :map]]
+)
+```
+
+### Inspect the Right Graph
+
+Named connections deliberately preserve two related views:
+
+```mermaid
+flowchart LR
+  A[Authored source] -->|connects_to with Connection data| B[Authored target]
+  A1[Source invokable] -->|flow| I[Generated InputBinding]
+  I -->|flow| B1[Target invokable]
+```
+
+- `Workflow.component_graph/1` returns authored components and logical
+  `:connects_to` relationships, including the durable connection descriptors.
+- `Workflow.flow_graph/1` returns executable `:flow` and `:fan_in` topology,
+  including generated input bindings and joins.
+
+Use these projections for topology inspection. Do not infer authored components
+from every scheduler-visible node in the full multigraph.
+
 ### Map-Reduce Pattern
 
 ```elixir
@@ -336,6 +434,10 @@ def load_workflow(id) do
 end
 ```
 
+Named connections are normalized into `%Runic.Workflow.Connection{}` data in
+the build log. A `build_log/1` and `from_log/1` round trip therefore rebuilds
+both the logical component connections and their compiled input-binding flow.
+
 ## Debugging Tips
 
 1. **Visualize with Mermaid**:
@@ -375,6 +477,8 @@ end
 | **Always require** | `require Runic` before macros |
 | **Always pin** | `^variable` for runtime values |
 | **Always name** | Components for debugging |
+| **Bind data with** | `connections:` for named ports, selectors, and target paths |
+| **Inspect topology with** | `component_graph/1` or `flow_graph/1`, depending on intent |
 | **Extract with** | `raw_productions/1`, not graph access |
 | **Serialize with** | `build_log/1` and `from_log/1` |
 | **Parallelize with** | `async: true` for I/O-bound work |

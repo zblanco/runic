@@ -29,8 +29,10 @@ step = Runic.step(&String.upcase/1)
 # With name (recommended for debugging and referencing in workflows)
 step = Runic.step(fn x -> x + 1 end, name: :increment)
 
-# Multi-arity (requires 2-element list input)
-step = Runic.step(fn a, b -> a + b end)
+# Multi-arity (receives values in declared input-port order)
+step = Runic.step(fn left, right -> left + right end,
+  inputs: [left: [type: :integer], right: [type: :integer]]
+)
 
 # Pin runtime variables (required for serialization)
 multiplier = 3
@@ -293,6 +295,106 @@ workflow = Workflow.new()
   |> Workflow.add(join_step, to: [:a, :b])     # Join multiple parents
 ```
 
+Use `to:` for ordinary whole-value flow. Use `connections:` when authored ports,
+value projection, or input assembly are part of the workflow contract. The two
+options are mutually exclusive.
+
+### Named Port Connections
+
+Each connection names a source component and output port in `from:` and a
+target input port in `to:`. All connections passed while adding a component are
+validated and lowered as one input assignment:
+
+```elixir
+producer = Runic.step(fn input -> %{left: input + 1, right: input * 2} end,
+  name: :producer,
+  outputs: [left: [type: :integer], right: [type: :integer]]
+)
+
+sum = Runic.step(fn left, right -> left + right end,
+  name: :sum,
+  inputs: [left: [type: :integer], right: [type: :integer]]
+)
+
+workflow =
+  Workflow.new()
+  |> Workflow.add(producer)
+  |> Workflow.add(sum,
+    connections: [
+      [from: {:producer, :left}, to: :left],
+      [from: {:producer, :right}, to: :right]
+    ]
+  )
+```
+
+For a source with one declared output, that port represents the whole produced
+value. For multiple declared outputs, Runic reads the named value from a map or
+keyword result, or by output position from a tuple or list.
+
+Connection fields:
+
+| Field | Meaning |
+|-------|---------|
+| `from: {source, source_port}` | Required source component and output port |
+| `to: target_port` | Required input port on the component being added |
+| `selector: path` | Optional safe path read after selecting the source port |
+| `target_path: path` | Optional safe path where the value is assembled within the target port |
+| `id: id` | Optional stable atom, string, or non-negative integer; otherwise generated deterministically |
+
+Paths are data-only lists of atom, string, or non-negative integer segments:
+
+```elixir
+payload = Runic.step(fn payload -> payload end,
+  name: :payload,
+  inputs: [request: [type: :any]]
+)
+
+workflow = Workflow.add(workflow, payload,
+  connections: [
+    [
+      id: "customer-id",
+      from: {:order, :payload},
+      to: :request,
+      selector: [:customer, :id],
+      target_path: [:customer_id]
+    ],
+    [
+      from: {:catalog, :item},
+      to: :request,
+      target_path: [:items, 0]
+    ]
+  ]
+)
+```
+
+The target's declared input-port order determines positional function arguments;
+connection declaration order does not. Every required target port must be bound,
+direct whole-port types must be compatible, and target paths for the same port
+must not overlap. A selector or target path changes the value shape, so Runic
+cannot infer its resulting type and leaves that routed value to runtime validation.
+
+### Step Invocation Convention
+
+The normal `Runic.step/2` API covers all supported call shapes; no invocation
+mode is selected by the author:
+
+```elixir
+Runic.step(fn -> :ready end)
+Runic.step(fn input -> normalize(input) end)
+
+Runic.step(fn left, right -> left + right end,
+  inputs: [left: [type: :integer], right: [type: :integer]]
+)
+
+Runic.step(fn request ->
+  call_service(request, context(:api_key))
+end)
+```
+
+Zero- and one-arity steps receive zero or one argument. Multi-arity steps receive
+positional values in declared input-port order. Runtime context is requested
+with `context/1`; an ordinary arity-two function is always a two-input function.
+
 ## Evaluating Workflows
 
 ### Basic Execution
@@ -450,6 +552,12 @@ Workflow.to_cytoscape(workflow)
 
 # Edge list
 Workflow.to_edgelist(workflow)
+
+# Authored components and logical :connects_to edges
+Workflow.component_graph(workflow)
+
+# Executable :flow/:fan_in graph, including generated bindings and joins
+Workflow.flow_graph(workflow)
 ```
 
 ## Common Patterns
@@ -513,6 +621,9 @@ Workflow.add(workflow, merge_step, to: [:a, :b, :c])
 | Create rule | `Runic.rule(fn x when guard -> result end)` |
 | Create workflow | `Runic.workflow(steps: [...], rules: [...])` |
 | Add component | `Workflow.add(workflow, component, to: parent)` |
+| Bind named ports | `Workflow.add(workflow, component, connections: [...])` |
+| Get authored graph | `Workflow.component_graph(workflow)` |
+| Get compiled flow graph | `Workflow.flow_graph(workflow)` |
 | Run one cycle | `Workflow.react(workflow, input)` |
 | Run to completion | `Workflow.react_until_satisfied(workflow, input)` |
 | Get structured results | `Workflow.results(workflow)` |

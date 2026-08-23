@@ -136,6 +136,15 @@ defmodule Runic.Workflow do
 
   Any component implementing the `Runic.Transmutable` protocol can be merged into a workflow.
 
+  Use `add/3` with `:to` for ordinary whole-value topology. Use its
+  `:connections` option when source ports, target ports, safe projections, or
+  structured target assembly are part of the authored contract. Connections
+  remain on logical `:connects_to` edges while Runic lowers them into executable
+  input-binding flow.
+
+  Use `component_graph/1` to inspect authored relationships and `flow_graph/1`
+  to inspect scheduler-visible `:flow` and `:fan_in` topology.
+
   ## Introspection APIs
 
   Query workflow structure and state:
@@ -641,6 +650,15 @@ defmodule Runic.Workflow do
         ]
       )
 
+  Each connection accepts:
+
+  - `:from` — required `{source_component, source_port}`; alternatively pass a
+    source component and a separate `:source_port`
+  - `:to` — required target input port on the component being added
+  - `:selector` — optional safe path read from the selected source value
+  - `:target_path` — optional safe path assembled within the target port
+  - `:id` — optional stable atom, string, or non-negative integer
+
   `:connections` and `:to` are mutually exclusive. Connections are validated as
   one target assignment, retained on logical `:connects_to` edges, and lowered
   through an internal `InputBinding` plus the existing `Join` when necessary.
@@ -651,6 +669,16 @@ defmodule Runic.Workflow do
   multiple declared outputs, the runtime value must expose the port by map or
   keyword key, or by tuple/list position. `:selector` and `:target_path` accept
   only atom, string, and non-negative integer path segments.
+
+  Multi-arity Steps receive bound values in declared input-port order, not
+  connection declaration order. Required ports must all be bound and multiple
+  assignments within one target port must use non-overlapping target paths.
+  Direct whole-port bindings are type-checked; selectors and target paths change
+  value shape, so their resulting values are left to runtime validation.
+
+  See `Runic.Workflow.Connection`, the
+  [Cheatsheet](cheatsheet.html#named-port-connections), and the
+  [Usage Rules](usage-rules.html#prefer-connections-for-data-binding).
   """
   def add(%__MODULE__{} = workflow, component, opts \\ []) do
     case Keyword.fetch(opts, :connections) do

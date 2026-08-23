@@ -39,7 +39,7 @@ defmodule Runic.MixProject do
         Guides: ~r/guides\/.*/
       ],
       groups_for_modules: [
-        Core: [Runic, Runic.Workflow],
+        Core: [Runic, Runic.Workflow, Runic.Workflow.Connection],
         Components: [
           Runic.Workflow.Step,
           Runic.Workflow.Rule,
