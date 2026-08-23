@@ -201,6 +201,7 @@ defmodule Runic.Workflow.Serializers.Cytoscape do
   defp node_cytoscape_style(%Workflow.FanOut{}), do: {"rhomboid", "#2c5282"}
   defp node_cytoscape_style(%Workflow.FanIn{}), do: {"rhomboid", "#285e61"}
   defp node_cytoscape_style(%Workflow.Join{}), do: {"hexagon", "#744210"}
+  defp node_cytoscape_style(%Workflow.InputBinding{}), do: {"rectangle", "#4a3f35"}
   defp node_cytoscape_style(%Workflow.Accumulator{}), do: {"barrel", "#22543d"}
   defp node_cytoscape_style(%Workflow.Rule{}), do: {"octagon", "#742a2a"}
   defp node_cytoscape_style(%Workflow.Map{}), do: {"round-rectangle", "#1a365d"}

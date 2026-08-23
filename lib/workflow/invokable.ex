@@ -364,7 +364,8 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Step do
   alias Runic.Workflow.{
     Fact,
     Step,
-    Components,
+    CallContract,
+    Invocation,
     Runnable,
     CausalContext,
     HookRunner
@@ -379,7 +380,14 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Step do
         %Workflow{} = workflow,
         %Fact{} = fact
       ) do
-    result = Components.run(step.work, fact.value, Components.arity_of(step.work))
+    context = build_context(step, workflow, fact)
+
+    result =
+      step
+      |> CallContract.for_step()
+      |> Invocation.plan()
+      |> Invocation.materialize(fact.value, context)
+      |> Invocation.call(step.work)
 
     result_fact = Fact.new(value: result, ancestry: {step.hash, fact.hash})
 
@@ -395,35 +403,32 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Step do
   end
 
   def prepare(%Step{} = step, %Workflow{} = workflow, %Fact{} = fact) do
-    fan_out_context = build_fan_out_context(workflow, step, fact)
+    context = build_context(step, workflow, fact)
 
-    meta_context =
-      if Step.has_meta_refs?(step) do
-        Workflow.prepare_meta_context(workflow, step)
-      else
-        %{}
-      end
+    invocation =
+      step
+      |> CallContract.for_step()
+      |> Invocation.plan()
 
-    run_context = Workflow.get_run_context(workflow, step.name)
+    runnable =
+      step
+      |> Runnable.new(fact, context)
+      |> Runnable.with_invocation(invocation)
 
-    context =
-      CausalContext.new(
-        node_hash: step.hash,
-        input_fact: fact,
-        ancestry_depth: Workflow.ancestry_depth(workflow, fact),
-        hooks: Workflow.get_hooks(workflow, step.hash),
-        fan_out_context: fan_out_context,
-        meta_context: meta_context,
-        run_context: run_context
-      )
-
-    {:ok, Runnable.new(step, fact, context)}
+    {:ok, runnable}
   end
 
   def execute(%Step{} = step, %Runnable{input_fact: fact, context: ctx} = runnable) do
+    invocation =
+      runnable.invocation ||
+        step
+        |> CallContract.for_step()
+        |> Invocation.plan()
+
     with {:ok, before_apply_fns} <- HookRunner.run_before(ctx, step, fact) do
       try do
-        result = run_step_work(step, fact.value, ctx)
+        invocation = Invocation.materialize(invocation, fact.value, ctx)
+        result = Invocation.call(invocation, step.work)
 
         result_fact = Fact.new(value: result, ancestry: {step.hash, fact.hash})
 
@@ -446,26 +451,28 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Step do
     end
   end
 
-  defp run_step_work(step, input, ctx) do
-    effective_context = merge_effective_context(ctx.meta_context, ctx.run_context)
-    arity = Components.arity_of(step.work)
+  defp build_context(step, workflow, fact) do
+    fan_out_context = build_fan_out_context(workflow, step, fact)
 
-    cond do
-      effective_context != %{} and arity >= 2 ->
-        step.work.(input, effective_context)
+    meta_context =
+      if Step.has_meta_refs?(step) do
+        Workflow.prepare_meta_context(workflow, step)
+      else
+        %{}
+      end
 
-      Step.has_meta_refs?(step) and ctx.meta_context != %{} ->
-        Step.run_with_meta_context(step, input, ctx.meta_context)
+    run_context = Workflow.get_run_context(workflow, step.name)
 
-      true ->
-        Components.run(step.work, input, arity)
-    end
+    CausalContext.new(
+      node_hash: step.hash,
+      input_fact: fact,
+      ancestry_depth: Workflow.ancestry_depth(workflow, fact),
+      hooks: Workflow.get_hooks(workflow, step.hash),
+      fan_out_context: fan_out_context,
+      meta_context: meta_context,
+      run_context: run_context
+    )
   end
-
-  defp merge_effective_context(meta, run) when map_size(meta) == 0 and map_size(run) == 0, do: %{}
-  defp merge_effective_context(meta, run) when map_size(run) == 0, do: meta
-  defp merge_effective_context(meta, run) when map_size(meta) == 0, do: run
-  defp merge_effective_context(meta, run), do: Map.merge(run, meta)
 
   defp build_events(step, input_fact, result_fact, ctx) do
     events = [
@@ -647,6 +654,78 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Step do
   # def runnable_connection(_step), do: :runnable
   # def resolved_connection(_step), do: :ran
   # def causal_connection(_step), do: :produced
+end
+
+defimpl Runic.Workflow.Invokable, for: Runic.Workflow.InputBinding do
+  alias Runic.Workflow
+
+  alias Runic.Workflow.{CausalContext, Fact, InputBinding, Runnable}
+  alias Runic.Workflow.Events.{ActivationConsumed, FactProduced}
+
+  def match_or_execute(_binding), do: :execute
+
+  def invoke(%InputBinding{} = binding, %Workflow{} = workflow, %Fact{} = fact) do
+    result = InputBinding.bind(binding, fact.value)
+
+    result_fact =
+      Fact.new(
+        value: result,
+        ancestry: {binding.hash, fact.hash},
+        meta: InputBinding.fact_meta(binding)
+      )
+
+    causal_depth = Workflow.ancestry_depth(workflow, fact) + 1
+
+    workflow
+    |> Workflow.log_fact(result_fact)
+    |> Workflow.draw_connection(binding, result_fact, :produced, weight: causal_depth)
+    |> Workflow.mark_runnable_as_ran(binding, fact)
+    |> Workflow.prepare_next_runnables(binding, result_fact)
+  end
+
+  def prepare(%InputBinding{} = binding, %Workflow{} = workflow, %Fact{} = fact) do
+    context =
+      CausalContext.new(
+        node_hash: binding.hash,
+        input_fact: fact,
+        ancestry_depth: Workflow.ancestry_depth(workflow, fact)
+      )
+
+    {:ok, Runnable.new(binding, fact, context)}
+  end
+
+  def execute(%InputBinding{} = binding, %Runnable{input_fact: fact, context: ctx} = runnable) do
+    try do
+      result = InputBinding.bind(binding, fact.value)
+
+      result_fact =
+        Fact.new(
+          value: result,
+          ancestry: {binding.hash, fact.hash},
+          meta: InputBinding.fact_meta(binding)
+        )
+
+      events = [
+        %FactProduced{
+          hash: result_fact.hash,
+          value: result_fact.value,
+          ancestry: result_fact.ancestry,
+          producer_label: :produced,
+          weight: ctx.ancestry_depth + 1,
+          meta: result_fact.meta
+        },
+        %ActivationConsumed{
+          fact_hash: fact.hash,
+          node_hash: binding.hash,
+          from_label: :runnable
+        }
+      ]
+
+      Runnable.complete(runnable, result_fact, events)
+    rescue
+      error -> Runnable.fail(runnable, error)
+    end
+  end
 end
 
 defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Conjunction do

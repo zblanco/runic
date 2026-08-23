@@ -351,6 +351,7 @@ defmodule Runic.Workflow.Serializers.Mermaid do
         "    classDef fanout fill:#2c5282,stroke:#63b3ed,color:#fff",
         "    classDef fanin fill:#285e61,stroke:#4fd1c5,color:#fff",
         "    classDef join fill:#744210,stroke:#f6ad55,color:#fff",
+        "    classDef inputbinding fill:#4a3f35,stroke:#fbd38d,color:#fff,stroke-dasharray:3",
         "    classDef accumulator fill:#22543d,stroke:#68d391,color:#fff",
         "    classDef rule fill:#742a2a,stroke:#fc8181,color:#fff",
         "    classDef map fill:#1a365d,stroke:#90cdf4,color:#fff",

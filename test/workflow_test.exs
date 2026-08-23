@@ -2216,12 +2216,9 @@ defmodule WorkflowTest do
       combined_events = events1 ++ events2 ++ events3
       build_log = Workflow.build_log(final_workflow)
 
-      # build_log reverses the internal log which is appended by add_with_events
-      # so build_log output should be in reverse order of combined_events
       assert length(combined_events) == length(build_log)
 
-      # Compare by reversing the build_log to match combined_events order
-      for {combined, logged} <- Enum.zip(combined_events, Enum.reverse(build_log)) do
+      for {combined, logged} <- Enum.zip(combined_events, build_log) do
         assert combined.name == logged.name
         assert combined.to == logged.to
         assert combined.closure == logged.closure

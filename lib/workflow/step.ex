@@ -24,11 +24,15 @@ defmodule Runic.Workflow.Step do
   When `context/1` is detected, the step's work function is rewritten to arity-2
   `(input, meta_ctx)` and `meta_refs` are populated with `kind: :context` entries.
   Values are resolved from the workflow's `run_context` during the prepare phase.
+
+  Runic compiles each authored function into an internal, versioned call
+  contract. Ordinary multi-arity functions receive positional data inputs;
+  functions rewritten from documented meta expressions receive the complete
+  input plus prepared context. The internal calling convention is not part of
+  the user-facing step API.
   """
 
-  alias Runic.Workflow.Step
-  alias Runic.Workflow.Fact
-  alias Runic.Workflow.Components
+  alias Runic.Workflow.{CallContract, CausalContext, Components, Fact, Invocation, Step}
   alias Runic.Closure
 
   @type meta_ref :: %{
@@ -46,6 +50,7 @@ defmodule Runic.Workflow.Step do
           closure: Closure.t() | nil,
           inputs: term(),
           outputs: term(),
+          call_contract: map() | nil,
           meta_refs: list(meta_ref())
         }
 
@@ -57,13 +62,16 @@ defmodule Runic.Workflow.Step do
     :closure,
     :inputs,
     :outputs,
+    :call_contract,
     meta_refs: []
   ]
 
   def new(params) do
     params_map = if Keyword.keyword?(params), do: Map.new(params), else: params
 
-    struct!(__MODULE__, params_map)
+    __MODULE__
+    |> struct!(params_map)
+    |> compile_call_contract()
     |> maybe_hash_work()
     |> maybe_set_name()
   end
@@ -87,7 +95,13 @@ defmodule Runic.Workflow.Step do
   Executes the work function of the Lambda step returning the raw unwrapped value.
   """
   def run(%__MODULE__{} = step, input) when not is_struct(input, Fact) do
-    Components.run(step.work, input)
+    invocation =
+      step
+      |> CallContract.for_step()
+      |> Invocation.plan()
+      |> Invocation.materialize(input, CausalContext.new())
+
+    Invocation.call(invocation, step.work)
   end
 
   @doc """
@@ -104,14 +118,25 @@ defmodule Runic.Workflow.Step do
   receiving `(input, meta_context)`.
   """
   @spec run_with_meta_context(t(), term(), map()) :: term()
-  def run_with_meta_context(%__MODULE__{work: work}, input, meta_context)
+  def run_with_meta_context(%__MODULE__{} = step, input, meta_context)
       when is_map(meta_context) do
-    arity = Function.info(work, :arity) |> elem(1)
+    invocation =
+      step
+      |> CallContract.for_step()
+      |> Invocation.plan()
+      |> Invocation.materialize(input, CausalContext.new(meta_context: meta_context))
 
-    case arity do
-      2 -> work.(input, meta_context)
-      1 -> work.(input)
-      0 -> work.()
-    end
+    Invocation.call(invocation, step.work)
+  end
+
+  defp compile_call_contract(%__MODULE__{call_contract: nil} = step) do
+    %{step | call_contract: CallContract.compile(step)}
+  end
+
+  defp compile_call_contract(%__MODULE__{call_contract: %CallContract{} = contract} = step),
+    do: %{step | call_contract: CallContract.validate!(contract)}
+
+  defp compile_call_contract(%__MODULE__{call_contract: contract}) do
+    raise ArgumentError, "invalid step call contract: #{inspect(contract)}"
   end
 end

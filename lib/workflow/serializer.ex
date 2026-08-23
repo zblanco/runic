@@ -59,6 +59,8 @@ defmodule Runic.Workflow.Serializer do
 
   def node_label(%Runic.Workflow.Join{hash: hash}), do: "Join(#{hash})"
 
+  def node_label(%Runic.Workflow.InputBinding{hash: hash}), do: "InputBinding(#{hash})"
+
   def node_label(%Runic.Workflow.Accumulator{name: name}) when not is_nil(name),
     do: "Acc: #{escape_label(name)}"
 
@@ -108,6 +110,7 @@ defmodule Runic.Workflow.Serializer do
   def node_shape(%Runic.Workflow.FanOut{}), do: {:parallelogram, "[/", "/]"}
   def node_shape(%Runic.Workflow.FanIn{}), do: {:parallelogram, "[\\", "\\]"}
   def node_shape(%Runic.Workflow.Join{}), do: {:hexagon, "{{", "}}"}
+  def node_shape(%Runic.Workflow.InputBinding{}), do: {:rect, "[", "]"}
   def node_shape(%Runic.Workflow.Accumulator{}), do: {:cylinder, "[(", ")]"}
   def node_shape(%Runic.Workflow.Rule{}), do: {:subroutine, "[[", "]]"}
   def node_shape(%Runic.Workflow.Map{}), do: {:stadium, "([", "])"}
@@ -126,6 +129,7 @@ defmodule Runic.Workflow.Serializer do
   def node_class(%Runic.Workflow.FanOut{}), do: "fanout"
   def node_class(%Runic.Workflow.FanIn{}), do: "fanin"
   def node_class(%Runic.Workflow.Join{}), do: "join"
+  def node_class(%Runic.Workflow.InputBinding{}), do: "inputbinding"
   def node_class(%Runic.Workflow.Accumulator{}), do: "accumulator"
   def node_class(%Runic.Workflow.Rule{}), do: "rule"
   def node_class(%Runic.Workflow.Map{}), do: "map"
