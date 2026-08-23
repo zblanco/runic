@@ -395,6 +395,58 @@ Zero- and one-arity steps receive zero or one argument. Multi-arity steps receiv
 positional values in declared input-port order. Runtime context is requested
 with `context/1`; an ordinary arity-two function is always a two-input function.
 
+### Nested Workflow Components
+
+A workflow becomes an authored nested component when it declares boundary
+`input_ports`, `output_ports`, or both. Add it with the same `connections:` API
+used for ordinary components:
+
+```elixir
+inner = Runic.step(fn value -> value * 2 end,
+  name: :inner,
+  inputs: [in: [type: :integer]],
+  outputs: [out: [type: :integer]]
+)
+
+child =
+  Workflow.new(
+    name: :double,
+    input_ports: [in: [type: :integer]],
+    output_ports: [out: [type: :integer, from: :inner]]
+  )
+  |> Workflow.add(inner)
+
+source = Runic.step(fn input -> input + 1 end,
+  name: :source,
+  outputs: [out: [type: :integer]]
+)
+
+sink = Runic.step(fn value -> value end,
+  name: :sink,
+  inputs: [value: [type: :integer]]
+)
+
+parent =
+  Workflow.new(name: :parent)
+  |> Workflow.add(source)
+  |> Workflow.add(child,
+    connections: [[from: {:source, :out}, to: :in]]
+  )
+  |> Workflow.add(sink,
+    connections: [[from: {:double, :out}, to: :value]]
+  )
+```
+
+The boundary name is the child workflow's name. Each downstream-readable output
+port needs `from: internal_component_name` so Runic can associate the public
+port with one compiled internal output. Output declarations without `:from`
+remain useful as contracts, but cannot be named connection sources.
+
+The parent build log stores the bounded child as one versioned, recursively
+replayable definition. Runtime facts, hooks, run context, and runnable state are
+not part of that construction definition. A workflow without boundary ports
+keeps the existing inline composition behavior.
+
 ## Evaluating Workflows
 
 ### Basic Execution
@@ -622,6 +674,7 @@ Workflow.add(workflow, merge_step, to: [:a, :b, :c])
 | Create workflow | `Runic.workflow(steps: [...], rules: [...])` |
 | Add component | `Workflow.add(workflow, component, to: parent)` |
 | Bind named ports | `Workflow.add(workflow, component, connections: [...])` |
+| Add nested workflow | Declare child boundary ports, then use `Workflow.add/3` |
 | Get authored graph | `Workflow.component_graph(workflow)` |
 | Get compiled flow graph | `Workflow.flow_graph(workflow)` |
 | Run one cycle | `Workflow.react(workflow, input)` |

@@ -14,6 +14,15 @@ defmodule Runic.Workflow.Definition do
   A workflow is treated as an authored nested boundary when it declares
   `input_ports`, `output_ports`, or both. Internal compiler workflows without
   boundary ports retain their existing composition behavior.
+
+  Output ports with `from: component_name` retain the ownership needed for a
+  parent to resolve downstream named connections after replay. Contract-only
+  outputs without `:from` are preserved but are not resolved by inference.
+
+  See the [Cheatsheet](cheatsheet.html#nested-workflow-components) and
+  [Usage Rules](usage-rules.html#prefer-explicit-boundaries-for-reusable-workflows)
+  for the public construction API. This definition is an internal persistence
+  contract and is not normally constructed directly.
   """
 
   alias Runic.Component

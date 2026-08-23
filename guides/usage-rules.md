@@ -333,6 +333,59 @@ flowchart LR
 Use these projections for topology inspection. Do not infer authored components
 from every scheduler-visible node in the full multigraph.
 
+### Prefer: Explicit Boundaries for Reusable Workflows
+
+Declare boundary ports when a child workflow should behave as one authored,
+durable component inside a parent:
+
+```elixir
+child =
+  Workflow.new(
+    name: :normalize_order,
+    input_ports: [order: [type: :map]],
+    output_ports: [normalized: [type: :map, from: :normalize]]
+  )
+  |> Workflow.add(
+    Runic.step(&normalize/1,
+      name: :normalize,
+      inputs: [order: [type: :map]],
+      outputs: [normalized: [type: :map]]
+    )
+  )
+
+parent = Workflow.add(parent, child,
+  connections: [[from: {:source, :order}, to: :order]]
+)
+```
+
+Declaring either `input_ports` or `output_ports` makes the child an explicit
+boundary. Its name, stable hash, boundary contracts, and ordered build log are
+stored as one nested definition in the parent. This is the right model when the
+child has a public contract, should remain identifiable in the component graph,
+or must replay as a unit.
+
+Use `from: internal_component_name` on every output that must feed a downstream
+named connection. Runic does not guess among internal productions. A contract-only
+output without `:from` is valid, but cannot be resolved as a connection source.
+
+Leave boundary ports unset for internal compiler workflows that should retain
+Runic's existing inline composition behavior. Do not add placeholder ports just
+to force nesting; a boundary is an authored API and should be stable enough to
+persist and reconnect.
+
+```mermaid
+flowchart LR
+  S[Parent source] -->|logical port connection| C[Child workflow component]
+  S1[Source invokable] --> B[InputBinding]
+  B --> I[Child internal entry]
+  I --> O[Child internal output]
+  C -. output port ownership .-> O
+  O --> D[Downstream binding]
+```
+
+The parent stores construction data, not execution state. Runtime facts, hooks,
+run context, and runnable state remain outside the nested definition.
+
 ### Map-Reduce Pattern
 
 ```elixir
@@ -438,6 +491,10 @@ Named connections are normalized into `%Runic.Workflow.Connection{}` data in
 the build log. A `build_log/1` and `from_log/1` round trip therefore rebuilds
 both the logical component connections and their compiled input-binding flow.
 
+Explicitly bounded child workflows are persisted recursively as versioned nested
+definitions. Replaying the parent rebuilds each child independently before
+reconnecting its boundary; child runtime state is never serialized as construction data.
+
 ## Debugging Tips
 
 1. **Visualize with Mermaid**:
@@ -478,6 +535,7 @@ both the logical component connections and their compiled input-binding flow.
 | **Always pin** | `^variable` for runtime values |
 | **Always name** | Components for debugging |
 | **Bind data with** | `connections:` for named ports, selectors, and target paths |
+| **Compose reusable workflows with** | Explicit boundary ports and named connections |
 | **Inspect topology with** | `component_graph/1` or `flow_graph/1`, depending on intent |
 | **Extract with** | `raw_productions/1`, not graph access |
 | **Serialize with** | `build_log/1` and `from_log/1` |

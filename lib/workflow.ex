@@ -321,6 +321,11 @@ defmodule Runic.Workflow do
   @doc """
   Constructs a new Runic Workflow with the given name or parameters.
 
+  A workflow that declares `:input_ports`, `:output_ports`, or both is treated
+  as an authored boundary when added to another workflow. Boundary output ports
+  use `from: component_name` to identify the internal production exposed to
+  downstream named connections.
+
   ## Examples
 
       iex> alias Runic.Workflow
@@ -693,6 +698,34 @@ defmodule Runic.Workflow do
   is the only internal production attributed to the child boundary. Output
   ports without `:from` remain valid for contract-only use but are not guessed
   when compiling downstream named connections.
+
+      child =
+        Workflow.new(
+          name: :double,
+          input_ports: [in: [type: :integer]],
+          output_ports: [out: [type: :integer, from: :inner]]
+        )
+        |> Workflow.add(
+          Runic.step(fn value -> value * 2 end,
+            name: :inner,
+            inputs: [in: [type: :integer]],
+            outputs: [out: [type: :integer]]
+          )
+        )
+
+      parent =
+        Workflow.new(name: :parent)
+        |> Workflow.add(source)
+        |> Workflow.add(child,
+          connections: [[from: {:source, :out}, to: :in]]
+        )
+
+  The parent build log stores one versioned definition for the child. Runtime
+  facts, run context, hooks, and runnable state are excluded. Workflows without
+  declared boundary ports retain inline composition behavior.
+
+  See the [Cheatsheet](cheatsheet.html#nested-workflow-components) and
+  [Usage Rules](usage-rules.html#prefer-explicit-boundaries-for-reusable-workflows).
   """
   def add(%__MODULE__{} = workflow, component, opts \\ []) do
     case Keyword.fetch(opts, :connections) do
