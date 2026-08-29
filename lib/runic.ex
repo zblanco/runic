@@ -4,6 +4,7 @@ defmodule Runic do
 
   alias Runic.Closure
   alias Runic.ClosureMetadata
+  alias Runic.Identity
   alias Runic.Workflow.CompilationUtils
   alias Runic.Workflow.Accumulator
   alias Runic.Workflow.Aggregate
@@ -24,6 +25,14 @@ defmodule Runic do
   defp default_component_name(component_kind, hash) do
     "#{component_kind}_#{hash}"
   end
+
+  defp identity_ast(%Identity{} = identity), do: Macro.escape(identity)
+
+  defp identity_ast({_, metadata, arguments} = ast)
+       when is_list(metadata) and (is_list(arguments) or is_atom(arguments)),
+       do: ast
+
+  defp identity_ast(term), do: Macro.escape(term)
 
   @doc """
   Creates a `%Step{}`: a basic lambda expression that can be added to a workflow.
@@ -158,8 +167,8 @@ defmodule Runic do
           work: unquote(final_work),
           closure: unquote(closure),
           name: unquote(default_component_name("step", step_hash)),
-          hash: unquote(step_hash),
-          work_hash: unquote(work_hash),
+          hash: unquote(identity_ast(step_hash)),
+          work_hash: unquote(identity_ast(work_hash)),
           inputs: nil,
           outputs: nil,
           meta_refs: unquote(escaped_meta_refs)
@@ -209,8 +218,8 @@ defmodule Runic do
         work: unquote(work),
         closure: unquote(closure),
         name: unquote(default_component_name("step", step_hash)),
-        hash: unquote(step_hash),
-        work_hash: unquote(work_hash),
+        hash: unquote(identity_ast(step_hash)),
+        work_hash: unquote(identity_ast(work_hash)),
         inputs: nil,
         outputs: nil
       )
@@ -258,8 +267,8 @@ defmodule Runic do
           work: unquote(final_work),
           closure: unquote(closure),
           name: unquote(step_name),
-          hash: unquote(step_hash),
-          work_hash: unquote(work_hash),
+          hash: unquote(identity_ast(step_hash)),
+          work_hash: unquote(identity_ast(work_hash)),
           inputs: unquote(rewritten_opts[:inputs]),
           outputs: unquote(rewritten_opts[:outputs]),
           meta_refs: unquote(escaped_meta_refs)
@@ -339,8 +348,8 @@ defmodule Runic do
           work: unquote(final_work),
           closure: unquote(closure),
           name: unquote(step_name),
-          hash: unquote(step_hash),
-          work_hash: unquote(work_hash),
+          hash: unquote(identity_ast(step_hash)),
+          work_hash: unquote(identity_ast(work_hash)),
           inputs: unquote(rewritten_opts[:inputs]),
           outputs: unquote(rewritten_opts[:outputs]),
           meta_refs: unquote(escaped_meta_refs)
@@ -462,8 +471,8 @@ defmodule Runic do
           work: unquote(final_work),
           closure: unquote(closure),
           name: unquote(default_component_name("condition", condition_hash)),
-          hash: unquote(condition_hash),
-          work_hash: unquote(work_hash),
+          hash: unquote(identity_ast(condition_hash)),
+          work_hash: unquote(identity_ast(work_hash)),
           arity: unquote(arity),
           meta_refs: unquote(escaped_meta_refs)
         )
@@ -511,8 +520,8 @@ defmodule Runic do
         work: work_fn,
         closure: unquote(closure),
         name: unquote(default_component_name("condition", condition_hash)),
-        hash: unquote(condition_hash),
-        work_hash: unquote(work_hash),
+        hash: unquote(identity_ast(condition_hash)),
+        work_hash: unquote(identity_ast(work_hash)),
         arity: arity
       )
     end
@@ -577,8 +586,8 @@ defmodule Runic do
               work: unquote(final_work),
               closure: unquote(closure),
               name: unquote(condition_name),
-              hash: unquote(condition_hash),
-              work_hash: unquote(work_hash),
+              hash: unquote(identity_ast(condition_hash)),
+              work_hash: unquote(identity_ast(work_hash)),
               arity: unquote(arity),
               meta_refs: unquote(escaped_meta_refs)
             )
@@ -634,8 +643,8 @@ defmodule Runic do
             work: work_fn,
             closure: unquote(closure),
             name: unquote(condition_name),
-            hash: unquote(condition_hash),
-            work_hash: unquote(work_hash),
+            hash: unquote(identity_ast(condition_hash)),
+            work_hash: unquote(identity_ast(work_hash)),
             arity: arity
           )
         end
@@ -1159,9 +1168,9 @@ defmodule Runic do
           name: unquote(rule_name),
           arity: unquote(arity),
           workflow: unquote(workflow),
-          hash: unquote(rule_hash),
-          condition_hash: unquote(condition_hash),
-          reaction_hash: unquote(reaction_hash),
+          hash: unquote(identity_ast(rule_hash)),
+          condition_hash: unquote(identity_ast(condition_hash)),
+          reaction_hash: unquote(identity_ast(reaction_hash)),
           closure: unquote(closure)
         }
       end
@@ -1176,8 +1185,8 @@ defmodule Runic do
           arity: unquote(arity),
           workflow: unquote(workflow),
           hash: rule_hash,
-          condition_hash: unquote(condition_hash),
-          reaction_hash: unquote(reaction_hash),
+          condition_hash: unquote(identity_ast(condition_hash)),
+          reaction_hash: unquote(identity_ast(reaction_hash)),
           closure: closure
         }
       end
@@ -1263,9 +1272,9 @@ defmodule Runic do
           name: unquote(rule_name),
           arity: unquote(arity),
           workflow: unquote(workflow),
-          condition_hash: unquote(condition_hash),
-          reaction_hash: unquote(reaction_hash),
-          hash: unquote(rule_hash),
+          condition_hash: unquote(identity_ast(condition_hash)),
+          reaction_hash: unquote(identity_ast(reaction_hash)),
+          hash: unquote(identity_ast(rule_hash)),
           closure: unquote(closure),
           inputs: unquote(rewritten_opts[:inputs]),
           outputs: unquote(rewritten_opts[:outputs])
@@ -1287,8 +1296,8 @@ defmodule Runic do
           name: rule_name,
           arity: unquote(arity),
           workflow: unquote(workflow),
-          condition_hash: unquote(condition_hash),
-          reaction_hash: unquote(reaction_hash),
+          condition_hash: unquote(identity_ast(condition_hash)),
+          reaction_hash: unquote(identity_ast(reaction_hash)),
           hash: rule_hash,
           closure: closure,
           inputs: unquote(rewritten_opts[:inputs]),
@@ -1402,9 +1411,9 @@ defmodule Runic do
           name: unquote(rule_name),
           arity: unquote(arity),
           workflow: unquote(workflow),
-          hash: unquote(rule_hash),
-          condition_hash: unquote(condition_hash),
-          reaction_hash: unquote(reaction_hash),
+          hash: unquote(identity_ast(rule_hash)),
+          condition_hash: unquote(identity_ast(condition_hash)),
+          reaction_hash: unquote(identity_ast(reaction_hash)),
           closure: unquote(closure),
           inputs: unquote(rewritten_opts[:inputs]),
           outputs: unquote(rewritten_opts[:outputs])
@@ -1427,8 +1436,8 @@ defmodule Runic do
           arity: unquote(arity),
           workflow: unquote(workflow),
           hash: rule_hash,
-          condition_hash: unquote(condition_hash),
-          reaction_hash: unquote(reaction_hash),
+          condition_hash: unquote(identity_ast(condition_hash)),
+          reaction_hash: unquote(identity_ast(reaction_hash)),
           closure: closure,
           inputs: unquote(rewritten_opts[:inputs]),
           outputs: unquote(rewritten_opts[:outputs])
@@ -1727,7 +1736,7 @@ defmodule Runic do
         reactor_rules: sm_reactor_rules,
         workflow: unquote(workflow_ast),
         source: unquote(Macro.escape(source)),
-        hash: unquote(state_machine_hash),
+        hash: unquote(identity_ast(state_machine_hash)),
         bindings: unquote(bindings),
         inputs: unquote(inputs),
         outputs: unquote(outputs)
@@ -1825,7 +1834,7 @@ defmodule Runic do
         compensation_rules: [],
         workflow: unquote(workflow_ast),
         source: unquote(Macro.escape(source)),
-        hash: unquote(saga_hash),
+        hash: unquote(identity_ast(saga_hash)),
         inputs: unquote(inputs),
         outputs: unquote(outputs)
       }
@@ -2030,7 +2039,7 @@ defmodule Runic do
       %Accumulator{
         init: unquote(init_ast),
         reducer: unquote(reducer_ast),
-        hash: unquote(acc_hash),
+        hash: unquote(identity_ast(acc_hash)),
         name: :"#{unquote(saga_name)}_accumulator",
         meta_refs: []
       }
@@ -2097,7 +2106,7 @@ defmodule Runic do
       condition =
         Condition.new(
           work: unquote(final_condition),
-          hash: unquote(condition_hash),
+          hash: unquote(identity_ast(condition_hash)),
           arity: 2,
           meta_refs: unquote(escaped_condition_meta_refs)
         )
@@ -2105,7 +2114,7 @@ defmodule Runic do
       reaction =
         Step.new(
           work: unquote(final_reaction),
-          hash: unquote(reaction_hash),
+          hash: unquote(identity_ast(reaction_hash)),
           meta_refs: unquote(escaped_reaction_meta_refs)
         )
 
@@ -2120,7 +2129,10 @@ defmodule Runic do
         name: rule_name,
         arity: 1,
         workflow: rule_workflow,
-        hash: Components.fact_hash({unquote(condition_hash), unquote(reaction_hash)}),
+        hash:
+          Components.fact_hash(
+            {unquote(identity_ast(condition_hash)), unquote(identity_ast(reaction_hash))}
+          ),
         condition_hash: condition.hash,
         reaction_hash: reaction.hash
       }
@@ -2165,7 +2177,7 @@ defmodule Runic do
       condition =
         Condition.new(
           work: unquote(final_condition),
-          hash: unquote(condition_hash),
+          hash: unquote(identity_ast(condition_hash)),
           arity: 2,
           meta_refs: unquote(escaped_condition_meta_refs)
         )
@@ -2173,7 +2185,7 @@ defmodule Runic do
       reaction =
         Step.new(
           work: unquote(final_reaction),
-          hash: unquote(reaction_hash),
+          hash: unquote(identity_ast(reaction_hash)),
           meta_refs: unquote(escaped_reaction_meta_refs)
         )
 
@@ -2188,7 +2200,10 @@ defmodule Runic do
         name: rule_name,
         arity: 1,
         workflow: rule_workflow,
-        hash: Components.fact_hash({unquote(condition_hash), unquote(reaction_hash)}),
+        hash:
+          Components.fact_hash(
+            {unquote(identity_ast(condition_hash)), unquote(identity_ast(reaction_hash))}
+          ),
         condition_hash: condition.hash,
         reaction_hash: reaction.hash
       }
@@ -2329,7 +2344,7 @@ defmodule Runic do
         command_rules: agg_command_rules,
         workflow: unquote(workflow_ast),
         source: unquote(Macro.escape(source)),
-        hash: unquote(agg_hash)
+        hash: unquote(identity_ast(agg_hash))
       }
     end
   end
@@ -2479,7 +2494,7 @@ defmodule Runic do
       %Accumulator{
         init: unquote(literal_init_ast),
         reducer: unquote(reducer_ast),
-        hash: unquote(acc_hash),
+        hash: unquote(identity_ast(acc_hash)),
         name: :"#{unquote(agg_name)}_accumulator",
         meta_refs: []
       }
@@ -2530,7 +2545,7 @@ defmodule Runic do
       condition =
         Condition.new(
           work: unquote(final_condition),
-          hash: unquote(condition_hash),
+          hash: unquote(identity_ast(condition_hash)),
           arity: unquote(condition_arity),
           meta_refs: unquote(escaped_condition_meta_refs)
         )
@@ -2538,7 +2553,7 @@ defmodule Runic do
       reaction =
         Step.new(
           work: unquote(final_reaction),
-          hash: unquote(reaction_hash),
+          hash: unquote(identity_ast(reaction_hash)),
           meta_refs: unquote(escaped_reaction_meta_refs)
         )
 
@@ -2551,7 +2566,10 @@ defmodule Runic do
         name: cmd_rule_name,
         arity: 1,
         workflow: rule_workflow,
-        hash: Components.fact_hash({unquote(condition_hash), unquote(reaction_hash)}),
+        hash:
+          Components.fact_hash(
+            {unquote(identity_ast(condition_hash)), unquote(identity_ast(reaction_hash))}
+          ),
         condition_hash: condition.hash,
         reaction_hash: reaction.hash
       }
@@ -2761,7 +2779,7 @@ defmodule Runic do
         completion_rule: pm_completion_rule,
         workflow: unquote(workflow_ast),
         source: unquote(Macro.escape(source)),
-        hash: unquote(pm_hash),
+        hash: unquote(identity_ast(pm_hash)),
         inputs: unquote(inputs),
         outputs: unquote(outputs)
       }
@@ -2893,7 +2911,7 @@ defmodule Runic do
       %Accumulator{
         init: unquote(literal_init_ast),
         reducer: unquote(reducer_ast),
-        hash: unquote(acc_hash),
+        hash: unquote(identity_ast(acc_hash)),
         name: :"#{unquote(pm_name)}_accumulator",
         meta_refs: []
       }
@@ -2971,7 +2989,7 @@ defmodule Runic do
       condition =
         Condition.new(
           work: unquote(condition_fn),
-          hash: unquote(condition_hash),
+          hash: unquote(identity_ast(condition_hash)),
           arity: 1,
           meta_refs: []
         )
@@ -2979,7 +2997,7 @@ defmodule Runic do
       reaction =
         Step.new(
           work: unquote(final_reaction),
-          hash: unquote(reaction_hash),
+          hash: unquote(identity_ast(reaction_hash)),
           meta_refs: unquote(escaped_reaction_meta_refs)
         )
 
@@ -2992,7 +3010,10 @@ defmodule Runic do
         name: unquote(rule_name),
         arity: 1,
         workflow: rule_workflow,
-        hash: Components.fact_hash({unquote(condition_hash), unquote(reaction_hash)}),
+        hash:
+          Components.fact_hash(
+            {unquote(identity_ast(condition_hash)), unquote(identity_ast(reaction_hash))}
+          ),
         condition_hash: condition.hash,
         reaction_hash: reaction.hash
       }
@@ -3037,7 +3058,7 @@ defmodule Runic do
       condition =
         Condition.new(
           work: unquote(final_condition),
-          hash: unquote(condition_hash),
+          hash: unquote(identity_ast(condition_hash)),
           arity: 2,
           meta_refs: unquote(escaped_condition_meta_refs)
         )
@@ -3045,7 +3066,7 @@ defmodule Runic do
       reaction =
         Step.new(
           work: unquote(reaction_fn),
-          hash: unquote(reaction_hash),
+          hash: unquote(identity_ast(reaction_hash)),
           meta_refs: []
         )
 
@@ -3060,7 +3081,10 @@ defmodule Runic do
         name: rule_name,
         arity: 1,
         workflow: rule_workflow,
-        hash: Components.fact_hash({unquote(condition_hash), unquote(reaction_hash)}),
+        hash:
+          Components.fact_hash(
+            {unquote(identity_ast(condition_hash)), unquote(identity_ast(reaction_hash))}
+          ),
         condition_hash: condition.hash,
         reaction_hash: reaction.hash
       }
@@ -3206,7 +3230,7 @@ defmodule Runic do
         entry_rules: fsm_entry_rules,
         workflow: unquote(workflow_ast),
         source: unquote(Macro.escape(source)),
-        hash: unquote(fsm_hash),
+        hash: unquote(identity_ast(fsm_hash)),
         inputs: unquote(inputs),
         outputs: unquote(outputs)
       }
@@ -3328,7 +3352,7 @@ defmodule Runic do
       %Accumulator{
         init: unquote(init_ast),
         reducer: unquote(reducer_ast),
-        hash: unquote(acc_hash),
+        hash: unquote(identity_ast(acc_hash)),
         name: :"#{unquote(fsm_name)}_accumulator",
         meta_refs: []
       }
@@ -3388,7 +3412,7 @@ defmodule Runic do
       condition =
         Condition.new(
           work: unquote(final_condition),
-          hash: unquote(condition_hash),
+          hash: unquote(identity_ast(condition_hash)),
           arity: 2,
           meta_refs: unquote(escaped_condition_meta_refs)
         )
@@ -3396,7 +3420,7 @@ defmodule Runic do
       reaction =
         Step.new(
           work: unquote(reaction_fn),
-          hash: unquote(reaction_hash),
+          hash: unquote(identity_ast(reaction_hash)),
           meta_refs: []
         )
 
@@ -3409,7 +3433,10 @@ defmodule Runic do
         name: unquote(rule_name),
         arity: 1,
         workflow: rule_workflow,
-        hash: Components.fact_hash({unquote(condition_hash), unquote(reaction_hash)}),
+        hash:
+          Components.fact_hash(
+            {unquote(identity_ast(condition_hash)), unquote(identity_ast(reaction_hash))}
+          ),
         condition_hash: condition.hash,
         reaction_hash: reaction.hash
       }
@@ -3458,7 +3485,7 @@ defmodule Runic do
       entry_condition =
         Condition.new(
           work: unquote(final_condition),
-          hash: unquote(condition_hash),
+          hash: unquote(identity_ast(condition_hash)),
           arity: 2,
           meta_refs: unquote(escaped_condition_meta_refs)
         )
@@ -3466,7 +3493,7 @@ defmodule Runic do
       entry_reaction =
         Step.new(
           work: unquote(reaction_fn),
-          hash: unquote(reaction_hash),
+          hash: unquote(identity_ast(reaction_hash)),
           meta_refs: []
         )
 
@@ -3479,7 +3506,10 @@ defmodule Runic do
         name: unquote(rule_name),
         arity: 1,
         workflow: entry_rule_workflow,
-        hash: Components.fact_hash({unquote(condition_hash), unquote(reaction_hash)}),
+        hash:
+          Components.fact_hash(
+            {unquote(identity_ast(condition_hash)), unquote(identity_ast(reaction_hash))}
+          ),
         condition_hash: entry_condition.hash,
         reaction_hash: entry_reaction.hash
       }
@@ -3643,7 +3673,7 @@ defmodule Runic do
         %Runic.Workflow.Map{
           name: unquote(map_name),
           pipeline: unquote(map_pipeline),
-          hash: unquote(map_hash),
+          hash: unquote(identity_ast(map_hash)),
           closure: unquote(closure),
           inputs: unquote(rewritten_opts[:inputs]),
           outputs: unquote(rewritten_opts[:outputs])
@@ -3791,12 +3821,12 @@ defmodule Runic do
       quote do
         %Runic.Workflow.Reduce{
           name: unquote(reduce_name),
-          hash: unquote(reduce_hash),
+          hash: unquote(identity_ast(reduce_hash)),
           fan_in: %FanIn{
             map: unquote(map_to_reduce),
             init: fn -> unquote(acc) end,
             reducer: unquote(final_reducer),
-            hash: unquote(fan_in_hash),
+            hash: unquote(identity_ast(fan_in_hash)),
             name: unquote(reduce_name),
             meta_refs: unquote(escaped_meta_refs)
           },
@@ -3936,8 +3966,8 @@ defmodule Runic do
           name: unquote(accumulator_name),
           init: fn -> unquote(init) end,
           reducer: unquote(final_reducer),
-          hash: unquote(accumulator_hash),
-          reduce_hash: unquote(reduce_hash),
+          hash: unquote(identity_ast(accumulator_hash)),
+          reduce_hash: unquote(identity_ast(reduce_hash)),
           closure: unquote(closure),
           inputs: unquote(rewritten_opts[:inputs]),
           outputs: unquote(rewritten_opts[:outputs]),
@@ -4358,7 +4388,7 @@ defmodule Runic do
     fan_out =
       quote do
         %FanOut{
-          hash: unquote(fan_out_hash),
+          hash: unquote(identity_ast(fan_out_hash)),
           name: unquote(name)
         }
       end
@@ -4370,7 +4400,7 @@ defmodule Runic do
       |> Workflow.add_step(unquote(fan_out))
       |> Workflow.add_step(unquote(fan_out), unquote(step))
 
-      # |> Workflow.add(unquote(step), to: unquote(fan_out_hash))
+      # |> Workflow.add(unquote(step), to: unquote(identity_ast(fan_out_hash)))
     end
   end
 
@@ -4380,7 +4410,7 @@ defmodule Runic do
     fan_out =
       quote do
         %FanOut{
-          hash: unquote(fan_out_hash),
+          hash: unquote(identity_ast(fan_out_hash)),
           name: unquote(name)
         }
       end
@@ -4390,7 +4420,7 @@ defmodule Runic do
     quote do
       unquote(wrk_expression)
       |> Workflow.add_step(unquote(fan_out))
-      |> Workflow.add(unquote(step), to: unquote(fan_out_hash))
+      |> Workflow.add(unquote(step), to: unquote(identity_ast(fan_out_hash)))
     end
   end
 
@@ -4404,7 +4434,7 @@ defmodule Runic do
     fan_out =
       quote do
         %FanOut{
-          hash: unquote(fan_out_hash),
+          hash: unquote(identity_ast(fan_out_hash)),
           name: unquote(name)
         }
       end
@@ -4416,13 +4446,20 @@ defmodule Runic do
 
     parent_hashes = Enum.map(parent_steps_with_hashes, &elem(&1, 0))
 
+    parent_steps_with_hashes_ast =
+      Enum.map(parent_steps_with_hashes, fn {hash, step_ast} ->
+        quote do
+          {unquote(identity_ast(hash)), unquote(step_ast)}
+        end
+      end)
+
     join_hash = Components.fact_hash(Enum.map(parent_steps_with_hashes, &elem(&1, 0)))
 
     join =
       quote do
         %Join{
-          hash: unquote(join_hash),
-          joins: unquote(parent_hashes)
+          hash: unquote(identity_ast(join_hash)),
+          joins: unquote(identity_ast(parent_hashes))
         }
       end
 
@@ -4431,12 +4468,16 @@ defmodule Runic do
         unquote(wrk_expression)
         |> Workflow.add_step(unquote(fan_out))
         |> then(fn wrk_expression ->
-          Enum.reduce(unquote(parent_steps_with_hashes), wrk_expression, fn {_, join_step}, acc ->
+          Enum.reduce([unquote_splicing(parent_steps_with_hashes_ast)], wrk_expression, fn {_,
+                                                                                            join_step},
+                                                                                           acc ->
             Workflow.add_step(acc, unquote(fan_out), join_step)
           end)
         end)
         |> then(fn wrk_expression ->
-          Enum.reduce(unquote(parent_steps_with_hashes), wrk_expression, fn {_, join_step}, acc ->
+          Enum.reduce([unquote_splicing(parent_steps_with_hashes_ast)], wrk_expression, fn {_,
+                                                                                            join_step},
+                                                                                           acc ->
             Workflow.add_step(acc, join_step, unquote(join))
           end)
         end)
@@ -4451,7 +4492,9 @@ defmodule Runic do
 
       quote generated: true do
         unquote(wrk_acc)
-        |> Workflow.add(unquote(dependent_pipeline_workflow), to: unquote(join_hash))
+        |> Workflow.add(unquote(dependent_pipeline_workflow),
+          to: unquote(identity_ast(join_hash))
+        )
       end
     end)
   end
@@ -4466,7 +4509,7 @@ defmodule Runic do
     fan_out =
       quote do
         %FanOut{
-          hash: unquote(fan_out_hash),
+          hash: unquote(identity_ast(fan_out_hash)),
           name: unquote(name)
         }
       end
@@ -4477,7 +4520,7 @@ defmodule Runic do
       quote generated: true do
         unquote(wrk_expression)
         |> Workflow.add_step(unquote(fan_out))
-        |> Workflow.add(unquote(step), to: unquote(fan_out_hash))
+        |> Workflow.add(unquote(step), to: unquote(identity_ast(fan_out_hash)))
       end
 
     dependent_pipeline_workflow =
@@ -4499,7 +4542,7 @@ defmodule Runic do
     fan_out =
       quote do
         %FanOut{
-          hash: unquote(fan_out_hash),
+          hash: unquote(identity_ast(fan_out_hash)),
           name: unquote(name)
         }
       end
@@ -4516,7 +4559,9 @@ defmodule Runic do
 
       quote generated: true do
         unquote(wrk_acc)
-        |> Workflow.add(unquote(dependent_pipeline_workflow), to: unquote(fan_out_hash))
+        |> Workflow.add(unquote(dependent_pipeline_workflow),
+          to: unquote(identity_ast(fan_out_hash))
+        )
       end
     end)
   end
@@ -4532,7 +4577,7 @@ defmodule Runic do
       %Accumulator{
         init: unquote(init),
         reducer: unquote(reducer),
-        hash: unquote(acc_hash),
+        hash: unquote(identity_ast(acc_hash)),
         name: :"#{unquote(sm_name)}_accumulator",
         meta_refs: unquote(meta_refs)
       }
@@ -4546,7 +4591,7 @@ defmodule Runic do
       %Accumulator{
         init: unquote(init),
         reducer: unquote(reducer),
-        hash: unquote(acc_hash),
+        hash: unquote(identity_ast(acc_hash)),
         name: :"#{unquote(sm_name)}_accumulator",
         meta_refs: unquote(meta_refs)
       }
@@ -4566,7 +4611,7 @@ defmodule Runic do
       %Accumulator{
         init: unquote(init_fun),
         reducer: unquote(reducer),
-        hash: unquote(acc_hash),
+        hash: unquote(identity_ast(acc_hash)),
         name: :"#{unquote(sm_name)}_accumulator",
         meta_refs: unquote(meta_refs)
       }
@@ -4585,7 +4630,7 @@ defmodule Runic do
       %Accumulator{
         init: unquote(literal_init_ast),
         reducer: unquote(reducer),
-        hash: unquote(acc_hash),
+        hash: unquote(identity_ast(acc_hash)),
         name: :"#{unquote(sm_name)}_accumulator",
         meta_refs: unquote(meta_refs)
       }
@@ -4697,7 +4742,7 @@ defmodule Runic do
       condition =
         Condition.new(
           work: unquote(final_condition),
-          hash: unquote(condition_hash),
+          hash: unquote(identity_ast(condition_hash)),
           arity: 2,
           meta_refs: unquote(escaped_condition_meta_refs)
         )
@@ -4705,7 +4750,7 @@ defmodule Runic do
       reaction =
         Step.new(
           work: unquote(final_reaction),
-          hash: unquote(reaction_hash),
+          hash: unquote(identity_ast(reaction_hash)),
           meta_refs: unquote(escaped_reaction_meta_refs)
         )
 
@@ -4718,7 +4763,10 @@ defmodule Runic do
         name: sm_rule_name,
         arity: 1,
         workflow: rule_workflow,
-        hash: Components.fact_hash({unquote(condition_hash), unquote(reaction_hash)}),
+        hash:
+          Components.fact_hash(
+            {unquote(identity_ast(condition_hash)), unquote(identity_ast(reaction_hash))}
+          ),
         condition_hash: condition.hash,
         reaction_hash: reaction.hash
       }
@@ -4806,7 +4854,7 @@ defmodule Runic do
       condition =
         Condition.new(
           work: unquote(final_condition),
-          hash: unquote(condition_hash),
+          hash: unquote(identity_ast(condition_hash)),
           arity: 2,
           meta_refs: unquote(escaped_condition_meta_refs)
         )
@@ -4814,7 +4862,7 @@ defmodule Runic do
       reaction =
         Step.new(
           work: unquote(final_reaction),
-          hash: unquote(reaction_hash),
+          hash: unquote(identity_ast(reaction_hash)),
           meta_refs: unquote(escaped_reaction_meta_refs)
         )
 
@@ -4827,7 +4875,10 @@ defmodule Runic do
         name: sm_rule_name,
         arity: 1,
         workflow: rule_workflow,
-        hash: Components.fact_hash({unquote(condition_hash), unquote(reaction_hash)}),
+        hash:
+          Components.fact_hash(
+            {unquote(identity_ast(condition_hash)), unquote(identity_ast(reaction_hash))}
+          ),
         condition_hash: condition.hash,
         reaction_hash: reaction.hash
       }
@@ -5035,9 +5086,9 @@ defmodule Runic do
           name: unquote(rule_name),
           arity: unquote(arity),
           workflow: unquote(workflow),
-          condition_hash: unquote(condition_hash),
-          reaction_hash: unquote(reaction_hash),
-          hash: unquote(rule_hash),
+          condition_hash: unquote(identity_ast(condition_hash)),
+          reaction_hash: unquote(identity_ast(reaction_hash)),
+          hash: unquote(identity_ast(rule_hash)),
           closure: unquote(closure),
           inputs: unquote(rewritten_opts[:inputs]),
           outputs: unquote(rewritten_opts[:outputs])
@@ -5059,8 +5110,8 @@ defmodule Runic do
           name: rule_name,
           arity: unquote(arity),
           workflow: unquote(workflow),
-          condition_hash: unquote(condition_hash),
-          reaction_hash: unquote(reaction_hash),
+          condition_hash: unquote(identity_ast(condition_hash)),
+          reaction_hash: unquote(identity_ast(reaction_hash)),
           hash: rule_hash,
           closure: closure,
           inputs: unquote(rewritten_opts[:inputs]),
@@ -5154,9 +5205,9 @@ defmodule Runic do
           name: unquote(rule_name),
           arity: unquote(arity),
           workflow: unquote(workflow),
-          condition_hash: unquote(condition_hash),
-          reaction_hash: unquote(reaction_hash),
-          hash: unquote(rule_hash),
+          condition_hash: unquote(identity_ast(condition_hash)),
+          reaction_hash: unquote(identity_ast(reaction_hash)),
+          hash: unquote(identity_ast(rule_hash)),
           closure: unquote(closure),
           inputs: unquote(rewritten_opts[:inputs]),
           outputs: unquote(rewritten_opts[:outputs]),
@@ -5179,8 +5230,8 @@ defmodule Runic do
           name: rule_name,
           arity: unquote(arity),
           workflow: unquote(workflow),
-          condition_hash: unquote(condition_hash),
-          reaction_hash: unquote(reaction_hash),
+          condition_hash: unquote(identity_ast(condition_hash)),
+          reaction_hash: unquote(identity_ast(reaction_hash)),
           hash: rule_hash,
           closure: closure,
           inputs: unquote(rewritten_opts[:inputs]),
@@ -5522,7 +5573,8 @@ defmodule Runic do
   defp workflow_of_rule({condition, reaction}, arity) do
     reaction_ast_hash = Components.fact_hash(reaction)
 
-    reaction = quote(do: Step.new(work: unquote(reaction), hash: unquote(reaction_ast_hash)))
+    reaction =
+      quote(do: Step.new(work: unquote(reaction), hash: unquote(identity_ast(reaction_ast_hash))))
 
     condition_ast_hash = Components.fact_hash(condition)
 
@@ -5531,7 +5583,7 @@ defmodule Runic do
         do:
           Condition.new(
             work: unquote(condition),
-            hash: unquote(condition_ast_hash),
+            hash: unquote(identity_ast(condition_ast_hash)),
             arity: unquote(arity)
           )
       )
@@ -5551,7 +5603,10 @@ defmodule Runic do
   defp workflow_of_rule({:fn, _, [{:->, _, [[], _rhs]}]} = expression, 0 = _arity) do
     reaction_ast_hash = Components.fact_hash(expression)
 
-    reaction = quote(do: Step.new(work: unquote(expression), hash: unquote(reaction_ast_hash)))
+    reaction =
+      quote(
+        do: Step.new(work: unquote(expression), hash: unquote(identity_ast(reaction_ast_hash)))
+      )
 
     workflow =
       quote do
@@ -5577,7 +5632,7 @@ defmodule Runic do
         do:
           Step.new(
             work: unquote(expression),
-            hash: unquote(reaction_ast_hash)
+            hash: unquote(identity_ast(reaction_ast_hash))
           )
       )
 
@@ -5600,7 +5655,7 @@ defmodule Runic do
       quote do
         Condition.new(
           work: unquote(condition_fun),
-          hash: unquote(condition_ast_hash),
+          hash: unquote(identity_ast(condition_ast_hash)),
           arity: unquote(arity)
         )
       end
@@ -5659,13 +5714,17 @@ defmodule Runic do
       quote do
         Condition.new(
           work: unquote(condition_fun),
-          hash: unquote(condition_ast_hash),
+          hash: unquote(identity_ast(condition_ast_hash)),
           arity: unquote(arity)
         )
       end
 
     reaction_ast_hash = Components.fact_hash(expression)
-    reaction = quote(do: Step.new(work: unquote(expression), hash: unquote(reaction_ast_hash)))
+
+    reaction =
+      quote(
+        do: Step.new(work: unquote(expression), hash: unquote(identity_ast(reaction_ast_hash)))
+      )
 
     workflow =
       quote do
@@ -5693,7 +5752,7 @@ defmodule Runic do
       quote do
         Step.new(
           work: unquote(reaction),
-          hash: unquote(reaction_ast_hash),
+          hash: unquote(identity_ast(reaction_ast_hash)),
           meta_refs: unquote(escaped_reaction_meta_refs)
         )
       end
@@ -5705,7 +5764,7 @@ defmodule Runic do
       quote do
         Condition.new(
           work: unquote(condition),
-          hash: unquote(condition_ast_hash),
+          hash: unquote(identity_ast(condition_ast_hash)),
           arity: unquote(condition_arity),
           meta_refs: unquote(escaped_condition_meta_refs)
         )
@@ -5789,7 +5848,7 @@ defmodule Runic do
       quote do
         Step.new(
           work: unquote(meta_reaction),
-          hash: unquote(reaction_ast_hash),
+          hash: unquote(identity_ast(reaction_ast_hash)),
           meta_refs: unquote(escaped_meta_refs)
         )
       end
@@ -5820,7 +5879,7 @@ defmodule Runic do
       quote do
         Step.new(
           work: unquote(meta_reaction),
-          hash: unquote(reaction_ast_hash),
+          hash: unquote(identity_ast(reaction_ast_hash)),
           meta_refs: unquote(escaped_meta_refs)
         )
       end
@@ -5844,7 +5903,7 @@ defmodule Runic do
       quote do
         Condition.new(
           work: unquote(condition_fun),
-          hash: unquote(condition_ast_hash),
+          hash: unquote(identity_ast(condition_ast_hash)),
           arity: unquote(arity)
         )
       end
@@ -5881,7 +5940,7 @@ defmodule Runic do
       quote do
         Step.new(
           work: unquote(meta_reaction),
-          hash: unquote(reaction_ast_hash),
+          hash: unquote(identity_ast(reaction_ast_hash)),
           meta_refs: unquote(escaped_meta_refs)
         )
       end
@@ -5918,7 +5977,7 @@ defmodule Runic do
       quote do
         Condition.new(
           work: unquote(condition_fun),
-          hash: unquote(condition_ast_hash),
+          hash: unquote(identity_ast(condition_ast_hash)),
           arity: unquote(arity)
         )
       end
@@ -5930,7 +5989,7 @@ defmodule Runic do
       quote do
         Step.new(
           work: unquote(meta_reaction),
-          hash: unquote(reaction_ast_hash),
+          hash: unquote(identity_ast(reaction_ast_hash)),
           meta_refs: unquote(escaped_meta_refs)
         )
       end
@@ -6552,7 +6611,7 @@ defmodule Runic do
       quote do
         Step.new(
           work: unquote(reaction_fn),
-          hash: unquote(reaction_ast_hash),
+          hash: unquote(identity_ast(reaction_ast_hash)),
           meta_refs: unquote(escaped_reaction_meta_refs)
         )
       end
@@ -6619,7 +6678,7 @@ defmodule Runic do
           quote do
             Condition.new(
               work: unquote(condition_fn),
-              hash: unquote(condition_ast_hash),
+              hash: unquote(identity_ast(condition_ast_hash)),
               arity: 1
             )
           end
@@ -6632,7 +6691,7 @@ defmodule Runic do
 
     conjunction =
       quote do
-        Conjunction.new(unquote(inline_hashes), unquote(escaped_refs))
+        Conjunction.new(unquote(identity_ast(inline_hashes)), unquote(escaped_refs))
       end
 
     workflow =
@@ -6661,12 +6720,12 @@ defmodule Runic do
 
     conjunction_hash =
       quote do
-        Conjunction.new(unquote(inline_hashes), unquote(escaped_refs)).hash
+        Conjunction.new(unquote(identity_ast(inline_hashes)), unquote(escaped_refs)).hash
       end
 
     rule_condition_refs =
       quote do
-        conj_hash = unquote(conjunction_hash)
+        conj_hash = unquote(identity_ast(conjunction_hash))
         Enum.map(unquote(escaped_refs), fn ref_name -> {ref_name, conj_hash} end)
       end
 
@@ -6749,7 +6808,10 @@ defmodule Runic do
 
     # Separate static and dynamic refs
     {static_refs, dynamic_refs} =
-      Enum.split_with(rule_condition_refs, fn {_name, target} -> is_integer(target) end)
+      Enum.split_with(rule_condition_refs, fn
+        {_name, %Runic.Identity{}} -> true
+        {_name, target} -> is_integer(target)
+      end)
 
     rule_condition_refs_ast =
       if Enum.empty?(dynamic_refs) do
@@ -6785,7 +6847,7 @@ defmodule Runic do
       quote do
         Condition.new(
           work: unquote(condition_fn),
-          hash: unquote(condition_ast_hash),
+          hash: unquote(identity_ast(condition_ast_hash)),
           arity: 1
         )
       end
@@ -6807,7 +6869,7 @@ defmodule Runic do
           quote do
             Condition.new(
               work: unquote(condition_fn),
-              hash: unquote(condition_ast_hash),
+              hash: unquote(identity_ast(condition_ast_hash)),
               arity: 1
             )
           end
@@ -6820,7 +6882,7 @@ defmodule Runic do
 
     conj_hash_ast =
       quote do
-        Conjunction.new(unquote(inline_hashes), unquote(escaped_refs)).hash
+        Conjunction.new(unquote(identity_ast(inline_hashes)), unquote(escaped_refs)).hash
       end
 
     {:and_branch, inline_conditions, condition_refs, conj_hash_ast}
@@ -6850,7 +6912,7 @@ defmodule Runic do
             escaped_refs = Macro.escape(condition_refs)
 
             quote do
-              conj = Conjunction.new(unquote(inline_hashes), unquote(escaped_refs))
+              conj = Conjunction.new(unquote(identity_ast(inline_hashes)), unquote(escaped_refs))
 
               wrk =
                 Enum.reduce(
@@ -6861,7 +6923,7 @@ defmodule Runic do
 
               branch_inline_conds =
                 Enum.filter(Multigraph.vertices(wrk.graph), fn
-                  %Condition{hash: h} -> h in unquote(inline_hashes)
+                  %Condition{hash: h} -> h in unquote(identity_ast(inline_hashes))
                   _ -> false
                 end)
 
@@ -6939,7 +7001,7 @@ defmodule Runic do
       quote do
         Condition.new(
           work: unquote(condition_fn),
-          hash: unquote(condition_ast_hash),
+          hash: unquote(identity_ast(condition_ast_hash)),
           arity: 1
         )
       end

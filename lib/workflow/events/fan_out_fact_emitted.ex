@@ -11,8 +11,11 @@ defmodule Runic.Workflow.Events.FanOutFactEmitted do
           fan_out_hash: term(),
           source_fact_hash: term(),
           emitted_fact_hash: term(),
+          emitted_content_digest: Runic.Identity.t() | nil,
+          emitted_payload_digest: Runic.Identity.t() | nil,
           emitted_value: term(),
           emitted_ancestry: {term(), term()} | nil,
+          emitted_causal_ancestry: Runic.Workflow.FactAncestry.t() | nil,
           weight: non_neg_integer()
         }
 
@@ -20,8 +23,11 @@ defmodule Runic.Workflow.Events.FanOutFactEmitted do
     :fan_out_hash,
     :source_fact_hash,
     :emitted_fact_hash,
+    :emitted_content_digest,
+    :emitted_payload_digest,
     :emitted_value,
     :emitted_ancestry,
+    :emitted_causal_ancestry,
     :weight
   ]
 end

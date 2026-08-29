@@ -239,10 +239,29 @@ defmodule Runic.Workflow.Private do
   end
 
   defp equivalent_fact_identity?(
+         %Fact{id: %Runic.Identity{} = id} = existing,
+         %Fact{id: id} = incoming
+       ) do
+    existing.value === incoming.value and
+      existing.content_digest == incoming.content_digest and
+      existing.payload_digest == incoming.payload_digest and
+      existing.causal_ancestry == incoming.causal_ancestry
+  end
+
+  defp equivalent_fact_identity?(
          %Fact{value: value, ancestry: ancestry},
          %Fact{value: value, ancestry: ancestry}
        ),
        do: true
+
+  defp equivalent_fact_identity?(
+         %FactRef{id: %Runic.Identity{} = id} = existing,
+         %FactRef{id: id} = incoming
+       ) do
+    existing.content_digest == incoming.content_digest and
+      existing.payload_digest == incoming.payload_digest and
+      existing.causal_ancestry == incoming.causal_ancestry
+  end
 
   defp equivalent_fact_identity?(
          %FactRef{ancestry: ancestry},
@@ -253,11 +272,24 @@ defmodule Runic.Workflow.Private do
   defp equivalent_fact_identity?(_existing, _incoming), do: false
 
   defp identity_summary(%Fact{} = fact) do
-    %{type: Fact, hash: fact.hash, ancestry: fact.ancestry, value_type: value_type(fact.value)}
+    %{
+      type: Fact,
+      hash: fact.hash,
+      content_digest: fact.content_digest,
+      payload_digest: fact.payload_digest,
+      ancestry: fact.ancestry,
+      value_type: value_type(fact.value)
+    }
   end
 
   defp identity_summary(%FactRef{} = ref) do
-    %{type: FactRef, hash: ref.hash, ancestry: ref.ancestry}
+    %{
+      type: FactRef,
+      hash: ref.hash,
+      content_digest: ref.content_digest,
+      payload_digest: ref.payload_digest,
+      ancestry: ref.ancestry
+    }
   end
 
   defp identity_summary(%{__struct__: type, hash: hash}), do: %{type: type, hash: hash}
@@ -368,6 +400,10 @@ defmodule Runic.Workflow.Private do
 
   defp resolve_component_to_node(%Workflow{graph: g}, hash) when is_integer(hash) do
     Map.get(g.vertices, hash)
+  end
+
+  defp resolve_component_to_node(%Workflow{graph: g}, %Runic.Identity{} = identity) do
+    Map.get(g.vertices, identity)
   end
 
   defp get_before_hooks(%Workflow{} = workflow, hash) do
@@ -677,7 +713,7 @@ defmodule Runic.Workflow.Private do
 
   defp resolve_target_node(workflow, target) do
     case target do
-      hash when is_integer(hash) ->
+      hash when is_integer(hash) or is_struct(hash, Runic.Identity) ->
         Map.get(workflow.graph.vertices, hash)
 
       name when is_atom(name) ->

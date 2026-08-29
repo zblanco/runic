@@ -1197,6 +1197,17 @@ defmodule Runic.Runner.Worker do
         _ -> :ok
       end)
     end
+
+    if function_exported?(store_mod, :save_payload, 3) do
+      Enum.each(events, fn
+        %FactProduced{payload_digest: %Runic.Identity{} = digest, value: value} ->
+          encoded_payload = :erlang.term_to_binary(value, [:deterministic])
+          store_mod.save_payload(digest, encoded_payload, store_state)
+
+        _other ->
+          :ok
+      end)
+    end
   end
 
   defp strip_fact_values(events) do

@@ -53,7 +53,7 @@ defmodule Runic.Workflow.Connection do
   @type component_ref :: atom() | String.t() | non_neg_integer() | {atom() | String.t(), atom()}
   @type port_name :: atom()
   @type path_segment :: atom() | String.t() | non_neg_integer()
-  @type connection_id :: atom() | String.t() | non_neg_integer()
+  @type connection_id :: atom() | String.t() | non_neg_integer() | Runic.Identity.t()
 
   @type t :: %__MODULE__{
           id: connection_id(),
@@ -102,7 +102,10 @@ defmodule Runic.Workflow.Connection do
 
     id =
       Map.get(spec, :id) ||
-        Components.fact_hash({source, source_port, target, target_port, selector, target_path})
+        Components.identity(
+          :connection_definition,
+          {source, source_port, target, target_port, selector, target_path}
+        )
 
     validate_connection!(%__MODULE__{
       id: id,
@@ -164,9 +167,10 @@ defmodule Runic.Workflow.Connection do
     normalize_path!(connection.target_path, :target_path)
 
     unless is_atom(connection.id) or is_binary(connection.id) or
-             (is_integer(connection.id) and connection.id >= 0) do
+             (is_integer(connection.id) and connection.id >= 0) or
+             is_struct(connection.id, Runic.Identity) do
       raise ArgumentError,
-            "connection id must be an atom, string, or non-negative integer, got: #{inspect(connection.id)}"
+            "connection id must be an identity, atom, string, or non-negative integer, got: #{inspect(connection.id)}"
     end
 
     connection

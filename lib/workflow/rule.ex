@@ -25,11 +25,11 @@ defmodule Runic.Workflow.Rule do
           name: String.t(),
           arity: arity(),
           workflow: Workflow.t(),
-          hash: integer(),
-          condition_hash: integer(),
-          reaction_hash: integer(),
+          hash: Runic.Identity.t() | integer() | binary(),
+          condition_hash: Runic.Identity.t() | integer() | binary(),
+          reaction_hash: Runic.Identity.t() | integer() | binary(),
           closure: Closure.t() | nil,
-          condition_refs: [{atom(), integer()}]
+          condition_refs: [{atom(), term()}]
         }
 
   def new(opts \\ []) do

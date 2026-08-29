@@ -54,6 +54,8 @@ defmodule Runic.Workflow.PolicyDriver do
   # ---------------------------------------------------------------------------
 
   defp do_execute(%Runnable{} = runnable, %SchedulerPolicy{} = policy, attempt, opts) do
+    runnable = Runnable.for_attempt(runnable, attempt)
+
     case check_deadline(opts) do
       :ok ->
         result = execute_with_timeout(runnable, policy, opts)
@@ -95,6 +97,8 @@ defmodule Runic.Workflow.PolicyDriver do
   # ---------------------------------------------------------------------------
 
   defp do_execute_with_events(%Runnable{} = runnable, %SchedulerPolicy{} = policy, attempt, opts) do
+    runnable = Runnable.for_attempt(runnable, attempt)
+
     case check_deadline(opts) do
       :ok ->
         dispatched_event = build_dispatched_event(runnable, policy, attempt)
@@ -168,6 +172,8 @@ defmodule Runic.Workflow.PolicyDriver do
   defp build_dispatched_event(%Runnable{} = runnable, %SchedulerPolicy{} = policy, attempt) do
     %RunnableDispatched{
       runnable_id: runnable.id,
+      activation_id: runnable.activation_id,
+      attempt_id: runnable.attempt_id,
       node_name: Map.get(runnable.node, :name, runnable.node.hash),
       node_hash: runnable.node.hash,
       input_fact: runnable.input_fact,
@@ -180,6 +186,8 @@ defmodule Runic.Workflow.PolicyDriver do
   defp build_completed_event(%Runnable{} = runnable, attempt, duration_ms) do
     %RunnableCompleted{
       runnable_id: runnable.id,
+      activation_id: runnable.activation_id,
+      attempt_id: runnable.attempt_id,
       node_hash: runnable.node.hash,
       result_fact: runnable.result,
       completed_at: System.monotonic_time(:millisecond),
@@ -191,6 +199,8 @@ defmodule Runic.Workflow.PolicyDriver do
   defp build_failed_event(%Runnable{} = runnable, attempts, failure_action) do
     %RunnableFailed{
       runnable_id: runnable.id,
+      activation_id: runnable.activation_id,
+      attempt_id: runnable.attempt_id,
       node_hash: runnable.node.hash,
       error: runnable.error,
       failed_at: System.monotonic_time(:millisecond),
@@ -310,13 +320,10 @@ defmodule Runic.Workflow.PolicyDriver do
         alias Runic.Workflow.Events.{FactProduced, ActivationConsumed}
 
         events = [
-          %FactProduced{
-            hash: result_fact.hash,
-            value: result_fact.value,
-            ancestry: result_fact.ancestry,
+          FactProduced.new(result_fact,
             producer_label: :produced,
             weight: (runnable.context.ancestry_depth || 0) + 1
-          },
+          ),
           %ActivationConsumed{
             fact_hash: runnable.input_fact.hash,
             node_hash: runnable.node.hash,

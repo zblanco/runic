@@ -28,7 +28,7 @@ defmodule Runic.Workflow.CausalContext do
   alias Runic.Workflow.Fact
 
   @type t :: %__MODULE__{
-          node_hash: integer() | nil,
+          node_hash: term() | nil,
           input_fact: Fact.t() | nil,
           ancestry_depth: non_neg_integer(),
           hooks: {list(), list()},
@@ -70,7 +70,7 @@ defmodule Runic.Workflow.CausalContext do
   @doc """
   Builds a basic context with node hash, input fact, and ancestry depth.
   """
-  @spec basic(integer(), Fact.t(), non_neg_integer()) :: t()
+  @spec basic(term(), Fact.t(), non_neg_integer()) :: t()
   def basic(node_hash, input_fact, ancestry_depth) do
     %__MODULE__{
       node_hash: node_hash,

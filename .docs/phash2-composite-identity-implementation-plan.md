@@ -5,7 +5,7 @@
 - **Target baseline:** Runic `0.1.0-alpha.9`
 - **Trigger:** [GitHub issue #16](https://github.com/zblanco/runic/issues/16), "Workflow graph silently aliases distinct facts on 32-bit phash2 collisions"
 - **Reproduction:** [Issue 16 collision script](issue-16-phash2-collision-reproduction.exs)
-- **Long-term successor:** SHA-256 content and occurrence identities in the second stacked PR
+- **Long-term successor:** [SHA-256 Content and Occurrence Identity Implementation Plan](sha256-content-identity-implementation-plan.md)
 - **Related distributed-runtime planning:** `zw/dist-runtime:.docs/distributed-durable-runtime-core-plan.md`, section 6
 
 ## Executive decision

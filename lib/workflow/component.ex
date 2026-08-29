@@ -778,7 +778,7 @@ defimpl Runic.Component, for: Runic.Workflow.Rule do
         name when is_atom(name) ->
           Workflow.get_component(wrk, name)
 
-        hash when is_integer(hash) ->
+        hash when is_integer(hash) or is_struct(hash, Runic.Identity) ->
           Map.get(wrk.graph.vertices, hash)
 
         {_parent, _subcomponent} = tuple_ref ->
@@ -1558,9 +1558,14 @@ defimpl Runic.Component, for: Runic.Workflow.Accumulator do
 
         target_component =
           case target do
-            name when is_atom(name) -> Workflow.get_component(wrk, name)
-            hash when is_integer(hash) -> Map.get(wrk.graph.vertices, hash)
-            _ -> nil
+            name when is_atom(name) ->
+              Workflow.get_component(wrk, name)
+
+            hash when is_integer(hash) or is_struct(hash, Runic.Identity) ->
+              Map.get(wrk.graph.vertices, hash)
+
+            _ ->
+              nil
           end
 
         if target_component do
@@ -1680,7 +1685,7 @@ defimpl Runic.Component, for: Runic.Workflow.Condition do
           name when is_atom(name) ->
             Workflow.get_component(wrk, name)
 
-          hash when is_integer(hash) ->
+          hash when is_integer(hash) or is_struct(hash, Runic.Identity) ->
             Map.get(wrk.graph.vertices, hash)
 
           {_parent, _subcomponent} = tuple_ref ->
@@ -1844,7 +1849,7 @@ defimpl Runic.Component, for: Runic.Workflow do
   def hash(%Workflow{hash: hash}) when not is_nil(hash), do: hash
 
   def hash(%Workflow{} = workflow) do
-    Runic.Workflow.Components.fact_hash(workflow)
+    Runic.Identity.digest(:workflow_artifact, artifact_document(workflow))
   end
 
   def inputs(%Workflow{input_ports: nil}), do: []
@@ -1852,6 +1857,55 @@ defimpl Runic.Component, for: Runic.Workflow do
 
   def outputs(%Workflow{output_ports: nil}), do: []
   def outputs(%Workflow{output_ports: ports}), do: ports
+
+  defp artifact_document(workflow) do
+    nodes =
+      workflow.graph
+      |> Multigraph.vertices()
+      |> Enum.reject(
+        &(is_struct(&1, Runic.Workflow.Fact) or is_struct(&1, Runic.Workflow.FactRef))
+      )
+      |> Enum.map(fn node ->
+        %{
+          id: Runic.Workflow.Components.vertex_id_of(node),
+          kind: node.__struct__,
+          name: Map.get(node, :name)
+        }
+      end)
+      |> Enum.sort_by(&identity_sort_key(&1.id))
+
+    node_ids = MapSet.new(nodes, & &1.id)
+
+    connections =
+      workflow.graph
+      |> Multigraph.edges()
+      |> Enum.filter(fn edge ->
+        MapSet.member?(node_ids, Runic.Workflow.Components.vertex_id_of(edge.v1)) and
+          MapSet.member?(node_ids, Runic.Workflow.Components.vertex_id_of(edge.v2))
+      end)
+      |> Enum.map(fn edge ->
+        %{
+          source: Runic.Workflow.Components.vertex_id_of(edge.v1),
+          target: Runic.Workflow.Components.vertex_id_of(edge.v2),
+          label: edge.label,
+          weight: edge.weight
+        }
+      end)
+      |> Enum.sort_by(fn edge ->
+        {identity_sort_key(edge.source), identity_sort_key(edge.target), edge.label, edge.weight}
+      end)
+
+    %{
+      kind: :workflow_artifact,
+      version: 1,
+      boundary: %{inputs: workflow.input_ports, outputs: workflow.output_ports},
+      nodes: nodes,
+      connections: connections
+    }
+  end
+
+  defp identity_sort_key(%Runic.Identity{} = identity), do: Runic.Identity.to_binary(identity)
+  defp identity_sort_key(other), do: :erlang.term_to_binary(other, [:deterministic])
 end
 
 defimpl Runic.Component, for: Tuple do
@@ -1875,6 +1929,15 @@ defimpl Runic.Component, for: Tuple do
   def outputs(_tuple), do: []
 
   def hash(pipeline) do
-    Runic.Workflow.Components.fact_hash(pipeline)
+    Runic.Identity.digest(:workflow_artifact, pipeline_document(pipeline))
   end
+
+  defp pipeline_document({parent, children}) when is_list(children) do
+    %{
+      parent: Runic.Component.hash(parent),
+      children: Enum.map(children, &pipeline_document/1)
+    }
+  end
+
+  defp pipeline_document(component), do: %{component: Runic.Component.hash(component)}
 end

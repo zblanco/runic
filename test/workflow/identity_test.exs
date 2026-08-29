@@ -4,19 +4,22 @@ defmodule Runic.Workflow.IdentityTest do
   require Runic
 
   alias Runic.Workflow
+  alias Runic.Identity
   alias Runic.Workflow.{Components, Fact, FactRef, IdentityConflictError, Step}
 
   @max_phash 4_294_967_296
 
-  describe "phash2_64_v1" do
-    test "combines the primary hash with a domain-separated secondary hash" do
+  describe "sha256_v1" do
+    test "returns a typed, domain-separated SHA-256 identity" do
       term = {%{answer: 42}, {:producer, :parent}}
-      primary = :erlang.phash2(term, @max_phash)
-      secondary = :erlang.phash2({:phash2_64_v1, :secondary, term}, @max_phash)
 
-      assert Components.hash_scheme() == :phash2_64_v1
-      assert Components.fact_hash(term) == primary * @max_phash + secondary
-      assert Components.fact_hash(term) in 0..(Integer.pow(2, 64) - 1)
+      assert Components.hash_scheme() == :sha256_v1
+
+      assert %Identity{scheme: :sha256, version: 1, domain: :component_definition} =
+               Components.fact_hash(term)
+
+      assert Components.fact_hash(term) == Components.fact_hash(term)
+      refute Components.fact_hash(term) == Identity.digest(:payload, term)
     end
 
     test "separates the issue 16 Step.new collision and preserves both results" do
@@ -35,12 +38,8 @@ defmodule Runic.Workflow.IdentityTest do
         )
 
       run = run_parallel(left, right, %{})
-      left_basis = {run.left.result.value, run.left.result.ancestry}
-      right_basis = {run.right.result.value, run.right.result.ancestry}
-
-      assert :erlang.phash2(left_basis, @max_phash) ==
-               :erlang.phash2(right_basis, @max_phash)
-
+      assert %Identity{domain: :fact_occurrence} = run.left.result.hash
+      assert %Identity{domain: :fact_occurrence} = run.right.result.hash
       refute run.left.result.hash == run.right.result.hash
 
       assert result_values(run.workflow, ["left", "right"]) == %{
@@ -62,8 +61,13 @@ defmodule Runic.Workflow.IdentityTest do
           right: %{value: right_value}
         })
 
-      assert div(run.left.result.hash, @max_phash) == primary_hash
-      assert div(run.right.result.hash, @max_phash) == primary_hash
+      left_basis = {%{value: left_value}, {left.hash, root_hash}}
+      right_basis = {%{value: right_value}, {right.hash, root_hash}}
+
+      assert :erlang.phash2(left_basis, @max_phash) == primary_hash
+      assert :erlang.phash2(right_basis, @max_phash) == primary_hash
+      assert %Identity{domain: :fact_occurrence} = run.left.result.hash
+      assert %Identity{domain: :fact_occurrence} = run.right.result.hash
       refute run.left.result.hash == run.right.result.hash
 
       assert result_values(run.workflow, [:left, :right]) == %{
@@ -106,6 +110,23 @@ defmodule Runic.Workflow.IdentityTest do
       assert error.existing.value_type == :atom
       assert error.incoming.value_type == :atom
       assert workflow.graph.vertices[103] == original
+    end
+
+    test "verifies full SHA identity evidence on duplicate insertion" do
+      original = Fact.new(value: :first, ancestry: {:producer, :parent})
+
+      conflicting =
+        Fact.new(hash: original.id, value: :second, ancestry: original.ancestry)
+
+      workflow = Workflow.new() |> Workflow.log_fact(original)
+
+      error =
+        assert_raise IdentityConflictError, fn ->
+          Workflow.log_fact(workflow, conflicting)
+        end
+
+      assert error.identity == original.id
+      refute error.existing.payload_digest == error.incoming.payload_digest
     end
 
     test "fails closed when a Fact and FactRef claim the same identity" do

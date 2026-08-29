@@ -86,7 +86,7 @@ defmodule Runic.Workflow.Serializers.Edgelist do
   defp vertex_name(%Workflow.Root{}), do: :root
   defp vertex_name(%{name: name}) when not is_nil(name), do: name
   defp vertex_name(%{hash: hash}), do: hash
-  defp vertex_name(other), do: :erlang.phash2(other)
+  defp vertex_name(other), do: Serializer.node_id(other)
 
   defp edges_to_string(edges) do
     edges
@@ -99,5 +99,6 @@ defmodule Runic.Workflow.Serializers.Edgelist do
   defp format_name(name) when is_atom(name), do: Atom.to_string(name)
   defp format_name(name) when is_binary(name), do: name
   defp format_name(name) when is_integer(name), do: "n#{name}"
+  defp format_name(%Runic.Identity{} = identity), do: Runic.Identity.to_string(identity)
   defp format_name(name), do: inspect(name)
 end
