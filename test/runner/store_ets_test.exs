@@ -117,6 +117,14 @@ defmodule Runic.Runner.Store.ETSTest do
       assert {:ok, "value_1"} = ETS.load_fact(:hash_1, state)
     end
 
+    test "round-trips composite workflow identities", %{store_state: state} do
+      fact = Runic.Workflow.Fact.new(value: {:composite_identity, 42})
+
+      assert fact.hash > 4_294_967_295
+      assert :ok = ETS.save_fact(fact.hash, fact.value, state)
+      assert {:ok, fact.value} == ETS.load_fact(fact.hash, state)
+    end
+
     test "load_fact returns {:error, :not_found} for unknown hash", %{store_state: state} do
       assert {:error, :not_found} = ETS.load_fact(:nonexistent, state)
     end

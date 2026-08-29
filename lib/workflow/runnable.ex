@@ -19,7 +19,7 @@ defmodule Runic.Workflow.Runnable do
   - After execution: result, status, and events for reducing into workflow
   """
 
-  alias Runic.Workflow.{Fact, CausalContext}
+  alias Runic.Workflow.{CausalContext, Components, Fact}
   alias Runic.Workflow.Invocation.Plan
 
   @type status :: :pending | :completed | :failed | :skipped
@@ -53,12 +53,13 @@ defmodule Runic.Workflow.Runnable do
   @doc """
   Creates a new Runnable in pending state.
 
-  The id is a hash of {node.hash, fact.hash} for idempotency tracking.
+  The id is a domain-separated hash of the node and Fact identities for
+  idempotency tracking.
   """
   @spec new(struct(), Fact.t(), CausalContext.t()) :: t()
   def new(node, fact, context) do
     %__MODULE__{
-      id: :erlang.phash2({node.hash, fact.hash}),
+      id: runnable_id(node, fact),
       node: node,
       input_fact: fact,
       context: context,
@@ -91,7 +92,7 @@ defmodule Runic.Workflow.Runnable do
   """
   @spec runnable_id(struct(), Fact.t()) :: integer()
   def runnable_id(node, fact) do
-    :erlang.phash2({node.hash, fact.hash})
+    Components.fact_hash({:runnable, node.hash, fact.hash})
   end
 
   @doc """

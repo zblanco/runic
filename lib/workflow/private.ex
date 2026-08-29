@@ -9,6 +9,8 @@ defmodule Runic.Workflow.Private do
   alias Runic.Workflow.Condition
   alias Runic.Workflow.Fact
   alias Runic.Workflow.FactRef
+  alias Runic.Workflow.Components
+  alias Runic.Workflow.IdentityConflictError
   alias Runic.Workflow.Rule
   alias Runic.Workflow.FanOut
   alias Runic.Workflow.FanIn
@@ -215,19 +217,65 @@ defmodule Runic.Workflow.Private do
     end
   end
 
-  def log_fact(%Workflow{graph: graph} = wrk, %Fact{} = fact) do
-    %Workflow{
-      wrk
-      | graph: Multigraph.add_vertex(graph, fact)
-    }
+  def log_fact(%Workflow{graph: graph} = workflow, fact)
+      when is_struct(fact, Fact) or is_struct(fact, FactRef) do
+    identity = Components.vertex_id_of(fact)
+
+    case Map.fetch(graph.vertices, identity) do
+      :error ->
+        %Workflow{workflow | graph: Multigraph.add_vertex(graph, fact)}
+
+      {:ok, existing} ->
+        if equivalent_fact_identity?(existing, fact) do
+          workflow
+        else
+          raise IdentityConflictError,
+            identity: identity,
+            existing: identity_summary(existing),
+            incoming: identity_summary(fact),
+            context: :log_fact
+        end
+    end
   end
 
-  def log_fact(%Workflow{graph: graph} = wrk, %FactRef{} = ref) do
-    %Workflow{
-      wrk
-      | graph: Multigraph.add_vertex(graph, ref)
-    }
+  defp equivalent_fact_identity?(
+         %Fact{value: value, ancestry: ancestry},
+         %Fact{value: value, ancestry: ancestry}
+       ),
+       do: true
+
+  defp equivalent_fact_identity?(
+         %FactRef{ancestry: ancestry},
+         %FactRef{ancestry: ancestry}
+       ),
+       do: true
+
+  defp equivalent_fact_identity?(_existing, _incoming), do: false
+
+  defp identity_summary(%Fact{} = fact) do
+    %{type: Fact, hash: fact.hash, ancestry: fact.ancestry, value_type: value_type(fact.value)}
   end
+
+  defp identity_summary(%FactRef{} = ref) do
+    %{type: FactRef, hash: ref.hash, ancestry: ref.ancestry}
+  end
+
+  defp identity_summary(%{__struct__: type, hash: hash}), do: %{type: type, hash: hash}
+  defp identity_summary(other), do: %{type: value_type(other)}
+
+  defp value_type(value) when is_boolean(value), do: :boolean
+  defp value_type(value) when is_atom(value), do: :atom
+  defp value_type(value) when is_binary(value), do: :binary
+  defp value_type(value) when is_bitstring(value), do: :bitstring
+  defp value_type(value) when is_float(value), do: :float
+  defp value_type(value) when is_function(value), do: :function
+  defp value_type(value) when is_integer(value), do: :integer
+  defp value_type(value) when is_list(value), do: :list
+  defp value_type(value) when is_map(value), do: :map
+  defp value_type(value) when is_pid(value), do: :pid
+  defp value_type(value) when is_port(value), do: :port
+  defp value_type(value) when is_reference(value), do: :reference
+  defp value_type(value) when is_tuple(value), do: :tuple
 
   # =============================================================================
   # Hooks

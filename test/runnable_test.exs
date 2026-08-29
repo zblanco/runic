@@ -1,7 +1,7 @@
 defmodule Runic.Workflow.RunnableTest do
   use ExUnit.Case, async: true
 
-  alias Runic.Workflow.{Runnable, CausalContext, Fact}
+  alias Runic.Workflow.{CausalContext, Components, Fact, Runnable}
   alias Runic.Workflow.Step
 
   describe "Runnable.new/3" do
@@ -20,6 +20,7 @@ defmodule Runic.Workflow.RunnableTest do
       assert runnable.result == nil
       assert runnable.events == nil
       assert runnable.error == nil
+      assert runnable.id == Components.fact_hash({:runnable, step.hash, fact.hash})
     end
 
     test "generates stable id from node and fact hashes" do

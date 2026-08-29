@@ -1,9 +1,21 @@
 defmodule Runic.Workflow.Components do
   # common functions across workflow components
-  @doc false
+  @moduledoc false
   @max_phash 4_294_967_296
+  @hash_scheme :phash2_64_v1
 
-  def fact_hash(value), do: :erlang.phash2(value, @max_phash)
+  @doc false
+  @spec hash_scheme() :: :phash2_64_v1
+  def hash_scheme, do: @hash_scheme
+
+  @doc false
+  @spec fact_hash(term()) :: non_neg_integer()
+  def fact_hash(term) do
+    high = :erlang.phash2(term, @max_phash)
+    low = :erlang.phash2({@hash_scheme, :secondary, term}, @max_phash)
+
+    high * @max_phash + low
+  end
 
   def vertex_id_of(%Runic.Workflow.FactRef{hash: hash}), do: hash
   def vertex_id_of(%{hash: hash}), do: hash
