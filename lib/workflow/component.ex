@@ -1869,7 +1869,8 @@ defimpl Runic.Component, for: Runic.Workflow do
         %{
           id: Runic.Workflow.Components.vertex_id_of(node),
           kind: node.__struct__,
-          name: Map.get(node, :name)
+          name: Map.get(node, :name),
+          definition: node_definition(node)
         }
       end)
       |> Enum.sort_by(&identity_sort_key(&1.id))
@@ -1902,6 +1903,16 @@ defimpl Runic.Component, for: Runic.Workflow do
       nodes: nodes,
       connections: connections
     }
+  end
+
+  defp node_definition(node) do
+    case Runic.Identity.Projectable.impl_for(node) do
+      Runic.Identity.Projectable.Any ->
+        Map.take(node, [:hash, :inputs, :outputs, :meta_refs, :mergeable])
+
+      implementation ->
+        implementation.identity_document(node)
+    end
   end
 
   defp identity_sort_key(%Runic.Identity{} = identity), do: Runic.Identity.to_binary(identity)

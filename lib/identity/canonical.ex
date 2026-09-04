@@ -88,7 +88,8 @@ defmodule Runic.Identity.Canonical do
           raise CanonicalError, reason: {:unsupported, module}, path: Enum.reverse(path)
       end
 
-    encode({:projected, module, document}, path, depth, limits)
+    {encoded, items} = encode({module, document}, path, depth, limits)
+    {frame(0x41, encoded), items}
   end
 
   defp encode(list, path, depth, limits) when is_list(list) do

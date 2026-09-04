@@ -81,6 +81,12 @@ defmodule Runic.Closure do
     %{closure | hash: Identity.project(:component_definition, closure)}
   end
 
+  @doc false
+  @spec identity_bindings(t()) :: map()
+  def identity_bindings(%__MODULE__{} = closure) do
+    Runic.Identity.Projectable.identity_document(closure).bindings
+  end
+
   @doc """
   Evaluates a closure, returning the result and updated bindings.
 

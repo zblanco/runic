@@ -184,7 +184,9 @@ defmodule Runic do
         step_hash = closure.hash
         # Work hash is based on NORMALIZED AST + bindings for deterministic content addressing
         work_hash =
-          Components.fact_hash({unquote(Macro.escape(normalized_work)), closure.bindings})
+          Components.fact_hash(
+            {unquote(Macro.escape(normalized_work)), Closure.identity_bindings(closure)}
+          )
 
         Step.new(
           work: unquote(final_work),
@@ -283,7 +285,9 @@ defmodule Runic do
         step_hash = closure.hash
 
         work_hash =
-          Components.fact_hash({unquote(Macro.escape(normalized_work)), closure.bindings})
+          Components.fact_hash(
+            {unquote(Macro.escape(normalized_work)), Closure.identity_bindings(closure)}
+          )
 
         step_name =
           if unquote(base_name) do
@@ -364,7 +368,9 @@ defmodule Runic do
         step_hash = closure.hash
 
         work_hash =
-          Components.fact_hash({unquote(Macro.escape(normalized_work)), closure.bindings})
+          Components.fact_hash(
+            {unquote(Macro.escape(normalized_work)), Closure.identity_bindings(closure)}
+          )
 
         step_name =
           if unquote(base_name) do
@@ -485,7 +491,9 @@ defmodule Runic do
         condition_hash = closure.hash
 
         work_hash =
-          Components.fact_hash({unquote(Macro.escape(normalized_work)), closure.bindings})
+          Components.fact_hash(
+            {unquote(Macro.escape(normalized_work)), Closure.identity_bindings(closure)}
+          )
 
         Condition.new(
           work: unquote(final_work),
@@ -601,7 +609,9 @@ defmodule Runic do
             condition_hash = closure.hash
 
             work_hash =
-              Components.fact_hash({unquote(Macro.escape(normalized_work)), closure.bindings})
+              Components.fact_hash(
+                {unquote(Macro.escape(normalized_work)), Closure.identity_bindings(closure)}
+              )
 
             condition_name =
               if unquote(base_name) do
@@ -3844,7 +3854,8 @@ defmodule Runic do
 
         fan_in_hash =
           Components.fact_hash(
-            {unquote(acc), unquote(Macro.escape(normalized_reducer)), closure.bindings}
+            {unquote(acc), unquote(Macro.escape(normalized_reducer)),
+             Closure.identity_bindings(closure)}
           )
 
         reduce_hash = closure.hash
@@ -3984,7 +3995,8 @@ defmodule Runic do
 
         reduce_hash =
           Components.fact_hash(
-            {unquote(init), unquote(Macro.escape(normalized_reducer)), closure.bindings}
+            {unquote(init), unquote(Macro.escape(normalized_reducer)),
+             Closure.identity_bindings(closure)}
           )
 
         accumulator_name =

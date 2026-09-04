@@ -49,6 +49,22 @@ Still proposal, intentionally outside this core stack layer:
 
 The distinction is deliberate: this PR supplies the core identity vocabulary and causal Fact behavior that `main` can validate now without claiming that unmerged Journal or clustered-runtime authority exists.
 
+### Review corrections (2026-09-04)
+
+Projected structs have a dedicated canonical type tag, and closure binding
+projections distinguish external function references from literal tuple data.
+Every binding-dependent macro hash uses that shared projection. Workflow
+artifact nodes include registered semantic projections (including Step and
+Condition contracts); reconstruction retains the recorded authored closure.
+Cytoscape emits full tagged identity strings in its JSON data. `Fact.new/1`
+honors explicit occurrence IDs and rejects invalid or conflicting typed IDs.
+
+These are corrections to the unreleased draft identity contract. Rebuild draft
+artifacts affected by struct encoding, binding projections, or workflow artifact
+documents. Primitive canonical vectors and the existing payload vector remain
+unchanged. Public-path regression coverage lives in
+`test/identity_regression_test.exs`.
+
 ## 1. Why a hash-algorithm swap is insufficient
 
 Replacing this:

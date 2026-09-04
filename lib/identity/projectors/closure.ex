@@ -28,7 +28,8 @@ defimpl Runic.Identity.Projectable, for: Runic.Closure do
   defp project_binding(list) when is_list(list), do: Enum.map(list, &project_binding/1)
 
   defp project_binding(tuple) when is_tuple(tuple) do
-    tuple |> Tuple.to_list() |> Enum.map(&project_binding/1) |> List.to_tuple()
+    # Preserve the distinction between literal tuple data and MFA references.
+    {:tuple, tuple |> Tuple.to_list() |> Enum.map(&project_binding/1)}
   end
 
   defp project_binding(map) when is_map(map) and not is_struct(map) do

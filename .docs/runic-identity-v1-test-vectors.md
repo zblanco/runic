@@ -22,6 +22,17 @@ All integers are unsigned big-endian lengths unless a canonical value rule says 
 
 Lists use tag `0x30`; tuples use tag `0x31`. Both contain an unsigned 64-bit item count followed by individually length-framed canonical values. Maps use tag `0x33`, sort entries by the complete canonical key bytes, and wrap each key/value pair with tag `0x32`.
 
+Projected structs use tag `0x41`, followed by an unsigned 64-bit byte length
+and the canonical encoding of `{module, projection_document}`. The outer tag is
+mandatory: an ordinary tuple, including `{:projected, module, document}`, must
+never have the same encoding as a projected struct. Identity references use
+tag `0x40` with the same byte-length framing around their compact binary form.
+
+These tags are covered by `test/identity_regression_test.exs`. This correction
+changes identities containing projected structs from the earlier draft; rebuild
+artifacts and fixtures created from that unreleased draft rather than mixing
+the two encodings.
+
 ## Payload identity vector
 
 Identity document:

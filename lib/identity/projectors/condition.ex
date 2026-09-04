@@ -16,6 +16,9 @@ defimpl Runic.Identity.Projectable, for: Runic.Workflow.Condition do
   end
 
   defp executable_document(condition) do
-    %{local_work_digest: condition.work_hash || condition.hash}
+    %{
+      local_work_digest:
+        condition.work_hash || Runic.Workflow.Components.work_hash(condition.work)
+    }
   end
 end

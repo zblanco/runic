@@ -1775,7 +1775,9 @@ defmodule Runic.Workflow do
         # New format: use closure if available
         not is_nil(closure) ->
           {comp, _} = Closure.eval(closure)
-          comp
+          # The recorded closure is the authored definition; evaluation may
+          # reconstruct it with different binding metadata or macro context.
+          Map.replace(comp, :closure, closure)
 
         # Old format: source + bindings with __caller_context__
         not is_nil(source) ->

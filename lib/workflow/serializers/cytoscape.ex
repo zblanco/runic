@@ -136,6 +136,10 @@ defmodule Runic.Workflow.Serializers.Cytoscape do
     }
   end
 
+  defp add_hash_if_present(data, %{hash: %Runic.Identity{} = identity}) do
+    Map.put(data, :hash, Runic.Identity.to_string(identity))
+  end
+
   defp add_hash_if_present(data, %{hash: hash}), do: Map.put(data, :hash, hash)
   defp add_hash_if_present(data, _), do: data
 

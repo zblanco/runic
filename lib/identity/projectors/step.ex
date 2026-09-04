@@ -17,7 +17,9 @@ defimpl Runic.Identity.Projectable, for: Runic.Workflow.Step do
     Projectable.identity_document(closure)
   end
 
-  defp executable_document(step), do: %{local_work_digest: step.work_hash || step.hash}
+  defp executable_document(step) do
+    %{local_work_digest: step.work_hash || Runic.Workflow.Components.work_hash(step.work)}
+  end
 
   defp struct_document(nil), do: nil
   defp struct_document(%_{} = value), do: Map.from_struct(value)
