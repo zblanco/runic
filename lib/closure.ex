@@ -33,13 +33,13 @@ defmodule Runic.Closure do
   """
 
   alias Runic.ClosureMetadata
-  alias Runic.Workflow.Components
+  alias Runic.Identity
 
   @type t :: %__MODULE__{
           source: Macro.t(),
           bindings: map(),
           metadata: ClosureMetadata.t() | nil,
-          hash: integer() | nil
+          hash: Runic.Identity.t() | nil
         }
 
   @derive {Inspect, only: [:hash, :bindings]}
@@ -63,50 +63,28 @@ defmodule Runic.Closure do
   def new(source, bindings, caller_env_or_metadata)
 
   def new(source, bindings, %Macro.Env{} = caller) when is_map(bindings) do
-    # Validate bindings are serializable
-    validate_bindings!(bindings)
-
-    # Extract metadata from caller environment
-    metadata = ClosureMetadata.from_caller(caller)
-
-    # Compute hash from source and bindings
-    hash = Components.fact_hash({source, bindings})
-
-    %__MODULE__{
-      source: source,
-      bindings: bindings,
-      metadata: metadata,
-      hash: hash
-    }
+    new(source, bindings, ClosureMetadata.from_caller(caller))
   end
 
   def new(source, bindings, %ClosureMetadata{} = metadata) when is_map(bindings) do
-    # Validate bindings are serializable
-    validate_bindings!(bindings)
-
-    # Compute hash from source and bindings
-    hash = Components.fact_hash({source, bindings})
-
-    %__MODULE__{
-      source: source,
-      bindings: bindings,
-      metadata: metadata,
-      hash: hash
-    }
+    build(source, bindings, metadata)
   end
 
   def new(source, bindings, nil) when is_map(bindings) do
-    # No metadata case - for closures without environment dependencies
+    build(source, bindings, nil)
+  end
+
+  defp build(source, bindings, metadata) do
     validate_bindings!(bindings)
 
-    hash = Components.fact_hash({source, bindings})
+    closure = %__MODULE__{source: source, bindings: bindings, metadata: metadata}
+    %{closure | hash: Identity.project(:component_definition, closure)}
+  end
 
-    %__MODULE__{
-      source: source,
-      bindings: bindings,
-      metadata: nil,
-      hash: hash
-    }
+  @doc false
+  @spec identity_bindings(t()) :: map()
+  def identity_bindings(%__MODULE__{} = closure) do
+    Runic.Identity.Projectable.identity_document(closure).bindings
   end
 
   @doc """

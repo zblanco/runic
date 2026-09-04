@@ -21,7 +21,7 @@ defmodule Runic.Workflow.InputBinding do
         }
 
   @type t :: %__MODULE__{
-          hash: non_neg_integer(),
+          hash: Runic.Identity.t(),
           target_component_hash: term(),
           source_order: list(term()),
           bindings: list(binding()),
@@ -39,7 +39,8 @@ defmodule Runic.Workflow.InputBinding do
     input_ports = Keyword.fetch!(opts, :input_ports)
 
     hash =
-      Components.fact_hash(
+      Components.identity(
+        :connection_definition,
         {__MODULE__, target_component_hash, source_order, bindings, input_ports}
       )
 

@@ -117,6 +117,17 @@ defmodule Runic.Runner.Store.ETS do
     end
   end
 
+  @impl Runic.Runner.Store
+  def save_payload(%Runic.Identity{domain: :payload} = digest, encoded_payload, state)
+      when is_binary(encoded_payload) do
+    save_fact(digest, encoded_payload, state)
+  end
+
+  @impl Runic.Runner.Store
+  def load_payload(%Runic.Identity{domain: :payload} = digest, state) do
+    load_fact(digest, state)
+  end
+
   # --- Lifecycle ---
 
   @impl Runic.Runner.Store

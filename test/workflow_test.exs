@@ -1293,7 +1293,7 @@ defmodule WorkflowTest do
         assert not is_nil(name)
         assert not is_nil(value)
         assert is_atom(name) or is_binary(name)
-        assert is_integer(value)
+        assert %Runic.Identity{domain: :component_definition} = value
       end
 
       for node <- Multigraph.vertices(wrk.graph) do

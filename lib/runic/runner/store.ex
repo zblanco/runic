@@ -45,6 +45,8 @@ defmodule Runic.Runner.Store do
     after cursor instead of full replay).
   - **Fact storage** (`save_fact/3`, `load_fact/2`): Content-addressed fact
     value storage for hybrid rehydration without loading all values into memory.
+  - **Payload storage** (`save_payload/3`, `load_payload/2`): Immutable encoded
+    payload bytes keyed by a `:payload` `Runic.Identity`.
   """
 
   @type workflow_id :: term()
@@ -83,6 +85,11 @@ defmodule Runic.Runner.Store do
   @callback load_fact(fact_hash :: term(), state()) ::
               {:ok, term()} | {:error, :not_found | term()}
 
+  @callback save_payload(Runic.Identity.t(), encoded_payload :: binary(), state()) ::
+              :ok | {:error, term()}
+  @callback load_payload(Runic.Identity.t(), state()) ::
+              {:ok, binary()} | {:error, :not_found | term()}
+
   # Lifecycle (optional)
   @callback checkpoint(workflow_id(), log(), state()) :: :ok | {:error, term()}
   @callback delete(workflow_id(), state()) :: :ok | {:error, term()}
@@ -97,6 +104,8 @@ defmodule Runic.Runner.Store do
     load_snapshot: 2,
     save_fact: 3,
     load_fact: 2,
+    save_payload: 3,
+    load_payload: 2,
     checkpoint: 3,
     delete: 2,
     list: 1,

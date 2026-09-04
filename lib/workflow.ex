@@ -263,7 +263,7 @@ defmodule Runic.Workflow do
   @type t() :: %__MODULE__{
           name: String.t(),
           graph: Multigraph.t(),
-          hash: binary(),
+          hash: Runic.Identity.t() | integer() | binary() | nil,
           # name -> component hash
           components: map(),
           # node_hash -> list(hook_functions)
@@ -753,6 +753,10 @@ defmodule Runic.Workflow do
         parent_step = get_component!(workflow, component_name)
         do_add_component(workflow, component, parent_step, opts)
 
+      %Runic.Identity{} = hash ->
+        parent_step = get_by_hash(workflow, hash)
+        do_add_component(workflow, component, parent_step, opts)
+
       hash when is_integer(hash) ->
         parent_step = get_by_hash(workflow, hash)
         do_add_component(workflow, component, parent_step, opts)
@@ -862,6 +866,13 @@ defmodule Runic.Workflow do
       source_outputs: source_outputs,
       source_port_index: source_port_index
     }
+  end
+
+  defp resolve_component_ref!(workflow, %Runic.Identity{} = identity) do
+    case get_by_hash(workflow, identity) do
+      nil -> raise KeyError, message: "No component found with identity #{inspect(identity)}"
+      component -> component
+    end
   end
 
   defp resolve_component_ref!(_workflow, %{__struct__: _} = component), do: component
@@ -1443,7 +1454,17 @@ defmodule Runic.Workflow do
   end
 
   def apply_event(%__MODULE__{} = wf, %FactProduced{} = e) do
-    fact = Fact.new(hash: e.hash, value: e.value, ancestry: e.ancestry, meta: e.meta)
+    fact =
+      Fact.new(
+        hash: e.hash,
+        content_digest: e.content_digest,
+        payload_digest: e.payload_digest,
+        value: e.value,
+        ancestry: e.ancestry,
+        causal_ancestry: e.causal_ancestry,
+        meta: e.meta
+      )
+
     wf = log_fact(wf, fact)
 
     case e.ancestry do
@@ -1564,7 +1585,14 @@ defmodule Runic.Workflow do
 
   def apply_event(%__MODULE__{} = wf, %FanOutFactEmitted{} = e) do
     fact =
-      Fact.new(hash: e.emitted_fact_hash, value: e.emitted_value, ancestry: e.emitted_ancestry)
+      Fact.new(
+        hash: e.emitted_fact_hash,
+        content_digest: e.emitted_content_digest,
+        payload_digest: e.emitted_payload_digest,
+        value: e.emitted_value,
+        ancestry: e.emitted_ancestry,
+        causal_ancestry: e.emitted_causal_ancestry
+      )
 
     fan_out = Map.get(wf.graph.vertices, e.fan_out_hash)
 
@@ -1608,7 +1636,15 @@ defmodule Runic.Workflow do
   # Lean replay: creates FactRef instead of Fact when value was stripped.
   # Falls back to full Fact for legacy events that still carry values (migration).
   defp apply_event_lean(%__MODULE__{} = wf, %FactProduced{value: nil} = e) do
-    ref = %FactRef{hash: e.hash, ancestry: e.ancestry}
+    ref = %FactRef{
+      id: if(is_struct(e.hash, Runic.Identity), do: e.hash),
+      content_digest: e.content_digest,
+      payload_digest: e.payload_digest,
+      hash: e.hash,
+      ancestry: e.ancestry,
+      causal_ancestry: e.causal_ancestry
+    }
+
     wf = log_fact(wf, ref)
 
     case e.ancestry do
@@ -1739,7 +1775,9 @@ defmodule Runic.Workflow do
         # New format: use closure if available
         not is_nil(closure) ->
           {comp, _} = Closure.eval(closure)
-          comp
+          # The recorded closure is the authored definition; evaluation may
+          # reconstruct it with different binding metadata or macro context.
+          Map.replace(comp, :closure, closure)
 
         # Old format: source + bindings with __caller_context__
         not is_nil(source) ->
@@ -2275,6 +2313,10 @@ defmodule Runic.Workflow do
     get_by_hash(workflow, hash)
   end
 
+  defp resolve_component_to_node(%__MODULE__{} = workflow, %Runic.Identity{} = identity) do
+    get_by_hash(workflow, identity)
+  end
+
   @doc """
   Attaches a hook function to be run before a given component step.
 
@@ -2516,6 +2558,10 @@ defmodule Runic.Workflow do
 
   defp get_by_hash(%__MODULE__{graph: g}, hash) when is_integer(hash) do
     Map.get(g.vertices, hash)
+  end
+
+  defp get_by_hash(%__MODULE__{graph: g}, %Runic.Identity{} = identity) do
+    Map.get(g.vertices, identity)
   end
 
   defp get_by_hash(_, _hash) do
@@ -4501,7 +4547,7 @@ defmodule Runic.Workflow do
         %{hash: hash} ->
           Map.get(graph.vertices, hash, edge.v2)
 
-        hash when is_integer(hash) ->
+        hash when is_integer(hash) or is_struct(hash, Runic.Identity) ->
           Map.get(graph.vertices, hash)
 
         _ ->
@@ -4537,7 +4583,7 @@ defmodule Runic.Workflow do
         %{hash: hash} ->
           Map.get(graph.vertices, hash, edge.v1)
 
-        hash when is_integer(hash) ->
+        hash when is_integer(hash) or is_struct(hash, Runic.Identity) ->
           Map.get(graph.vertices, hash)
 
         _ ->

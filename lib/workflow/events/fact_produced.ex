@@ -11,12 +11,42 @@ defmodule Runic.Workflow.Events.FactProduced do
 
   @type t :: %__MODULE__{
           hash: term(),
+          content_digest: Runic.Identity.t() | nil,
+          payload_digest: Runic.Identity.t() | nil,
           value: term(),
           ancestry: {term(), term()} | nil,
+          causal_ancestry: Runic.Workflow.FactAncestry.t() | nil,
           producer_label: atom(),
           weight: non_neg_integer(),
           meta: map()
         }
 
-  defstruct [:hash, :value, :ancestry, :producer_label, :weight, meta: %{}]
+  defstruct [
+    :hash,
+    :content_digest,
+    :payload_digest,
+    :value,
+    :ancestry,
+    :causal_ancestry,
+    :producer_label,
+    :weight,
+    meta: %{}
+  ]
+
+  @doc "Builds a versioned identity-bearing event from a Fact."
+  @spec new(Runic.Workflow.Fact.t(), keyword()) :: t()
+  def new(%Runic.Workflow.Fact{} = fact, attrs) when is_list(attrs) do
+    struct!(
+      __MODULE__,
+      [
+        hash: fact.hash,
+        content_digest: fact.content_digest,
+        payload_digest: fact.payload_digest,
+        value: fact.value,
+        ancestry: fact.ancestry,
+        causal_ancestry: fact.causal_ancestry,
+        meta: fact.meta
+      ] ++ attrs
+    )
+  end
 end

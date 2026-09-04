@@ -1,18 +1,37 @@
 defmodule Runic.Workflow.Components do
   # common functions across workflow components
-  @doc false
-  @max_phash 4_294_967_296
+  @moduledoc false
 
-  def fact_hash(value), do: :erlang.phash2(value, @max_phash)
+  alias Runic.Identity
+  alias Runic.Workflow.Root
+
+  @hash_scheme :sha256_v1
+
+  @doc false
+  @spec hash_scheme() :: :sha256_v1
+  def hash_scheme, do: @hash_scheme
+
+  @doc false
+  @spec fact_hash(term()) :: Identity.t()
+  def fact_hash(term), do: identity(:component_definition, term)
+
+  @doc false
+  @spec identity(Identity.domain(), term()) :: Identity.t()
+  def identity(domain, identity_document), do: Identity.digest(domain, identity_document)
 
   def vertex_id_of(%Runic.Workflow.FactRef{hash: hash}), do: hash
   def vertex_id_of(%{hash: hash}), do: hash
+  def vertex_id_of(%Identity{} = identity), do: identity
+  def vertex_id_of(%Root{}), do: Identity.derive(:node_occurrence, [:workflow_root])
   def vertex_id_of(hash) when is_integer(hash), do: hash
-  def vertex_id_of(anything_otherwise), do: fact_hash(anything_otherwise)
+  def vertex_id_of(anything_otherwise), do: Identity.digest(:node_occurrence, anything_otherwise)
 
   def memory_vertex_id(%{hash: hash}), do: hash
+  def memory_vertex_id(%Identity{} = identity), do: identity
   def memory_vertex_id(hash) when is_integer(hash), do: hash
-  def memory_vertex_id(anything_otherwise), do: fact_hash(anything_otherwise)
+
+  def memory_vertex_id(anything_otherwise),
+    do: Identity.digest(:fact_occurrence, anything_otherwise)
 
   def work_hash({m, f}),
     do: work_hash({m, f, 1})

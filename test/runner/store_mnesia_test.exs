@@ -144,6 +144,22 @@ defmodule Runic.Runner.Store.MnesiaTest do
       assert {:ok, "value_1"} = MnesiaStore.load_fact(:hash_1, state)
     end
 
+    test "round-trips typed workflow identities", %{store_state: state} do
+      fact = Runic.Workflow.Fact.new(value: {:typed_identity, 42})
+
+      assert %Runic.Identity{domain: :fact_occurrence} = fact.hash
+      assert :ok = MnesiaStore.save_fact(fact.hash, fact.value, state)
+      assert {:ok, fact.value} == MnesiaStore.load_fact(fact.hash, state)
+    end
+
+    test "round-trips encoded payloads by payload digest", %{store_state: state} do
+      fact = Runic.Workflow.Fact.new(value: %{payload: 42})
+      encoded = :erlang.term_to_binary(fact.value, [:deterministic])
+
+      assert :ok = MnesiaStore.save_payload(fact.payload_digest, encoded, state)
+      assert {:ok, ^encoded} = MnesiaStore.load_payload(fact.payload_digest, state)
+    end
+
     test "load_fact returns {:error, :not_found} for unknown hash", %{store_state: state} do
       assert {:error, :not_found} = MnesiaStore.load_fact(:nonexistent, state)
     end

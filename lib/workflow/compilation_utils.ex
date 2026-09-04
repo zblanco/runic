@@ -122,8 +122,8 @@ defmodule Runic.Workflow.CompilationUtils do
     join =
       quote do
         %Join{
-          hash: unquote(join_hash),
-          joins: unquote(parent_hashes)
+          hash: unquote(Macro.escape(join_hash)),
+          joins: unquote(Macro.escape(parent_hashes))
         }
       end
 
@@ -143,7 +143,7 @@ defmodule Runic.Workflow.CompilationUtils do
 
     quote do
       unquote(wrk_acc)
-      |> Workflow.add(unquote(dependent_pipeline_workflow), to: unquote(join_hash))
+      |> Workflow.add(unquote(dependent_pipeline_workflow), to: unquote(Macro.escape(join_hash)))
     end
   end
 
@@ -199,7 +199,7 @@ defmodule Runic.Workflow.CompilationUtils do
     step_ast_hash = Components.fact_hash(expression)
 
     quote do
-      Runic.step(work: unquote(expression), hash: unquote(step_ast_hash))
+      Runic.step(work: unquote(expression), hash: unquote(Macro.escape(step_ast_hash)))
     end
   end
 
@@ -207,7 +207,7 @@ defmodule Runic.Workflow.CompilationUtils do
     step_ast_hash = Components.fact_hash(expression)
 
     quote do
-      Runic.step(work: unquote(expression), hash: unquote(step_ast_hash))
+      Runic.step(work: unquote(expression), hash: unquote(Macro.escape(step_ast_hash)))
     end
   end
 
@@ -217,7 +217,11 @@ defmodule Runic.Workflow.CompilationUtils do
     name = rest[:name]
 
     quote do
-      Runic.step(work: unquote(expression), hash: unquote(step_ast_hash), name: unquote(name))
+      Runic.step(
+        work: unquote(expression),
+        hash: unquote(Macro.escape(step_ast_hash)),
+        name: unquote(name)
+      )
     end
   end
 
@@ -225,7 +229,7 @@ defmodule Runic.Workflow.CompilationUtils do
     step_ast_hash = Components.fact_hash(expression)
 
     quote do
-      Runic.step(work: unquote(expression), hash: unquote(step_ast_hash))
+      Runic.step(work: unquote(expression), hash: unquote(Macro.escape(step_ast_hash)))
     end
   end
 
@@ -235,7 +239,11 @@ defmodule Runic.Workflow.CompilationUtils do
     name = rest[:name]
 
     quote do
-      Runic.step(work: unquote(expression), hash: unquote(step_ast_hash), name: unquote(name))
+      Runic.step(
+        work: unquote(expression),
+        hash: unquote(Macro.escape(step_ast_hash)),
+        name: unquote(name)
+      )
     end
   end
 
@@ -243,7 +251,7 @@ defmodule Runic.Workflow.CompilationUtils do
     step_ast_hash = Components.fact_hash(expression)
 
     quote do
-      Runic.step(work: unquote(expression), hash: unquote(step_ast_hash))
+      Runic.step(work: unquote(expression), hash: unquote(Macro.escape(step_ast_hash)))
     end
   end
 end

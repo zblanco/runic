@@ -4,7 +4,7 @@ defmodule Runic.Workflow.ComponentRemoved do
 
   @type t :: %__MODULE__{
           name: atom() | String.t(),
-          hash: integer() | nil
+          hash: Runic.Identity.t() | integer() | binary() | nil
         }
 
   defstruct [:name, :hash]

@@ -7,9 +7,13 @@ defmodule Runic.Workflow.FactRef do
   """
 
   @type t :: %__MODULE__{
+          id: Runic.Identity.t() | nil,
+          content_digest: Runic.Identity.t() | nil,
+          payload_digest: Runic.Identity.t() | nil,
           hash: Runic.Workflow.Fact.hash(),
-          ancestry: {Runic.Workflow.Fact.hash(), Runic.Workflow.Fact.hash()} | nil
+          ancestry: {Runic.Workflow.Fact.hash(), Runic.Workflow.Fact.hash()} | nil,
+          causal_ancestry: Runic.Workflow.FactAncestry.t() | nil
         }
 
-  defstruct [:hash, :ancestry]
+  defstruct [:id, :content_digest, :payload_digest, :hash, :ancestry, :causal_ancestry]
 end
