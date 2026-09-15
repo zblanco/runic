@@ -1226,7 +1226,6 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.FanOut do
   def execute(%FanOut{} = fan_out, %Runnable{input_fact: source_fact, context: ctx} = runnable) do
     emitted_facts =
       source_fact.value
-      |> Enum.to_list()
       |> Enum.with_index()
       |> Enum.map(fn {value, output_index} ->
         causal_ancestry =
@@ -1579,35 +1578,10 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.FanIn do
       %FanOut{} ->
         source_fact_hash = find_fan_out_source_fact_hash(workflow, fact)
 
-        already_completed = has_reduced_output?(workflow, fan_in, source_fact_hash)
-        completed_key = {:fan_in_completed, source_fact_hash, fan_in.hash}
-        already_completed = already_completed or Map.get(workflow.mapped, completed_key, false)
-
+        # Completion belongs to Coordinator.finalize/3 against the current graph.
+        # Every arrival only needs stable lookup keys, never a batch snapshot.
         expected_key = {source_fact_hash, fan_out.hash}
         seen_key = {source_fact_hash, parent_step_hash}
-
-        expected_list = workflow.mapped[expected_key] || []
-        expected_set = MapSet.new(expected_list)
-        seen_map = workflow.mapped[seen_key] || %{}
-        seen_set = MapSet.new(Map.keys(seen_map))
-
-        ready =
-          not already_completed and
-            not Enum.empty?(expected_set) and
-            MapSet.equal?(expected_set, seen_set)
-
-        # Collect sister values in order if ready
-        sister_values =
-          if ready do
-            expected_in_order = Enum.reverse(expected_list)
-
-            for origin <- expected_in_order do
-              sister_hash = seen_map[origin]
-              workflow.graph.vertices[sister_hash].value
-            end
-          else
-            nil
-          end
 
         context =
           CausalContext.new(
@@ -1620,13 +1594,8 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.FanIn do
               mode: :fan_out_reduce,
               source_fact_hash: source_fact_hash,
               fan_out_hash: fan_out.hash,
-              ready: ready,
-              already_completed: already_completed,
-              sister_values: sister_values,
               expected_key: expected_key,
-              seen_key: seen_key,
-              expected_list: expected_list,
-              seen_map: seen_map
+              seen_key: seen_key
             },
             meta_context: meta_context,
             run_context: run_context
@@ -1707,8 +1676,7 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.FanIn do
 
   defp find_upstream_fan_out(workflow, fan_in) do
     workflow.graph
-    |> Multigraph.in_edges(fan_in)
-    |> Enum.filter(&(&1.label == :fan_in))
+    |> Multigraph.in_edges(fan_in, by: :fan_in)
     |> List.first(%{})
     |> Map.get(:v1)
   end

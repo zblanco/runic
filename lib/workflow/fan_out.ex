@@ -31,10 +31,10 @@ defimpl Runic.Workflow.Activator, for: Runic.Workflow.FanOut do
           end)
 
         w = Enum.reduce(new_events, w, fn event, w2 -> Workflow.apply_event(w2, event) end)
-        {w, events_acc ++ new_events}
+        {w, Enum.reverse(new_events, events_acc)}
       end)
 
-    {wf, all_events}
+    {wf, Enum.reverse(all_events)}
   end
 
   def activate_downstream(%Runic.Workflow.FanOut{}, %Workflow{} = wf, %Runnable{}), do: {wf, []}

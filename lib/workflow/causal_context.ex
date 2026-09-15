@@ -21,7 +21,8 @@ defmodule Runic.Workflow.CausalContext do
   - **Accumulator**: `last_known_state` for stateful operations
   - **Join**: `join_context` with satisfaction tracking
   - **FanOut**: `fan_out_context` with reduce tracking
-  - **FanIn**: `fan_in_context` with readiness and sister values
+  - **FanIn**: `fan_in_context` with stable batch lookup keys; readiness and ordered values
+    are resolved by the coordinator against the current workflow during apply
   - **All nodes**: `meta_context` for graph-resolved meta expression values, `run_context` for external runtime values from `context/1` expressions
   """
 
