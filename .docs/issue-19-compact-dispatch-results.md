@@ -70,7 +70,7 @@ mix test test/workflow/compact_dispatch_test.exs test/three_phase_test.exs \
 mix test
 ```
 
-Final complete suite: **55 doctests, 1,420 tests, 0 failures, 13 skipped** (4.5 seconds; correctness run, not a performance comparison). The new test module contains ten tests (the FactRef visibility test was added after the complete-suite run and awaits the next serialized verification window). It verifies:
+Final complete suite: **55 doctests, 1,420 tests, 0 failures, 13 skipped** (4.5 seconds; correctness run, not a performance comparison). The new test module contains ten tests; the final FactRef visibility amendment passed the focused module run (10 tests, zero failures) and formatting verification. It verifies:
 
 - Identical mapped FanIn context flat size at batch sizes 8, 32, and 128, with exactly the five stable coordination fields.
 - Instrumented preparation of exactly 3 selected nodes from a 100-node frontier; descriptors alone do not call prepare; excluded in-flight work stays untouched.
