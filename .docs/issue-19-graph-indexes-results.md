@@ -72,14 +72,15 @@ preparation are complementary.
 
 ## Validation
 
-Completed before the common serialized measurement window:
+Final validation during the agreed functional-test window:
 
-- `mix test test/multigraph_index_contract_test.exs`: **18 tests, 0 failures**.
-- `mix test`: **55 doctests, 1429 tests, 0 failures, 13 skipped**. This includes
-  the 18 new contract tests; the skipped tests belong to the existing suite.
-- `mix test test/multigraph_upstream_doctest_test.exs`: **102 doctests, 0 failures**,
-  verifying published examples from the original package's Multigraph and Edge
-  modules. Added after the full-suite invocation and tested separately.
+- `ERL_FLAGS='+S 4:4' mix test`: **157 doctests, 1431 tests, 0 failures,
+  13 skipped**. This includes 20 new contract tests and 102 published examples
+  from the original package's Multigraph and Edge modules. Skips belong to the
+  existing suite. Seed: 264628; completion: 6.1 seconds (test phase only).
+- Earlier isolated runs passed the initial 18 contract tests and all 102
+  upstream doctests; the final full suite includes the two vertex-replacement
+  regressions added in review.
 
 The contract oracle enumerates canonical edge records and reconstructs expected
 partition membership independently. It compares complete structs returned by
@@ -92,8 +93,11 @@ missing partitions, and two fixed-seed 180-operation mutation traces.
 The original package already mishandles shared custom-partition deletion,
 property/weight reindexing, filtered incident endpoint construction, and opposite
 orientations in filtered undirected queries; these are correctness repairs,
-not optional Runic semantics. Other unrelated upstream graph APIs have not been
-audited exhaustively. Graph storage shape is unchanged; valid existing graphs
+not optional Runic semantics. Same-ID vertex replacement (used by Runic's conjunction composition) is covered
+and reads current vertex values. Upstream changed-ID `replace_vertex/3` leaves
+its index stale; this experiment does not repair that separate operation. A
+regression test ensures stale candidates are skipped without introducing a new
+exception. Other unrelated upstream graph APIs have not been audited exhaustively. Graph storage shape is unchanged; valid existing graphs
 need no format migration. Previously stale custom indexes would need rebuilding
 from canonical records before relying on their completeness.
 

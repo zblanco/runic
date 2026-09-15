@@ -771,12 +771,13 @@ defmodule Multigraph do
       if g.type == :undirected or direction == :both or
            (direction == :in and v2_id == v_id) or
            (direction == :out and v1_id == v_id) do
-        v1 = Map.fetch!(g.vertices, v1_id)
-        v2 = Map.fetch!(g.vertices, v2_id)
-
         g.edges
         |> Map.get(edge_key, %{})
         |> Enum.reduce([], fn {label, weight}, acc ->
+          # Ignore stale index candidates without canonical records before
+          # resolving endpoints (e.g. older changed-ID replace_vertex results).
+          v1 = Map.fetch!(g.vertices, v1_id)
+          v2 = Map.fetch!(g.vertices, v2_id)
           props = get_edge_props(g.edge_properties, edge_key, label)
           edge = Edge.new(v1, v2, label: label, weight: weight, properties: props)
           edge_partitions = g.partition_by.(edge)

@@ -235,6 +235,30 @@ defmodule Runic.MultigraphIndexContractTest do
     refute_received :visited_history
   end
 
+  test "same-identity replacement preserves indexed queries with current vertex values" do
+    g =
+      Graph.new(multigraph: true, vertex_identifier: & &1.id)
+      |> Graph.add_edge(%{id: 1, value: :old}, %{id: 2, value: :target}, label: :flow)
+      |> Graph.replace_vertex(%{id: 1}, %{id: 1, value: :new})
+      |> assert_index_contract()
+
+    assert [%Edge{v1: %{value: :new}}] = Graph.in_edges(g, %{id: 2}, by: :flow)
+  end
+
+  test "stale changed-identity replacement candidates do not introduce query crashes" do
+    # Upstream replace_vertex does not migrate its edge index for changed IDs.
+    # Preserve its incomplete-query behavior without dereferencing removed IDs.
+    g =
+      graph(:directed)
+      |> Graph.add_edge(:a, :b, label: :flow)
+      |> Graph.replace_vertex(:a, :replacement)
+
+    assert [%Edge{v1: :replacement, v2: :b}] = Graph.edges(g)
+    assert Graph.in_edges(g, :b, by: :flow) == []
+    assert Graph.out_edges(g, :a, by: :flow) == []
+    assert Graph.edges(g, :b, by: :flow) == []
+  end
+
   defp drain_history_messages do
     receive do
       :visited_history -> drain_history_messages()
