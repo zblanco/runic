@@ -13,13 +13,13 @@ For inline map/collect over 2,048 items:
 | Graph indexes | 4,086.500 ms | 92.626 MiB |
 | Integrated foundation | 174.246 ms | 15.607 MiB |
 
-Baseline and foundation both retain 4,098 facts and 8,203 edges. The production baseline is `a9407d6`; the measured integrated foundation is `ea82d5b`; the original comparison report was recorded at `a8e6f7b`. The Git-pinned Multigraph runtime matches the measured implementation, with graph-specific tests maintained in [Multigraph PR #4](https://github.com/zblanco/libgraph/pull/4).
+Baseline and foundation both retain 4,098 facts and 8,203 edges. The production baseline is `a9407d6`; the measured integrated foundation is `ea82d5b`; the original comparison report was recorded at `a8e6f7b`. Published Multigraph `0.16.1-mg.5` has the same runtime source as the tested Git dependency, with graph-specific tests maintained in [Multigraph PR #4](https://github.com/zblanco/libgraph/pull/4).
 
-Validation before artifact cleanup:
+Validation:
 
-- Runic: 55 doctests, 1,421 tests, zero failures, 13 existing skips.
+- Runic against published Multigraph `0.16.1-mg.5`: 55 doctests, 1,421 tests, zero failures, 13 existing skips.
 - Multigraph: 114 doctests, 117 tests, zero failures.
-- Six-case Runic harness smoke and exact public-API results at 512, 2,048 and 8,192 items passed.
+- Six-case Runic harness smoke and exact public-API results at 512, 2,048 and 8,192 items passed again against the published release.
 - The native Multigraph probe completed 60 samples through 8,192 edges.
 
 CSV files, generated summaries, provenance JSON and test logs are temporary artifacts. Keep only interpreted Markdown results in this directory. To generate new data:

@@ -1,6 +1,6 @@
 # Issue 19: foundation fixes for allocation and graph-operation costs
 
-This change advances the compact-dispatch and partition-local Multigraph implementations from the issue #19 comparison. Runic's workflow implementation and the pinned Multigraph runtime source match the tested foundation (`ea82d5b`). Graph implementation and graph-specific tests now live in the [companion Multigraph PR #4](https://github.com/zblanco/libgraph/pull/4). This PR targets main's `a9407d6` baseline; batch-obligation and source-window implementations remain separate experiments.
+This change advances the compact-dispatch and partition-local Multigraph implementations from the issue #19 comparison. Runic's workflow implementation and the released Multigraph runtime source match the tested foundation (`ea82d5b`). Graph implementation and graph-specific tests now live in the [companion Multigraph PR #4](https://github.com/zblanco/libgraph/pull/4). This PR targets main's `a9407d6` baseline; batch-obligation and source-window implementations remain separate experiments.
 
 ## Approach
 
@@ -64,15 +64,15 @@ Default reduction order, output ancestry, events, full provenance and replay con
 
 The comparison also implemented one-fold batch obligations and source windows. They demonstrate useful follow-up directions, but change ancestry, lifecycle or retention contracts. Their additional memory claims are not attributed to this PR. A reusable completion/liveness abstraction needs explicit sealing, per-occurrence terminal outcomes, consumer versions and retry ownership before it can safely drive general reclamation.
 
-## Dependency review and release prerequisite
+## Published dependency
 
-The graph patch is maintained in [zblanco/libgraph PR #4](https://github.com/zblanco/libgraph/pull/4), targeting `zw/multigraph-fork`. Runic pins commit `09064ede1d2848b68fa739c292b514c235a13a9e` in `mix.exs` and `mix.lock`; it removes documentation artifacts from the tested `9c60bde` revision without changing runtime source. The runtime file matches the measured foundation byte-for-byte. The earlier temporary vendor tree and duplicate graph-specific tests have been removed from this PR; the graph repository now owns the implementation, contract tests and native validation.
+The graph patch from [zblanco/libgraph PR #4](https://github.com/zblanco/libgraph/pull/4) is published in [Multigraph 0.16.1-mg.5](https://hex.pm/packages/multigraph/0.16.1-mg.5). Runic declares `{:multigraph, "~> 0.16.1-mg.5"}` and locks the Hex release in `mix.lock`. All released runtime source files match the previously tested Git dependency byte-for-byte. The earlier temporary vendor tree and duplicate graph-specific tests have been removed from this PR; the graph repository owns the implementation, contract tests and native validation.
 
-The immutable Git pin makes this **draft** runnable while both PRs are reviewed. Select a released Multigraph dependency before publishing Runic to Hex. No dependency release or package publication is part of these PRs. The [Multigraph PR description](https://github.com/zblanco/libgraph/pull/4) summarizes its approach, results and validation.
+The temporary Git pin and its release prerequisite are resolved. The [Multigraph PR description](https://github.com/zblanco/libgraph/pull/4) summarizes its approach, results and validation.
 
 ## Validation and reproduction
 
-With the fetched Git dependency, Runic passes **55 doctests and 1,421 tests, zero failures, 13 existing skips**. The twenty graph contract cases and 102 copied graph doctests now run in the owning Multigraph repository instead of being duplicated here; its native full suite passes **114 doctests and 117 tests, zero failures**, including existing property tests. Dispatch tests cover constant-size coordination fields, prefix/exclusion behavior, FactRefs, skip/defer accounting, late completion, duplicate application, dynamic composition and event order. A fresh six-case harness smoke also passes; its single samples are validation, not replacements for the comparison medians. See the [dispatch details](issue-19-compact-dispatch-results.md) and [Multigraph PR validation](https://github.com/zblanco/libgraph/pull/4). Generated test and smoke logs remain temporary files.
+With published Multigraph **0.16.1-mg.5**, Runic passes **55 doctests and 1,421 tests, zero failures, 13 existing skips**. The twenty graph contract cases and 102 copied graph doctests now run in the owning Multigraph repository instead of being duplicated here; its native full suite passed **114 doctests and 117 tests, zero failures**, including existing property tests. Dispatch tests cover constant-size coordination fields, prefix/exclusion behavior, FactRefs, skip/defer accounting, late completion, duplicate application, dynamic composition and event order. A fresh six-case harness smoke also passes against the release; its single samples are validation, not replacements for the comparison medians. See the [dispatch details](issue-19-compact-dispatch-results.md) and [Multigraph PR validation](https://github.com/zblanco/libgraph/pull/4). Generated test and smoke logs remain temporary files.
 
 The issue's public `plan_eagerly` → `react_until_satisfied` reproduction also passes exact ordered-output checks at 512, 2,048 and 8,192 items. Its single-run timings are validation rather than comparative medians.
 
