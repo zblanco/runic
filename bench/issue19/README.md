@@ -21,6 +21,8 @@ Use `--pass timing|memory|envelopes` for a selected pass. `--cases` accepts coll
 
 Serialize comparable runs across worktrees. Raw CSV starts with a comment recording the implementation commit and runtime. Record the harness commit separately in the comparison report. A valid comparison also needs the branch's tests, API/identity behavior, and known limitations.
 
+Write generated CSV, summaries and test logs under a temporary directory such as `mktemp -d /tmp/runic-issue19.XXXXXX`; commit only the interpreted Markdown report/results, not generated output.
+
 This PR implements legacy coordination only. The harness retains the comparison's optional `--coordination batch` switch for compatible experimental branches and rejects it when unsupported. Foundation results and reproduction details are in [the foundation report](../../.docs/issue-19-foundation.md).
 
 References: [OTP peer](https://www.erlang.org/doc/apps/stdlib/peer.html), [BEAM term copying and sharing](https://www.erlang.org/doc/system/eff_guide_processes.html).

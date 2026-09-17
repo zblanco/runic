@@ -143,7 +143,7 @@ defmodule Runic.MixProject do
     [
       {:uniq, "~> 0.6.1"},
       {:telemetry, "~> 1.0"},
-      {:multigraph, github: "zblanco/libgraph", ref: "9c60bde9fbb7d50f101799413e4232b448b9432a"},
+      {:multigraph, github: "zblanco/libgraph", ref: "09064ede1d2848b68fa739c292b514c235a13a9e"},
       {:ex_doc, "~> 0.34", only: :dev, runtime: false, warn_if_outdated: true},
       {:tidewave, "~> 0.4", only: :dev},
       {:bandit, "~> 1.0", only: :dev},

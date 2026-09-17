@@ -1,9 +1,0 @@
-==> multigraph
-Compiling 16 files (.ex)
-Generated multigraph app
-==> runic
-Compiling 4 files (.ex)
-Generated runic app
-n=512 result_ok=true elapsed_ms=56.118
-n=2048 result_ok=true elapsed_ms=168.169
-n=8192 result_ok=true elapsed_ms=814.2

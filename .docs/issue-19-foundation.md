@@ -15,7 +15,7 @@ These changes apply beyond map/reduce: rules, joins, activation transitions and 
 
 ## Results from the serialized comparison
 
-The figures below are the original comparison measurements, not a new benchmark campaign for this PR. Raw samples are preserved without modification in [issue-19-foundation-results](issue-19-foundation-results/), with the [complete subset table](issue-19-foundation-results/summary.csv) and [provenance](issue-19-foundation-results/provenance.json).
+The figures below are the original comparison measurements, not a new benchmark campaign for this PR. The [Markdown results summary](issue-19-foundation-results/README.md) records the source revisions, environment and validation. Raw CSV samples, generated summaries and test logs are temporary artifacts and are not committed.
 
 For an inline map/collect over **2,048 items**:
 
@@ -40,7 +40,7 @@ Other cases at n=512 show that the improvement is broader than one shallow pipel
 
 At n=512 binary items, estimated standalone request encoding falls from **370.087 MiB to 8.663 MiB**; responses fall from **375.901 MiB to 14.478 MiB**. Those are uncompressed external-term encoding totals, not captured network traffic. Reference-counted local binary sharing does not remove transmission costs between VMs.
 
-The isolated graph probe holds selected query degree at one while unrelated history grows. At n=2,048, 500 filtered incoming queries drop from 292.363 ms / 16.1 million BEAM reductions to 0.196 ms / 52 thousand reductions. Relabeling all 2,048 activations drops from 167.753 ms / 21.4 million reductions to 5.998 ms / 398 thousand reductions. See [graph-summary.csv](issue-19-foundation-results/graph-summary.csv); short elapsed timings fluctuate, so reduction counts provide useful corroboration.
+The isolated graph probe holds selected query degree at one while unrelated history grows. At n=2,048, 500 filtered incoming queries drop from 292.363 ms / 16.1 million BEAM reductions to 0.196 ms / 52 thousand reductions. Relabeling all 2,048 activations drops from 167.753 ms / 21.4 million reductions to 5.998 ms / 398 thousand reductions. Short elapsed timings fluctuate, so reduction counts provide useful corroboration.
 
 ### Measurement boundaries
 
@@ -66,15 +66,15 @@ The comparison also implemented one-fold batch obligations and source windows. T
 
 ## Dependency review and release prerequisite
 
-The graph patch is maintained in [zblanco/libgraph PR #4](https://github.com/zblanco/libgraph/pull/4), targeting `zw/multigraph-fork`. Runic pins its tested commit `9c60bde9fbb7d50f101799413e4232b448b9432a` in `mix.exs` and `mix.lock`. The runtime file matches the measured foundation byte-for-byte. The earlier temporary vendor tree and duplicate graph-specific tests have been removed from this PR; the graph repository now owns the implementation, contract tests and native validation.
+The graph patch is maintained in [zblanco/libgraph PR #4](https://github.com/zblanco/libgraph/pull/4), targeting `zw/multigraph-fork`. Runic pins commit `09064ede1d2848b68fa739c292b514c235a13a9e` in `mix.exs` and `mix.lock`; it removes documentation artifacts from the tested `9c60bde` revision without changing runtime source. The runtime file matches the measured foundation byte-for-byte. The earlier temporary vendor tree and duplicate graph-specific tests have been removed from this PR; the graph repository now owns the implementation, contract tests and native validation.
 
-The immutable Git pin makes this **draft** runnable while both PRs are reviewed. Select a released Multigraph dependency before publishing Runic to Hex. No dependency release or package publication is part of these PRs. See the [Multigraph report and provenance](https://github.com/zblanco/libgraph/blob/9c60bde/.docs/issue-19-partition-local-indexes.md).
+The immutable Git pin makes this **draft** runnable while both PRs are reviewed. Select a released Multigraph dependency before publishing Runic to Hex. No dependency release or package publication is part of these PRs. The [Multigraph PR description](https://github.com/zblanco/libgraph/pull/4) summarizes its approach, results and validation.
 
 ## Validation and reproduction
 
-With the fetched Git dependency, Runic passes **55 doctests and 1,421 tests, zero failures, 13 existing skips**. The twenty graph contract cases and 102 copied graph doctests now run in the owning Multigraph repository instead of being duplicated here; its native full suite passes **114 doctests and 117 tests, zero failures**, including existing property tests. Dispatch tests cover constant-size coordination fields, prefix/exclusion behavior, FactRefs, skip/defer accounting, late completion, duplicate application, dynamic composition and event order. A fresh six-case harness smoke also passes; its single samples are validation, not replacements for the comparison medians. See the [fresh Runic test log](issue-19-foundation-results/pr-tests.txt), [smoke log](issue-19-foundation-results/pr-smoke.txt), [dispatch details](issue-19-compact-dispatch-results.md) and [Multigraph validation](https://github.com/zblanco/libgraph/blob/9c60bde/.docs/issue-19-partition-local-indexes.md).
+With the fetched Git dependency, Runic passes **55 doctests and 1,421 tests, zero failures, 13 existing skips**. The twenty graph contract cases and 102 copied graph doctests now run in the owning Multigraph repository instead of being duplicated here; its native full suite passes **114 doctests and 117 tests, zero failures**, including existing property tests. Dispatch tests cover constant-size coordination fields, prefix/exclusion behavior, FactRefs, skip/defer accounting, late completion, duplicate application, dynamic composition and event order. A fresh six-case harness smoke also passes; its single samples are validation, not replacements for the comparison medians. See the [dispatch details](issue-19-compact-dispatch-results.md) and [Multigraph PR validation](https://github.com/zblanco/libgraph/pull/4). Generated test and smoke logs remain temporary files.
 
-The issue's public `plan_eagerly` → `react_until_satisfied` reproduction also passes exact ordered-output checks at 512, 2,048 and 8,192 items; [its log](issue-19-foundation-results/pr-public-api.txt) records single-run validation timings.
+The issue's public `plan_eagerly` → `react_until_satisfied` reproduction also passes exact ordered-output checks at 512, 2,048 and 8,192 items. Its single-run timings are validation rather than comparative medians.
 
 ```sh
 mix test
@@ -86,4 +86,10 @@ mix run bench/issue19/run.exs --label foundation --execution peer_tcp --cases co
 mix run bench/issue19/graph.exs 128 512 2048 8192
 ```
 
-To reproduce the control, create a separate worktree at `a9407d6`, install its locked dependencies and invoke this PR's `bench/issue19/run.exs` by absolute path from that worktree. Use separate build/dependency directories. `matrix.py` invokes the common harness this way and refuses to overwrite prior evidence. The original raw sample commits identify the comparison worktrees; their production implementation maps to main or the equivalent foundation commits in this PR. The broader comparison campaign is preserved locally on `issue-19/compare`.
+To reproduce the control, create a separate worktree at `a9407d6`, install its locked dependencies and invoke this PR's `bench/issue19/run.exs` by absolute path from that worktree. Use separate build/dependency directories. `matrix.py` invokes the common harness this way and refuses to overwrite prior evidence. Write generated output to a temporary directory:
+
+```sh
+runic_results=$(mktemp -d /tmp/runic-issue19.XXXXXX)
+python3 bench/issue19/matrix.py "$PWD" foundation "$runic_results"
+python3 bench/issue19/summarize.py "$runic_results" > "$runic_results/summary.csv"
+```
