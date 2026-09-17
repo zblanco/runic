@@ -1,6 +1,6 @@
 # Issue 19: foundation fixes for allocation and graph-operation costs
 
-This change advances the compact-dispatch and partition-local Multigraph implementations from the issue #19 comparison. The production source and tests match the tested foundation (`ea82d5b`) exactly. It targets main's `a9407d6` baseline; batch-obligation and source-window implementations remain separate experiments.
+This change advances the compact-dispatch and partition-local Multigraph implementations from the issue #19 comparison. Runic's workflow implementation and the pinned Multigraph runtime source match the tested foundation (`ea82d5b`). Graph implementation and graph-specific tests now live in the [companion Multigraph PR #4](https://github.com/zblanco/libgraph/pull/4). This PR targets main's `a9407d6` baseline; batch-obligation and source-window implementations remain separate experiments.
 
 ## Approach
 
@@ -66,13 +66,13 @@ The comparison also implemented one-fold batch obligations and source windows. T
 
 ## Dependency review and release prerequisite
 
-The existing locked Multigraph 0.16.1-mg.4 source is vendored under its original MIT license so the complete tested implementation is reviewable and runnable. A pristine-import commit is followed by the focused algorithm patch and regression hardening. See [PROVENANCE.md](../vendor/multigraph/PROVENANCE.md).
+The graph patch is maintained in [zblanco/libgraph PR #4](https://github.com/zblanco/libgraph/pull/4), targeting `zw/multigraph-fork`. Runic pins its tested commit `9c60bde9fbb7d50f101799413e4232b448b9432a` in `mix.exs` and `mix.lock`. The runtime file matches the measured foundation byte-for-byte. The earlier temporary vendor tree and duplicate graph-specific tests have been removed from this PR; the graph repository now owns the implementation, contract tests and native validation.
 
-The path override is temporary for this **draft**. Upstream the graph changes and select a released Multigraph dependency before releasing Runic, unless maintenance and packaging of a vendored dependency are explicitly adopted. Do not publish Runic with this experimental path dependency. No dependency release, package publication or unrelated experimental implementation is part of this PR.
+The immutable Git pin makes this **draft** runnable while both PRs are reviewed. Select a released Multigraph dependency before publishing Runic to Hex. No dependency release or package publication is part of these PRs. See the [Multigraph report and provenance](https://github.com/zblanco/libgraph/blob/9c60bde/.docs/issue-19-partition-local-indexes.md).
 
 ## Validation and reproduction
 
-The extracted branch passes **157 doctests and 1,441 tests, zero failures, 13 existing skips**. The graph contract suite compares partition queries with an independent canonical-edge oracle after deterministic mutation sequences and includes 102 upstream doctests. Dispatch tests cover constant-size coordination fields, prefix/exclusion behavior, FactRefs, skip/defer accounting, late completion, duplicate application, dynamic composition and event order. A fresh six-case harness smoke also passes; its single samples are validation, not replacements for the comparison medians. See the [fresh test log](issue-19-foundation-results/pr-tests.txt), [smoke log](issue-19-foundation-results/pr-smoke.txt), [dispatch details](issue-19-compact-dispatch-results.md) and [graph details](issue-19-graph-indexes-results.md).
+With the fetched Git dependency, Runic passes **55 doctests and 1,421 tests, zero failures, 13 existing skips**. The twenty graph contract cases and 102 copied graph doctests now run in the owning Multigraph repository instead of being duplicated here; its native full suite passes **114 doctests and 117 tests, zero failures**, including existing property tests. Dispatch tests cover constant-size coordination fields, prefix/exclusion behavior, FactRefs, skip/defer accounting, late completion, duplicate application, dynamic composition and event order. A fresh six-case harness smoke also passes; its single samples are validation, not replacements for the comparison medians. See the [fresh Runic test log](issue-19-foundation-results/pr-tests.txt), [smoke log](issue-19-foundation-results/pr-smoke.txt), [dispatch details](issue-19-compact-dispatch-results.md) and [Multigraph validation](https://github.com/zblanco/libgraph/blob/9c60bde/.docs/issue-19-partition-local-indexes.md).
 
 The issue's public `plan_eagerly` → `react_until_satisfied` reproduction also passes exact ordered-output checks at 512, 2,048 and 8,192 items; [its log](issue-19-foundation-results/pr-public-api.txt) records single-run validation timings.
 

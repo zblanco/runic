@@ -2,7 +2,7 @@
 
 See [the foundation report](../issue-19-foundation.md) for interpretation and reproduction.
 
-Raw CSV files are an unchanged subset of the earlier serialized comparison: baseline, compact dispatch, graph indexes and their integrated foundation. Some files include compilation output before the CSV header. The comment records the original worktree commit. `provenance.json` preserves that provenance and identifies the equivalent foundation source; this PR's production code is unchanged from the measured foundation.
+Raw CSV files are an unchanged subset of the earlier serialized comparison: baseline, compact dispatch, graph indexes and their integrated foundation. Some files include compilation output before the CSV header. The comment records the original worktree commit. `provenance.json` preserves that provenance and identifies the equivalent foundation source. Runic's workflow implementation and pinned Multigraph runtime match the measured foundation; graph-specific tests now live in the companion Multigraph PR.
 
 `summary.csv` is regenerated with:
 

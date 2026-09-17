@@ -14,7 +14,8 @@
     "Timing includes output verification; graph probes measure operations only.",
     "Raw files are copied unchanged from the September 15 comparison, not new PR-branch timings.",
     "Peer TCP is local alternative RPC; envelope sizes are estimates and remote heaps are excluded.",
-    "Fresh PR tests and smoke output are separate text logs."
+    "Fresh PR tests and smoke output are separate text logs.",
+    "Graph-specific tests moved to the owning repository; final Runic validation uses the fetched immutable Git dependency. Smoke HEAD identifies the checkout before committing the dependency switch."
   ],
   "branches_at_measurement_completion": {
     "issue-19/baseline": "96dbb10ad1242db48befb9a827a9ebb4f6b7b1ef",
@@ -33,6 +34,19 @@
     "common": 878,
     "graph": 105
   },
-  "equivalent_pr_source_commit": "534fa68",
-  "baseline_production_commit": "a9407d6"
+  "baseline_production_commit": "a9407d6",
+  "multigraph_dependency_commit": "9c60bde9fbb7d50f101799413e4232b448b9432a",
+  "multigraph_pr": "https://github.com/zblanco/libgraph/pull/4",
+  "multigraph_runtime_sha256": "15f054c3977fbb006db05e4cd474420a0334f9625a1c090ab0808d0fc8e88901",
+  "fresh_runic_tests": {
+    "doctests": 55,
+    "tests": 1421,
+    "failures": 0,
+    "skipped": 13
+  },
+  "fresh_multigraph_tests": {
+    "doctests": 114,
+    "tests": 117,
+    "failures": 0
+  }
 }

@@ -1,13 +1,8 @@
-==> multigraph
-Generated multigraph app
-==> runic
-Compiling 4 files (.ex)
-Generated runic app
-# commit=534fa68403b740e30be6f7404f66508d7828f53d elixir=1.19.5 otp=28 schedulers=16
+# commit=bcc4f4418c8b1f051bb2eb5fb18edf275bc0b164 elixir=1.19.5 otp=28 schedulers=16
 label,pass,repeat,case,n,preparation,execution,coordination,limit,concurrency,elapsed_us,waves,prepared,fan_in_prepared,max_prepared,facts,edges,mapped_entries,request_bytes,response_bytes,max_request_bytes,request_flat_words,max_context_words,retained_external_bytes,owner_peak_bytes,tree_peak_bytes,referenced_binary_peak_bytes,descendant_count,result_ok
-pr-smoke,timing,1,collect,128,eager,inline,legacy,64,8,10103,3,257,128,128,258,523,2,0,0,0,0,0,0,,,,,true
-pr-smoke,timing,1,sum,128,eager,inline,legacy,64,8,9608,3,257,128,128,258,523,2,0,0,0,0,0,0,,,,,true
-pr-smoke,timing,1,deep,128,eager,inline,legacy,64,8,28316,6,641,128,128,642,1302,5,0,0,0,0,0,0,,,,,true
-pr-smoke,timing,1,binary,128,eager,inline,legacy,64,8,13626,3,257,128,128,258,523,2,0,0,0,0,0,0,,,,,true
-pr-smoke,timing,1,repeated,128,eager,inline,legacy,64,8,37510,12,1028,512,128,1032,2065,5,0,0,0,0,0,0,,,,,true
-pr-smoke,timing,1,stream,128,eager,inline,legacy,64,8,9681,3,257,128,128,258,523,2,0,0,0,0,0,0,,,,,true
+pr-pinned-smoke,timing,1,collect,128,eager,inline,legacy,64,8,9888,3,257,128,128,258,523,2,0,0,0,0,0,0,,,,,true
+pr-pinned-smoke,timing,1,sum,128,eager,inline,legacy,64,8,10010,3,257,128,128,258,523,2,0,0,0,0,0,0,,,,,true
+pr-pinned-smoke,timing,1,deep,128,eager,inline,legacy,64,8,27503,6,641,128,128,642,1302,5,0,0,0,0,0,0,,,,,true
+pr-pinned-smoke,timing,1,binary,128,eager,inline,legacy,64,8,13390,3,257,128,128,258,523,2,0,0,0,0,0,0,,,,,true
+pr-pinned-smoke,timing,1,repeated,128,eager,inline,legacy,64,8,40580,12,1028,512,128,1032,2065,5,0,0,0,0,0,0,,,,,true
+pr-pinned-smoke,timing,1,stream,128,eager,inline,legacy,64,8,9426,3,257,128,128,258,523,2,0,0,0,0,0,0,,,,,true
