@@ -1,0 +1,12 @@
+# commit=96dbb10ad1242db48befb9a827a9ebb4f6b7b1ef elixir=1.19.5 otp=28 schedulers=16
+label,pass,repeat,case,n,preparation,execution,coordination,limit,concurrency,elapsed_us,waves,prepared,fan_in_prepared,max_prepared,facts,edges,mapped_entries,request_bytes,response_bytes,max_request_bytes,request_flat_words,max_context_words,retained_external_bytes,owner_peak_bytes,tree_peak_bytes,referenced_binary_peak_bytes,descendant_count,result_ok
+baseline,timing,1,collect,2048,eager,inline,legacy,64,8,6016983,3,4097,2048,2048,4098,8203,2,0,0,0,0,0,0,,,,,true
+baseline,timing,2,collect,2048,eager,inline,legacy,64,8,6531285,3,4097,2048,2048,4098,8203,2,0,0,0,0,0,0,,,,,true
+baseline,timing,3,collect,2048,eager,inline,legacy,64,8,6275748,3,4097,2048,2048,4098,8203,2,0,0,0,0,0,0,,,,,true
+baseline,memory,1,collect,2048,eager,inline,legacy,64,8,,3,4097,2048,2048,4098,8203,2,0,0,0,0,0,0,116499832,116499832,380799,0,true
+baseline,envelopes,1,collect,2048,eager,inline,legacy,64,8,,3,4097,2048,2048,4098,8203,2,1767136555,1783090368,856749,287343085,73277,19623246,,,,,true
+baseline,timing,1,sum,2048,eager,inline,legacy,64,8,6116846,3,4097,2048,2048,4098,8203,2,0,0,0,0,0,0,,,,,true
+baseline,timing,2,sum,2048,eager,inline,legacy,64,8,6536365,3,4097,2048,2048,4098,8203,2,0,0,0,0,0,0,,,,,true
+baseline,timing,3,sum,2048,eager,inline,legacy,64,8,6210632,3,4097,2048,2048,4098,8203,2,0,0,0,0,0,0,,,,,true
+baseline,memory,1,sum,2048,eager,inline,legacy,64,8,,3,4097,2048,2048,4098,8203,2,0,0,0,0,0,0,116527024,116527024,356650,0,true
+baseline,envelopes,1,sum,2048,eager,inline,legacy,64,8,,3,4097,2048,2048,4098,8203,2,1767136555,1783090368,856749,287343085,73277,19613755,,,,,true

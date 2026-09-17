@@ -1,0 +1,22 @@
+
+10:47:25.409 [warning] application :tidewave is not starting because Mix is not running
+# commit=96dbb10ad1242db48befb9a827a9ebb4f6b7b1ef elixir=1.19.5 otp=28 schedulers=16
+label,pass,repeat,case,n,preparation,execution,coordination,limit,concurrency,elapsed_us,waves,prepared,fan_in_prepared,max_prepared,facts,edges,mapped_entries,request_bytes,response_bytes,max_request_bytes,request_flat_words,max_context_words,retained_external_bytes,owner_peak_bytes,tree_peak_bytes,referenced_binary_peak_bytes,descendant_count,result_ok
+baseline,timing,1,collect,128,eager,peer_tcp,legacy,64,8,189024,3,257,128,128,258,523,2,0,0,0,0,0,0,,,,,true
+baseline,timing,2,collect,128,eager,peer_tcp,legacy,64,8,150656,3,257,128,128,258,523,2,0,0,0,0,0,0,,,,,true
+baseline,timing,3,collect,128,eager,peer_tcp,legacy,64,8,188304,3,257,128,128,258,523,2,0,0,0,0,0,0,,,,,true
+baseline,timing,1,collect,512,eager,peer_tcp,legacy,64,8,1469732,3,1025,512,512,1026,2059,2,0,0,0,0,0,0,,,,,true
+baseline,timing,2,collect,512,eager,peer_tcp,legacy,64,8,1472380,3,1025,512,512,1026,2059,2,0,0,0,0,0,0,,,,,true
+baseline,timing,3,collect,512,eager,peer_tcp,legacy,64,8,1473508,3,1025,512,512,1026,2059,2,0,0,0,0,0,0,,,,,true
+baseline,timing,1,sum,128,eager,peer_tcp,legacy,64,8,184604,3,257,128,128,258,523,2,0,0,0,0,0,0,,,,,true
+baseline,timing,2,sum,128,eager,peer_tcp,legacy,64,8,145908,3,257,128,128,258,523,2,0,0,0,0,0,0,,,,,true
+baseline,timing,3,sum,128,eager,peer_tcp,legacy,64,8,148776,3,257,128,128,258,523,2,0,0,0,0,0,0,,,,,true
+baseline,timing,1,sum,512,eager,peer_tcp,legacy,64,8,1440190,3,1025,512,512,1026,2059,2,0,0,0,0,0,0,,,,,true
+baseline,timing,2,sum,512,eager,peer_tcp,legacy,64,8,1421609,3,1025,512,512,1026,2059,2,0,0,0,0,0,0,,,,,true
+baseline,timing,3,sum,512,eager,peer_tcp,legacy,64,8,1446868,3,1025,512,512,1026,2059,2,0,0,0,0,0,0,,,,,true
+baseline,timing,1,binary,128,eager,peer_tcp,legacy,64,8,174181,3,257,128,128,258,523,2,0,0,0,0,0,0,,,,,true
+baseline,timing,2,binary,128,eager,peer_tcp,legacy,64,8,173734,3,257,128,128,258,523,2,0,0,0,0,0,0,,,,,true
+baseline,timing,3,binary,128,eager,peer_tcp,legacy,64,8,173755,3,257,128,128,258,523,2,0,0,0,0,0,0,,,,,true
+baseline,timing,1,binary,512,eager,peer_tcp,legacy,64,8,1819437,3,1025,512,512,1026,2059,2,0,0,0,0,0,0,,,,,true
+baseline,timing,2,binary,512,eager,peer_tcp,legacy,64,8,1830511,3,1025,512,512,1026,2059,2,0,0,0,0,0,0,,,,,true
+baseline,timing,3,binary,512,eager,peer_tcp,legacy,64,8,1888294,3,1025,512,512,1026,2059,2,0,0,0,0,0,0,,,,,true

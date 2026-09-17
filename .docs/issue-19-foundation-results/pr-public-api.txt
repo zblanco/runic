@@ -1,0 +1,3 @@
+n=512 result_ok=true elapsed_ms=64.906
+n=2048 result_ok=true elapsed_ms=175.512
+n=8192 result_ok=true elapsed_ms=839.736
