@@ -143,7 +143,7 @@ defmodule Runic.MixProject do
     [
       {:uniq, "~> 0.6.1"},
       {:telemetry, "~> 1.0"},
-      {:multigraph, "~> 0.16.1-mg.4"},
+      {:multigraph, "~> 0.16.1-mg.5"},
       {:ex_doc, "~> 0.34", only: :dev, runtime: false, warn_if_outdated: true},
       {:tidewave, "~> 0.4", only: :dev},
       {:bandit, "~> 1.0", only: :dev},

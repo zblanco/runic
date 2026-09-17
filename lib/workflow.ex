@@ -4199,6 +4199,120 @@ defmodule Runic.Workflow do
   end
 
   @doc """
+  Lazily enumerates pending activation references without preparing node contexts.
+
+  Each descriptor contains `:fact_hash`, `:node_hash`, and `:activation_kind`.
+  Enumeration order is unspecified. The stream is tied to this immutable workflow
+  snapshot and retains it until released; it is a local selection tool, not a
+  transport envelope. Create a new stream after applying results or composing nodes.
+
+  Only active edge partitions are visited, excluding retained production/history
+  edges. Runic's directed activation edges originate at Fact or FactRef vertices.
+  Resolve FactRef inputs before preparation, as for the eager dispatch API. Selecting
+  only that endpoint avoids duplicate visits without a frontier-sized dedup set.
+  """
+  @spec activation_descriptors(t()) :: Enumerable.t()
+  def activation_descriptors(%__MODULE__{graph: graph}) do
+    [:runnable, :matchable]
+    |> Stream.flat_map(fn label ->
+      graph.edge_index
+      |> Map.get(label, %{})
+      |> dispatch_map_entries()
+      |> Stream.flat_map(fn {owner, edge_keys} ->
+        case Map.get(graph.vertices, owner) do
+          fact when is_struct(fact, Fact) or is_struct(fact, FactRef) ->
+            edge_keys
+            |> Stream.filter(fn {from, _to} -> from == owner end)
+            |> Stream.map(fn {from, to} ->
+              %{fact_hash: from, node_hash: to, activation_kind: label}
+            end)
+
+          _ ->
+            []
+        end
+      end)
+    end)
+  end
+
+  # Use the map iterator explicitly: selecting a prefix must not first materialize
+  # a list of every vertex in the active partition.
+  defp dispatch_map_entries(map) do
+    Stream.unfold(:maps.iterator(map), fn iterator ->
+      case :maps.next(iterator) do
+        :none -> nil
+        {key, value, next} -> {{key, value}, next}
+      end
+    end)
+  end
+
+  @doc """
+  Prepares a selected prefix of pending activations for external dispatch.
+
+  Options:
+
+    * `:limit` — maximum selected activations to prepare, including skip/defer
+      results; defaults to `:infinity`. Zero performs no preparation.
+    * `:exclude` — unary predicate on an activation descriptor. Matching
+      activations are left untouched and do not count against the limit.
+
+  Selection precedes `Invokable.prepare/3`, so only selected nodes resolve context.
+  Skip/defer reducers are applied immediately, as in `prepare_for_dispatch/1`.
+  Consequently an empty returned list does not guarantee the workflow is drained.
+  Unselected work remains pending. Preparation does not reserve work: callers
+  dispatching asynchronously must exclude in-flight activations on subsequent calls.
+
+  With no options this delegates to the existing eager API, preserving its order.
+  An explicit limit uses unspecified activation order; source-ordered FanIn folds
+  remain coordinator-owned. The bound covers prepared contexts, not source data,
+  full provenance, the FanOut emission barrier, or coordinator accumulator space.
+
+  This API is opt-in for schedulers that permit prefix selection. Schedulers needing
+  the complete frontier for grouping must continue using `prepare_for_dispatch/1`.
+  """
+  @spec prepare_for_dispatch(t(), keyword()) :: {t(), [Runnable.t()]}
+  def prepare_for_dispatch(%__MODULE__{} = workflow, []), do: prepare_for_dispatch(workflow)
+
+  def prepare_for_dispatch(%__MODULE__{} = workflow, opts) when is_list(opts) do
+    opts = Keyword.validate!(opts, limit: :infinity, exclude: fn _ -> false end)
+    limit = Keyword.fetch!(opts, :limit)
+    exclude = Keyword.fetch!(opts, :exclude)
+
+    unless limit == :infinity or (is_integer(limit) and limit >= 0) do
+      raise ArgumentError, ":limit must be a non-negative integer or :infinity"
+    end
+
+    unless is_function(exclude, 1) do
+      raise ArgumentError, ":exclude must be a unary activation-descriptor predicate"
+    end
+
+    descriptors = workflow |> activation_descriptors() |> Stream.reject(exclude)
+    selected = if limit == :infinity, do: descriptors, else: Stream.take(descriptors, limit)
+
+    selected
+    |> Enum.reduce({workflow, []}, fn descriptor, {wrk, runnables} ->
+      # Earlier skip/defer reducers can consume other activations from this snapshot.
+      pending? =
+        wrk.graph.edges
+        |> Map.get({descriptor.fact_hash, descriptor.node_hash}, %{})
+        |> Map.has_key?(descriptor.activation_kind)
+
+      if pending? do
+        node = Map.fetch!(wrk.graph.vertices, descriptor.node_hash)
+        fact = Map.fetch!(wrk.graph.vertices, descriptor.fact_hash)
+
+        case Invokable.prepare(node, wrk, fact) do
+          {:ok, runnable} -> {wrk, [runnable | runnables]}
+          {:skip, reducer_fn} -> {reducer_fn.(wrk), runnables}
+          {:defer, reducer_fn} -> {reducer_fn.(wrk), runnables}
+        end
+      else
+        {wrk, runnables}
+      end
+    end)
+    |> then(fn {wrk, runnables} -> {wrk, Enum.reverse(runnables)} end)
+  end
+
+  @doc """
   Applies a completed runnable back to the workflow.
 
   Called by schedulers after receiving execution results.
