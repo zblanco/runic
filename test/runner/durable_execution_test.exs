@@ -174,6 +174,25 @@ defmodule Runic.Runner.DurableExecutionTest do
   # ---------------------------------------------------------------------------
 
   describe "in-flight recovery" do
+    test "resume dispatches a prepared activation interrupted before completion", %{
+      runner: runner
+    } do
+      assert_prepared_activation_resumes(runner)
+    end
+
+    test "legacy store resume dispatches a prepared activation" do
+      runner = :"test_runner_legacy_recovery_#{System.unique_integer([:positive])}"
+
+      start_supervised!({Runic.Runner.Store.ETS, runner_name: runner}, id: {runner, :store})
+
+      start_supervised!(
+        {Runic.Runner, name: runner, store: Runic.TestSupport.LegacyStore},
+        id: runner
+      )
+
+      assert_prepared_activation_resumes(runner)
+    end
+
     test "after crash and resume, pending runnables are re-dispatched", %{runner: runner} do
       # Use a step with durable mode that we can observe
       step_a = Runic.step(fn x -> x + 1 end, name: :step_a)
@@ -324,6 +343,58 @@ defmodule Runic.Runner.DurableExecutionTest do
   # ---------------------------------------------------------------------------
   # Helpers
   # ---------------------------------------------------------------------------
+
+  defp assert_prepared_activation_resumes(runner) do
+    observer = :"prepared_recovery_#{System.unique_integer([:positive])}"
+    Process.register(self(), observer)
+
+    first_step =
+      Runic.step(
+        fn {value, observer} ->
+          send(Process.whereis(observer), :first_step_completed)
+          {value + 1, observer}
+        end,
+        name: :first_step
+      )
+
+    blocking_step =
+      Runic.step(
+        fn {value, observer} ->
+          send(Process.whereis(observer), {:blocking_step_started, self()})
+
+          receive do
+            :release -> value + 1
+          end
+        end,
+        name: :blocking_step
+      )
+
+    workflow = Runic.workflow(steps: [{first_step, [blocking_step]}])
+
+    {:ok, _pid} =
+      Runic.Runner.start_workflow(runner, :wf_prepared_recovery, workflow,
+        checkpoint_strategy: :every_cycle
+      )
+
+    :ok = Runic.Runner.run(runner, :wf_prepared_recovery, {1, observer})
+    assert_receive :first_step_completed
+    assert_receive {:blocking_step_started, first_task}
+
+    first_task_ref = Process.monitor(first_task)
+    :ok = Runic.Runner.checkpoint(runner, :wf_prepared_recovery)
+    :ok = Runic.Runner.stop(runner, :wf_prepared_recovery, persist: true)
+    Process.exit(first_task, :kill)
+    assert_receive {:DOWN, ^first_task_ref, :process, ^first_task, _reason}
+
+    {:ok, _pid} = Runic.Runner.resume(runner, :wf_prepared_recovery)
+    assert_receive {:blocking_step_started, resumed_task}
+    refute_receive :first_step_completed
+    send(resumed_task, :release)
+
+    assert_workflow_idle(runner, :wf_prepared_recovery)
+    assert {:ok, results} = Runic.Runner.get_results(runner, :wf_prepared_recovery)
+    assert 3 in results
+  end
 
   defp assert_workflow_idle(runner, workflow_id, timeout \\ 2000) do
     deadline = System.monotonic_time(:millisecond) + timeout
