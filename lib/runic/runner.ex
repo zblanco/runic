@@ -106,6 +106,8 @@ defmodule Runic.Runner do
   Starts a new workflow under this runner.
 
   Returns `{:ok, pid}` or `{:error, {:already_started, pid}}`.
+  Initial event-stream persistence failures return
+  `{:error, {:persistence_failed, reason}}` without starting a Worker.
   """
   def start_workflow(runner, workflow_id, workflow, opts \\ []) do
     worker_spec =
@@ -194,6 +196,10 @@ defmodule Runic.Runner do
   Options:
     - `persist: true` (default) — saves final state to the store before stopping
     - `persist: false` — stops without saving
+
+  If persistence fails, returns `{:error, {:persistence_failed, reason}}` and
+  leaves the Worker alive with its pending data for retry. `persist: false`
+  explicitly discards the Worker's in-memory progress and stops without saving.
   """
   def stop(runner, workflow_id, opts \\ []) do
     case lookup(runner, workflow_id) do
@@ -207,11 +213,36 @@ defmodule Runic.Runner do
 
   Persists the current workflow state to the store regardless of
   the configured checkpoint strategy. Useful with `checkpoint_strategy: :manual`.
+
+  Returns `:ok` only after the Store acknowledges persistence, or
+  `{:error, {:persistence_failed, reason}}` with pending data retained for retry.
+  Store acknowledgement has the durability guarantees of the configured adapter;
+  the default ETS Store only survives Worker restarts within the same VM.
   """
   def checkpoint(runner, workflow_id) do
     case lookup(runner, workflow_id) do
       nil -> {:error, :not_found}
       pid -> GenServer.call(pid, :checkpoint)
+    end
+  end
+
+  @doc """
+  Returns the persistence status of a workflow Worker.
+
+  Returns `{:ok, %{status: status, event_cursor: cursor, pending_events: count}}`,
+  or `{:error, :not_found}`. Status is `:saved`, `:pending`, or
+  `{:error, {:persistence_failed, reason}}`. Computation may finish while
+  persistence remains pending or failed. The cursor is the latest Store cursor
+  acknowledged by this Worker (zero until an append is acknowledged). Legacy
+  snapshot Stores have no cursor and the event count only covers stream buffers.
+
+  No retries are scheduled by this query. Use `checkpoint/2` to retry. Like other
+  Worker calls, do not call this synchronously from a Worker lifecycle hook.
+  """
+  def persistence_status(runner, workflow_id) do
+    case lookup(runner, workflow_id) do
+      nil -> {:error, :not_found}
+      pid -> GenServer.call(pid, :persistence_status)
     end
   end
 

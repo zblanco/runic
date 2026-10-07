@@ -262,6 +262,8 @@ defmodule Runic.Runner.ParallelPromiseTest do
         nil
       )
 
+      on_exit(fn -> :telemetry.detach("par-promise-telemetry-test") end)
+
       step_a = Runic.step(fn x -> x + 1 end, name: :a)
       step_b = Runic.step(fn x -> x * 2 end, name: :b)
 
@@ -272,17 +274,22 @@ defmodule Runic.Runner.ParallelPromiseTest do
           scheduler: TestParallelScheduler
         )
 
+      expected_hashes = MapSet.new([step_a.hash, step_b.hash])
       :ok = Runic.Runner.run(runner, :wf_par_telemetry, 5)
       assert_workflow_idle(runner, :wf_par_telemetry)
 
-      assert_receive {:telemetry, [:runic, :runner, :promise, :start], _m, metadata}, 2000
+      assert_receive {:telemetry, [:runic, :runner, :promise, :start], _m,
+                      %{node_hashes: ^expected_hashes, promise_id: promise_id} = metadata},
+                     2000
+
       assert is_reference(metadata.promise_id)
       assert metadata.runnable_count >= 2
 
-      assert_receive {:telemetry, [:runic, :runner, :promise, :stop], measurements, _meta}, 2000
-      assert is_integer(measurements.duration)
+      assert_receive {:telemetry, [:runic, :runner, :promise, :stop], measurements,
+                      %{promise_id: ^promise_id, node_hashes: ^expected_hashes}},
+                     2000
 
-      :telemetry.detach("par-promise-telemetry-test")
+      assert is_integer(measurements.duration)
     end
   end
 
