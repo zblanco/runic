@@ -427,7 +427,7 @@ defmodule Runic.Runner do
     case store_mod.load(workflow_id, store_state) do
       {:ok, log} ->
         workflow = Runic.Workflow.from_events(log)
-        start_workflow(runner, workflow_id, workflow, opts)
+        start_workflow(runner, workflow_id, workflow, Keyword.put(opts, :resumed, true))
 
       {:error, _} = error ->
         error

@@ -193,7 +193,7 @@ defmodule Runic.Runner.Worker do
     # Persist initial build events for event-sourced stores (skip on resume)
     resumed = Keyword.get(opts, :resumed, false)
     state = maybe_persist_build_log(state, resumed)
-    state = maybe_recover_in_flight(state)
+    state = maybe_recover_work(state, resumed)
 
     {:ok, state}
   end
@@ -1069,21 +1069,30 @@ defmodule Runic.Runner.Worker do
 
   defp maybe_transition_to_idle(state), do: state
 
-  defp maybe_recover_in_flight(%__MODULE__{workflow: workflow} = state) do
-    case Workflow.pending_runnables(workflow) do
-      [] ->
+  defp maybe_recover_work(%__MODULE__{workflow: workflow} = state, resumed) do
+    pending_count = workflow |> Workflow.pending_runnables() |> length()
+
+    cond do
+      resumed and Workflow.is_runnable?(workflow) ->
+        recover_work(state, workflow, pending_count)
+
+      pending_count > 0 ->
+        recover_work(state, Workflow.plan_eagerly(workflow), pending_count)
+
+      true ->
         state
-
-      pending ->
-        Logger.info(
-          "Worker #{inspect(state.id)} recovering #{length(pending)} in-flight runnables"
-        )
-
-        workflow = Workflow.plan_eagerly(workflow)
-        state = %{state | workflow: workflow, status: :running}
-        state = dispatch_runnables(state)
-        maybe_transition_to_idle(state)
     end
+  end
+
+  defp recover_work(state, workflow, pending_count) do
+    Logger.info(
+      "Worker #{inspect(state.id)} recovering runnable workflow state " <>
+        "(#{pending_count} recorded in-flight)"
+    )
+
+    state = %{state | workflow: workflow, status: :running}
+    state = dispatch_runnables(state)
+    maybe_transition_to_idle(state)
   end
 
   defp merge_runtime_policies(opts, workflow_policies) do
