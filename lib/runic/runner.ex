@@ -155,6 +155,11 @@ defmodule Runic.Runner do
   The call returns after the unit is dispatched. It returns `{:error, :busy}`
   while prior work is active and `{:error, :not_runnable}` when the workflow
   has no ready work.
+
+  `:ok` acknowledges admission, not completion or persistence. An inline unit
+  may finish during the call. A Promise is one unit and may contain several
+  components. Manual mode is Worker-local configuration, not a durable pause
+  or human-approval record; pass `dispatch_mode: :manual` again when resuming.
   """
   def step(runner, workflow_id) do
     case lookup(runner, workflow_id) do
@@ -312,6 +317,11 @@ defmodule Runic.Runner do
 
   The encoded format is tagged and versioned so `resume/3` can distinguish
   Runic workflow snapshots from legacy adapter-specific blobs.
+
+  Top-level `run_context` is omitted and must be supplied again on resume.
+  This does not sanitize captured bindings, policies, or resources embedded
+  elsewhere in the graph; raw snapshots are trusted, version-coupled data,
+  not a portable or secret-free workflow format.
   """
   @spec encode_snapshot(Workflow.t()) :: binary()
   def encode_snapshot(%Workflow{} = workflow) do

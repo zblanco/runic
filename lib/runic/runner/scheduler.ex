@@ -50,17 +50,32 @@ defmodule Runic.Runner.Scheduler do
   Plan how to dispatch a set of prepared runnables.
 
   Receives the current workflow and a list of runnables ready for dispatch
-  (already filtered for active tasks and concurrency limits). Returns a
+  (filtered for active work, but not truncated to the concurrency limit). Returns a
   list of dispatch units and updated scheduler state.
 
   The Worker iterates over the returned units, routing `{:runnable, r}`
   to individual dispatch and `{:promise, p}` to batched dispatch.
+
+  This is a proposal, not an admission notification. The Worker may dispatch
+  only a prefix due to concurrency limits or manual stepping and replan the
+  remaining candidates later. Planning state must not assume proposed units
+  started. Use optional `on_dispatch/2` to track admitted units.
   """
   @callback plan_dispatch(
               workflow :: Runic.Workflow.t(),
               runnables :: [Runnable.t()],
               scheduler_state()
             ) :: {[dispatch_unit()], scheduler_state()}
+
+  @doc """
+  Called for each selected unit immediately before its dispatch is attempted.
+
+  Runs after manual/concurrency filtering and before any inline completion.
+  Optional. This is local admission bookkeeping, not backend acceptance or a
+  durable acknowledgement. A dispatch failure may terminate the Worker before
+  `on_complete/3`; this callback must not be an external ownership authority.
+  """
+  @callback on_dispatch(dispatch_unit(), scheduler_state()) :: scheduler_state()
 
   @doc """
   Called when a dispatch unit completes.
@@ -73,5 +88,5 @@ defmodule Runic.Runner.Scheduler do
   @callback on_complete(dispatch_unit(), duration_ms :: non_neg_integer(), scheduler_state()) ::
               scheduler_state()
 
-  @optional_callbacks [on_complete: 3]
+  @optional_callbacks [on_dispatch: 2, on_complete: 3]
 end

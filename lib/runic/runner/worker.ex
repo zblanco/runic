@@ -161,9 +161,6 @@ defmodule Runic.Runner.Worker do
     executor = Keyword.get(opts, :executor, Runic.Runner.Executor.Task)
     executor_opts = Keyword.get(opts, :executor_opts, [])
 
-    {executor_state, executor} =
-      init_executor(executor, executor_opts, task_supervisor)
-
     # Parse hooks
     hooks = parse_hooks(Keyword.get(opts, :hooks, []))
 
@@ -179,6 +176,10 @@ defmodule Runic.Runner.Worker do
       )
 
     scheduler_state = init_scheduler(scheduler, scheduler_opts)
+
+    # Validate/init the scheduler before allocating executor resources.
+    {executor_state, executor} =
+      init_executor(executor, executor_opts, task_supervisor)
 
     state = %__MODULE__{
       id: workflow_id,
@@ -203,7 +204,6 @@ defmodule Runic.Runner.Worker do
     }
 
     # Persist initial build events for event-sourced stores (skip on resume)
-
     case maybe_persist_build_log(state, resumed) do
       {:ok, state} ->
         state =
@@ -317,15 +317,17 @@ defmodule Runic.Runner.Worker do
 
   # Task completed successfully — the result is a %Runnable{}
   @impl GenServer
-  def handle_info({ref, %Runnable{} = executed}, state) when is_reference(ref) do
+  def handle_info({ref, %Runnable{} = executed}, %{active_tasks: tasks} = state)
+      when is_reference(ref) and :erlang.map_get(ref, tasks) == executed.id do
     Process.demonitor(ref, [:flush])
     state = handle_task_result(ref, executed, [], state)
     {:noreply, state}
   end
 
   # Task completed with durable events — {%Runnable{}, [event]}
-  def handle_info({ref, {%Runnable{} = executed, events}}, state)
-      when is_reference(ref) and is_list(events) do
+  def handle_info({ref, {%Runnable{} = executed, events}}, %{active_tasks: tasks} = state)
+      when is_reference(ref) and is_list(events) and
+             :erlang.map_get(ref, tasks) == executed.id do
     Process.demonitor(ref, [:flush])
     state = handle_task_result(ref, executed, events, state)
     {:noreply, state}
@@ -394,8 +396,11 @@ defmodule Runic.Runner.Worker do
   end
 
   # Promise completed — batch of executed runnables
-  def handle_info({ref, {:promise_result, promise_id, executed_runnables}}, state)
-      when is_reference(ref) do
+  def handle_info(
+        {ref, {:promise_result, promise_id, executed_runnables}},
+        %{active_tasks: tasks} = state
+      )
+      when is_reference(ref) and :erlang.map_get(ref, tasks) == {:promise, promise_id} do
     Process.demonitor(ref, [:flush])
     state = release_executor(state, ref)
 
@@ -434,8 +439,11 @@ defmodule Runic.Runner.Worker do
   end
 
   # Promise partially failed — some runnables completed, one failed
-  def handle_info({ref, {:promise_partial, promise_id, completed, failed}}, state)
-      when is_reference(ref) do
+  def handle_info(
+        {ref, {:promise_partial, promise_id, completed, failed}},
+        %{active_tasks: tasks} = state
+      )
+      when is_reference(ref) and :erlang.map_get(ref, tasks) == {:promise, promise_id} do
     Process.demonitor(ref, [:flush])
     state = release_executor(state, ref)
 
@@ -544,15 +552,37 @@ defmodule Runic.Runner.Worker do
       state
   end
 
+  defp notify_scheduler_dispatch(state, unit) do
+    if function_exported?(state.scheduler, :on_dispatch, 2) do
+      %{state | scheduler_state: state.scheduler.on_dispatch(unit, state.scheduler_state)}
+    else
+      state
+    end
+  rescue
+    error ->
+      Logger.warning("Scheduler on_dispatch raised: #{inspect(error)}")
+      state
+  end
+
+  defp safe_executor_callback(module, callback, args, fallback) do
+    apply(module, callback, args)
+  catch
+    kind, reason ->
+      Logger.warning("Executor #{inspect(module)}.#{callback} failed: #{inspect({kind, reason})}")
+
+      fallback
+  end
+
   defp cleanup_executors(%__MODULE__{executor: executor, executor_state: executor_state} = state) do
     # Cleanup default executor
     if executor != :inline and function_exported?(executor, :cleanup, 1) do
-      executor.cleanup(executor_state)
+      safe_executor_callback(executor, :cleanup, [executor_state], :ok)
     end
 
     # Cleanup override executors
     Enum.each(state.override_executors, fn {{mod, _opts}, es} ->
-      if function_exported?(mod, :cleanup, 1), do: mod.cleanup(es)
+      if function_exported?(mod, :cleanup, 1),
+        do: safe_executor_callback(mod, :cleanup, [es], :ok)
     end)
   end
 
@@ -672,6 +702,8 @@ defmodule Runic.Runner.Worker do
       if available <= 0 do
         {:halt, acc}
       else
+        acc = notify_scheduler_dispatch(acc, unit)
+
         acc =
           case unit do
             {:runnable, runnable} ->
@@ -1065,7 +1097,12 @@ defmodule Runic.Runner.Worker do
           update_executor_state(
             state,
             executor_origin,
-            executor_mod.release(handle, executor_state)
+            safe_executor_callback(
+              executor_mod,
+              :release,
+              [handle, executor_state],
+              executor_state
+            )
           )
         else
           state

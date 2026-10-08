@@ -60,6 +60,12 @@ defmodule Runic.Runner.Executor do
   The Worker calls this once after it receives either a result or a failure for
   the handle. Executors that track active work can use it to remove completed
   entries. Optional.
+
+  This is local resource bookkeeping, not durable result acceptance, a broker
+  acknowledgement, or cancellation confirmation. Persistence may subsequently
+  fail. Raised/thrown callback failures are logged; the Worker retains the last
+  executor state for cleanup and still processes the result. A handle is not
+  released again after a duplicate notification.
   """
   @callback release(handle(), executor_state()) :: executor_state()
 

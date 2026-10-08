@@ -24,6 +24,28 @@ defmodule Runic.Workflow.FactResolverTest do
   end
 
   describe "resolve/2" do
+    test "hydrates a pre-metadata FactRef decoded from ETF", %{
+      resolver: resolver,
+      store_state: store_state
+    } do
+      fact = Fact.new(value: "old value", ancestry: {10, 20})
+      :ok = ETS.save_fact(fact.hash, fact.value, store_state)
+
+      old_ref =
+        fact
+        |> Facts.to_ref()
+        |> Map.delete(:meta)
+        |> :erlang.term_to_binary()
+        |> :erlang.binary_to_term()
+
+      for resolver <- [resolver, FactResolver.preload(resolver, [fact.hash])] do
+        assert {:ok, restored} = FactResolver.resolve(old_ref, resolver)
+        assert restored.value == fact.value
+        assert restored.hash == fact.hash
+        assert restored.meta == %{}
+      end
+    end
+
     test "passes through a full Fact unchanged", %{resolver: resolver} do
       fact = Fact.new(value: 42, ancestry: {1, 2})
       assert {:ok, ^fact} = FactResolver.resolve(fact, resolver)
