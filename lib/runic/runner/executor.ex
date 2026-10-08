@@ -55,11 +55,20 @@ defmodule Runic.Runner.Executor do
               {handle(), executor_state()}
 
   @doc """
+  Releases a completed dispatch handle from executor state.
+
+  The Worker calls this once after it receives either a result or a failure for
+  the handle. Executors that track active work can use it to remove completed
+  entries. Optional.
+  """
+  @callback release(handle(), executor_state()) :: executor_state()
+
+  @doc """
   Clean up executor resources.
 
   Called when the Worker is stopping. Optional.
   """
   @callback cleanup(executor_state()) :: :ok
 
-  @optional_callbacks [cleanup: 1]
+  @optional_callbacks [release: 2, cleanup: 1]
 end
