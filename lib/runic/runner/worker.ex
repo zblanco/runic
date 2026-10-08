@@ -12,7 +12,7 @@ defmodule Runic.Runner.Worker do
   ## Executor
 
   The executor controls _how_ runnables are dispatched to compute. By default,
-  `Runic.Runner.Executor.Task` is used (wrapping `Task.Supervisor.async_nolink`).
+  `Runic.Runner.Executor.Task` is used with an owned scope of supervised tasks.
   Pass `executor: MyExecutor` and `executor_opts: [...]` to use a custom executor.
 
   The special value `executor: :inline` executes runnables synchronously in the
@@ -76,6 +76,8 @@ defmodule Runic.Runner.Worker do
     :workflow,
     :store,
     :task_supervisor,
+    :task_scope,
+    :task_scope_ref,
     :max_concurrency,
     :on_complete,
     :checkpoint_strategy,
@@ -110,7 +112,11 @@ defmodule Runic.Runner.Worker do
     %{
       id: {__MODULE__, id},
       start: {__MODULE__, :start_link, [opts]},
-      restart: :transient,
+      restart:
+        if(Keyword.get(opts, :owner, :background) == :background,
+          do: :transient,
+          else: :temporary
+        ),
       type: :worker
     }
   end
@@ -126,6 +132,21 @@ defmodule Runic.Runner.Worker do
 
   @impl GenServer
   def init(opts) do
+    case validate_owner(Keyword.get(opts, :owner, :background)) do
+      :ok -> init_owned(opts)
+      {:error, reason} -> {:stop, reason}
+    end
+  end
+
+  defp validate_owner(:background), do: :ok
+
+  defp validate_owner(owner) when is_pid(owner) and node(owner) == node() do
+    if Process.alive?(owner), do: :ok, else: {:error, {:owner_not_alive, owner}}
+  end
+
+  defp validate_owner(owner), do: {:error, {:invalid_owner, owner}}
+
+  defp init_owned(opts) do
     runner = Keyword.fetch!(opts, :runner)
     workflow_id = Keyword.fetch!(opts, :workflow_id)
     workflow = Keyword.fetch!(opts, :workflow)
@@ -177,9 +198,18 @@ defmodule Runic.Runner.Worker do
 
     scheduler_state = init_scheduler(scheduler, scheduler_opts)
 
+    {:ok, task_scope} =
+      Runic.TaskScope.start(
+        owner: self(),
+        external_owner: Keyword.get(opts, :owner, :background),
+        name: {:via, Registry, {Module.concat(runner, Registry), {Runic.TaskScope, self()}}}
+      )
+
+    Runic.TaskScope.attach(task_scope)
+
     # Validate/init the scheduler before allocating executor resources.
     {executor_state, executor} =
-      init_executor(executor, executor_opts, task_supervisor)
+      init_executor(executor, executor_opts, task_supervisor, task_scope)
 
     state = %__MODULE__{
       id: workflow_id,
@@ -187,6 +217,8 @@ defmodule Runic.Runner.Worker do
       workflow: workflow,
       store: {store_mod, store_state},
       task_supervisor: task_supervisor,
+      task_scope: task_scope,
+      task_scope_ref: Process.monitor(task_scope),
       max_concurrency: Keyword.get(opts, :max_concurrency, System.schedulers_online()),
       on_complete: Keyword.get(opts, :on_complete),
       checkpoint_strategy: Keyword.get(opts, :checkpoint_strategy, :every_cycle),
@@ -301,7 +333,10 @@ defmodule Runic.Runner.Worker do
 
     case result do
       {:ok, state} ->
-        {:stop, :normal, :ok, state}
+        case Runic.TaskScope.confirm_close(state.task_scope) do
+          :ok -> {:stop, :normal, :ok, state}
+          {:error, reason} -> {:stop, reason, {:error, reason}, state}
+        end
 
       {:error, reason, state} ->
         {:reply, {:error, reason}, state}
@@ -331,6 +366,11 @@ defmodule Runic.Runner.Worker do
     Process.demonitor(ref, [:flush])
     state = handle_task_result(ref, executed, events, state)
     {:noreply, state}
+  end
+
+  # A lost scope cannot deliver results or preserve the ownership contract.
+  def handle_info({:DOWN, ref, :process, _pid, reason}, %{task_scope_ref: ref} = state) do
+    {:stop, {:task_scope_down, reason}, state}
   end
 
   # Task crashed
@@ -495,12 +535,17 @@ defmodule Runic.Runner.Worker do
 
   # --- Private ---
 
-  defp init_executor(:inline, _opts, _task_supervisor) do
+  defp init_executor(:inline, _opts, _task_supervisor, _task_scope) do
     {nil, :inline}
   end
 
-  defp init_executor(executor_mod, executor_opts, task_supervisor) do
+  defp init_executor(executor_mod, executor_opts, task_supervisor, task_scope) do
     opts = Keyword.put_new(executor_opts, :task_supervisor, task_supervisor)
+
+    opts =
+      if executor_mod == Runic.Runner.Executor.Task,
+        do: Keyword.put(opts, :task_scope, task_scope),
+        else: opts
 
     case executor_mod.init(opts) do
       {:ok, executor_state} ->
@@ -584,6 +629,8 @@ defmodule Runic.Runner.Worker do
       if function_exported?(mod, :cleanup, 1),
         do: safe_executor_callback(mod, :cleanup, [es], :ok)
     end)
+
+    Runic.TaskScope.close(state.task_scope)
   end
 
   defp mark_crashed_runnable(state, runnable_id, reason, dispatch_time) do
@@ -916,12 +963,15 @@ defmodule Runic.Runner.Worker do
       Keyword.get(flow_opts, :stages, min(length(runnables), System.schedulers_online()))
 
     max_demand = Keyword.get(flow_opts, :max_demand, 1)
+    task_scope = Runic.TaskScope.current()
+    parent = self()
 
     execute_fn = fn runnable ->
+      :ok = Runic.TaskScope.track(task_scope, self(), parent)
       policy = SchedulerPolicy.resolve(runnable, policies)
 
       try do
-        execute_runnable(runnable, policy)
+        Runic.TaskScope.within(task_scope, fn -> execute_runnable(runnable, policy) end)
       rescue
         e ->
           Runnable.fail(runnable, {:execution_error, e})
@@ -1057,7 +1107,8 @@ defmodule Runic.Runner.Worker do
         case Map.get(state.override_executors, override_key) do
           nil ->
             # Lazy-init the override executor
-            {es, _mod} = init_executor(override_mod, override_opts, state.task_supervisor)
+            {es, _mod} =
+              init_executor(override_mod, override_opts, state.task_supervisor, state.task_scope)
 
             state = %{
               state

@@ -457,6 +457,73 @@ the Worker alive if saving fails. Retry the stop or checkpoint after recovery.
 Failure to append the initial build log returns a structured startup error rather
 than a pattern-match crash, before any workflow work is dispatched.
 
+### Task Ownership and Cancellation
+
+A managed Worker owns the native work that the default Task executor starts.
+Its task scope also covers Task executor overrides, timed PolicyDriver tasks,
+and the work processes of parallel Flow Promises. Work-process failures remain
+isolated from the Worker. Completed tasks release their tracking entries.
+
+Managed execution uses `owner: :background` by default. It can outlive the
+process that called `start_workflow/4` or `run/4`. For request-owned work, pass
+a local owner PID:
+
+```elixir
+{:ok, worker} = Runic.Runner.start_workflow(MyApp.Runner, :request, workflow,
+  owner: self()
+)
+:ok = Runic.Runner.run(MyApp.Runner, :request, input)
+
+# Explicit background work can outlive this caller.
+{:ok, background} = Runic.Runner.start_workflow(MyApp.Runner, :import, workflow,
+  owner: :background
+)
+```
+
+Owner death cancels an owned Worker and its native work without saving, even
+when work traps exits. Owned Workers are not restarted automatically. Resume
+with a live owner to select ownership again. Background Workers retain the
+existing transient restart behavior; a failed Worker attempt still releases
+its old native work.
+
+Use `cancel/2` to discard live execution without attempting persistence:
+
+```elixir
+:ok = Runic.Runner.cancel(MyApp.Runner, :request)
+```
+
+Cancellation covers the whole Worker, including all admitted inputs. `:ok`
+confirms quiescence: the Worker and its native task scope have stopped, no new
+work can be admitted to that Worker, and late results cannot be applied. A
+replacement Worker rejects old handles. Results accepted before cancellation
+remain accepted; cancellation does not reverse them.
+An unavailable or failed ownership scope returns an error instead of claiming
+confirmed cancellation.
+
+`stop/3` first saves when `persist: true`. A failed save leaves the same Worker,
+task scope, pending data, and live work available for recovery. A successful
+stop confirms native task shutdown. Inline work must return before the Worker
+can handle a stop call. Cancellation uses supervisor termination and can stop
+an unresponsive inline Worker; work that traps exits may require the Worker's
+supervisor shutdown period before it is killed.
+
+Immediate `Workflow.react/3` and `react_until_satisfied/3` calls belong to their
+caller. Synchronous work runs in that process. Async work and timed work use
+caller-owned scopes and stop after caller death. Timed work reuses an enclosing
+managed scope when available, so cancelling an outer task also covers its
+native inner work. Native async crashes are failed activations and cannot
+leave the same activation running in an endless loop.
+
+Custom executors must state their own cleanup and owner-death guarantees.
+Their optional cleanup callback remains contained if it raises or throws;
+that containment does not confirm cancellation of external work. The native
+ownership contract does not cover arbitrary detached processes, undo completed
+I/O, or provide durable cancellation when no cancellation state was saved.
+Resume from an older checkpoint can execute work again.
+
+See [`examples/owned_execution.exs`](../examples/owned_execution.exs) for a small
+consumer example that uses only Runic. Run it with `mix run examples/owned_execution.exs`.
+
 **Retry and memory ownership:** Each scheduled or explicit checkpoint and final
 save makes one attempt; there is no background retry loop or built-in backoff.
 Later cycle checkpoints can retry retained data according to the chosen strategy.

@@ -3349,7 +3349,7 @@ defmodule Runic.Workflow do
 
   ## Options
 
-  - `:async` - When `true`, executes runnables in parallel using `Task.async_stream`.
+  - `:async` - When `true`, executes runnables in parallel in a caller-owned task scope.
     Useful for I/O-bound workflows. Default: `false` (serial execution)
   - `:max_concurrency` - Maximum parallel tasks when `async: true`. Default: `System.schedulers_online()`
   - `:timeout` - Timeout for each task when `async: true`. Default: `:infinity`
@@ -3432,7 +3432,7 @@ defmodule Runic.Workflow do
     driver_opts = build_driver_opts(opts)
 
     runnables
-    |> Task.async_stream(
+    |> Runic.TaskScope.async_reduce(
       fn runnable ->
         if policies == [] do
           Invokable.execute(runnable.node, runnable)
@@ -3441,17 +3441,19 @@ defmodule Runic.Workflow do
           PolicyDriver.execute(runnable, policy, driver_opts)
         end
       end,
-      max_concurrency: max_concurrency,
-      timeout: timeout
-    )
-    |> Enum.reduce(workflow, fn
-      {:ok, executed}, wrk ->
-        apply_runnable(wrk, executed)
+      workflow,
+      fn
+        {:ok, executed}, wrk ->
+          apply_runnable(wrk, executed)
 
-      {:exit, reason}, wrk ->
-        Logger.warning("Async execution failed: #{inspect(reason)}")
-        wrk
-    end)
+        {:exit, {runnable, reason}}, wrk ->
+          Logger.warning("Async execution failed: #{inspect(reason)}")
+          apply_runnable(wrk, Runnable.fail(runnable, {:task_crashed, reason}))
+      end,
+      max_concurrency: max_concurrency,
+      timeout: timeout,
+      zip_input_on_exit: true
+    )
   end
 
   defp build_driver_opts(opts) do

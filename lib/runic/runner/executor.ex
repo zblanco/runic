@@ -16,12 +16,13 @@ defmodule Runic.Runner.Executor do
     - `{handle, result}` on successful completion
     - `{:DOWN, handle, :process, pid, reason}` on crash
 
-  This contract matches `Task.Supervisor.async_nolink` semantics,
-  making the default `Runic.Runner.Executor.Task` a zero-cost abstraction.
+  This message contract also supports scoped supervised tasks. Handles are
+  completion identifiers; an executor may forward notifications from its own
+  monitors rather than creating a monitor in the Worker.
 
   ## Built-in Executors
 
-    - `Runic.Runner.Executor.Task` — default, uses `Task.Supervisor.async_nolink`
+    - `Runic.Runner.Executor.Task` — default, owns supervised native tasks
     - `:inline` — special value indicating synchronous execution in the Worker process
   """
 
@@ -72,7 +73,10 @@ defmodule Runic.Runner.Executor do
   @doc """
   Clean up executor resources.
 
-  Called when the Worker is stopping. Optional.
+  Called when the Worker is stopping. Optional. The default Task executor
+  waits for its native work to stop. Custom executors must define their own
+  cleanup and owner-death guarantees; callback failure containment does not
+  provide cancellation confirmation for external work.
   """
   @callback cleanup(executor_state()) :: :ok
 
