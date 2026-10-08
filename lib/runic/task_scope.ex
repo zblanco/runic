@@ -21,6 +21,36 @@ defmodule Runic.TaskScope do
     end
   end
 
+  def capture_context do
+    callers =
+      case Process.get(:"$callers") do
+        callers when is_list(callers) -> callers
+        _ -> []
+      end
+
+    %{
+      group_leader: Process.group_leader(),
+      callers: [self() | callers],
+      logger_metadata: Logger.metadata()
+    }
+  end
+
+  def within_context(context, fun) do
+    group_leader = Process.group_leader()
+    callers = Process.get(:"$callers")
+    logger_metadata = Logger.metadata()
+
+    put_context(context)
+
+    try do
+      fun.()
+    after
+      Process.group_leader(self(), group_leader)
+      if callers, do: Process.put(:"$callers", callers), else: Process.delete(:"$callers")
+      Logger.reset_metadata(logger_metadata)
+    end
+  end
+
   def with_scope(fun) do
     case current() do
       nil ->
@@ -38,6 +68,14 @@ defmodule Runic.TaskScope do
   end
 
   def dispatch(scope, work, supervisor \\ nil) do
+    # Capture at the execution boundary, before the scope becomes the task starter.
+    context = capture_context()
+
+    work = fn ->
+      put_context(context)
+      work.()
+    end
+
     case GenServer.call(scope, {:dispatch, self(), work, supervisor}, :infinity) do
       {:ok, handle, pid} -> {handle, pid}
       {:error, reason} -> exit({:task_dispatch_failed, reason})
@@ -61,6 +99,8 @@ defmodule Runic.TaskScope do
   end
 
   def async_reduce(enumerable, work, initial, reducer, opts) do
+    context = capture_context()
+
     with_scope(fn scope ->
       supervisor = GenServer.call(scope, :supervisor)
       parent = self()
@@ -70,6 +110,7 @@ defmodule Runic.TaskScope do
         enumerable,
         fn input ->
           :ok = track(scope, self(), parent)
+          put_context(context)
           within(scope, fn -> work.(input) end)
         end,
         Keyword.put(opts, :shutdown, :brutal_kill)
@@ -250,6 +291,12 @@ defmodule Runic.TaskScope do
       {:error, reason} ->
         {:reply, {:error, reason}, state}
     end
+  end
+
+  defp put_context(context) do
+    Process.group_leader(self(), context.group_leader)
+    Process.put(:"$callers", context.callers)
+    Logger.reset_metadata(context.logger_metadata)
   end
 
   defp start_owner_guard(owner) do

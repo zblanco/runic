@@ -965,6 +965,7 @@ defmodule Runic.Runner.Worker do
 
     max_demand = Keyword.get(flow_opts, :max_demand, 1)
     task_scope = Runic.TaskScope.current()
+    context = Runic.TaskScope.capture_context()
     parent = self()
 
     execute_fn = fn runnable ->
@@ -972,7 +973,9 @@ defmodule Runic.Runner.Worker do
       policy = SchedulerPolicy.resolve(runnable, policies)
 
       try do
-        Runic.TaskScope.within(task_scope, fn -> execute_runnable(runnable, policy) end)
+        Runic.TaskScope.within(task_scope, fn ->
+          Runic.TaskScope.within_context(context, fn -> execute_runnable(runnable, policy) end)
+        end)
       rescue
         e ->
           Runnable.fail(runnable, {:execution_error, e})

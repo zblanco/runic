@@ -518,12 +518,34 @@ native inner work. A queued child dispatch is rejected if its parent has died,
 including after timeout cancellation. Native async crashes are failed activations
 and cannot leave the same activation running in an endless loop.
 
+Native tasks keep the dispatching process's group leader, Elixir `$callers`
+chain, and Logger metadata. Nested timed and async work captures the current
+values at each task boundary, including when it reuses a managed scope. Parallel
+Flow stages restore these values after each runnable so one runnable cannot
+change the next runnable's I/O route or logging context. Other process-dictionary
+entries are not copied into tasks.
+
+A managed Worker initially uses its Runner supervisor's group leader. Calling
+`run/4` from another process does not change that I/O route. The `owner:` option
+selects cancellation ownership; it does not select an I/O device. Shared Task
+Supervisors keep their own group leaders. Group-leader membership routes I/O
+and is not used to select processes for cancellation. Runtime process context
+is not part of a persisted workflow and must be supplied again after resume.
+
 Custom executors must state their own cleanup and owner-death guarantees.
 Their optional cleanup callback remains contained if it raises or throws;
 that containment does not confirm cancellation of external work. The native
 ownership contract does not cover arbitrary detached processes, undo completed
 I/O, or provide durable cancellation when no cancellation state was saved.
 Resume from an older checkpoint can execute work again.
+
+Close resources opened by a work function before it returns. For a remote
+session that can survive process death, an adapter can use a separately
+supervised resource owner that monitors the borrower and releases the session
+after borrower death. That owner must survive cancellation of native work.
+Use bounded acquisition and release requests, and report release failure
+separately from the work's original error. Confirmed native shutdown does not
+confirm remote resource release.
 
 See [`examples/owned_execution.exs`](../examples/owned_execution.exs) for a small
 consumer example that uses only Runic. Run it with `mix run examples/owned_execution.exs`.
