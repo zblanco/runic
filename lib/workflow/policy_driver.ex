@@ -49,9 +49,44 @@ defmodule Runic.Workflow.PolicyDriver do
     end
   end
 
+  @doc false
+  @spec external_failure(Runnable.t(), SchedulerPolicy.t(), term()) ::
+          {Runnable.t(), [struct()]}
+  def external_failure(%Runnable{} = runnable, %SchedulerPolicy{} = policy, error) do
+    attempt = runnable.attempt_number || 0
+    failed = runnable |> Runnable.for_attempt(attempt) |> Runnable.fail(error)
+    failure_action = policy.on_failure
+
+    final =
+      case failure_action do
+        :skip -> skip_runnable(failed)
+        :halt -> failed
+      end
+
+    events =
+      if policy.execution_mode == :durable do
+        [
+          build_dispatched_event(failed, policy, attempt),
+          build_failed_event(failed, attempt + 1, failure_action)
+        ]
+      else
+        []
+      end
+
+    {final, events}
+  end
+
   # ---------------------------------------------------------------------------
   # Non-event execution (original Phase 1 path)
   # ---------------------------------------------------------------------------
+
+  defp retry?(%SchedulerPolicy{retry_if: nil}, _error), do: true
+
+  defp retry?(%SchedulerPolicy{retry_if: fun}, error) when is_function(fun, 1),
+    do: fun.(error) == true
+
+  defp retry?(%SchedulerPolicy{retry_if: {module, function, args}}, error),
+    do: apply(module, function, [error | args]) == true
 
   defp do_execute(%Runnable{} = runnable, %SchedulerPolicy{} = policy, attempt, opts) do
     runnable = Runnable.for_attempt(runnable, attempt)
@@ -68,7 +103,7 @@ defmodule Runic.Workflow.PolicyDriver do
             result
 
           :failed ->
-            if attempt < policy.max_retries do
+            if attempt < policy.max_retries and retry?(policy, result.error) do
               delay = compute_delay(policy, attempt)
               if delay > 0, do: Process.sleep(delay)
               reset = reset_for_retry(runnable)
@@ -116,7 +151,7 @@ defmodule Runic.Workflow.PolicyDriver do
             {result, [dispatched_event]}
 
           :failed ->
-            if attempt < policy.max_retries do
+            if attempt < policy.max_retries and retry?(policy, result.error) do
               delay = compute_delay(policy, attempt)
               if delay > 0, do: Process.sleep(delay)
               reset = reset_for_retry(runnable)
@@ -250,6 +285,9 @@ defmodule Runic.Workflow.PolicyDriver do
         case Task.yield(task, ms) do
           {:ok, result} ->
             result
+
+          {:exit, reason} ->
+            Runnable.fail(runnable, {:task_crashed, reason})
 
           nil ->
             Task.shutdown(task, :brutal_kill)

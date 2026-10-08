@@ -281,6 +281,8 @@ defmodule Runic.Workflow do
           scheduler_policies: list(),
           # accumulated runnable lifecycle events for durable execution
           runnable_events: list(),
+          # true after a durable failure with an on_failure: :halt policy
+          halted_by_failure: boolean(),
           # when true, apply_runnable/2 buffers events into uncommitted_events
           emit_events: boolean(),
           # runtime-scoped external values (secrets, tenant IDs, etc.) keyed by component name
@@ -302,6 +304,7 @@ defmodule Runic.Workflow do
             output_ports: nil,
             scheduler_policies: [],
             runnable_events: [],
+            halted_by_failure: false,
             emit_events: false,
             uncommitted_events: [],
             run_context: %{}
@@ -349,6 +352,7 @@ defmodule Runic.Workflow do
     |> Map.put(:mapped, %{mapped_paths: MapSet.new()})
     |> Map.put_new(:scheduler_policies, [])
     |> Map.put_new(:runnable_events, [])
+    |> Map.put_new(:halted_by_failure, false)
   end
 
   defp new_graph do
@@ -549,7 +553,12 @@ defmodule Runic.Workflow do
   """
   @spec append_runnable_events(t(), list()) :: t()
   def append_runnable_events(%__MODULE__{} = workflow, events) when is_list(events) do
-    %{workflow | runnable_events: workflow.runnable_events ++ events}
+    halted_by_failure =
+      Map.get(workflow, :halted_by_failure, false) or Enum.any?(events, &halting_failure?/1)
+
+    workflow
+    |> Map.put(:runnable_events, workflow.runnable_events ++ events)
+    |> Map.put(:halted_by_failure, halted_by_failure)
   end
 
   @doc """
@@ -1910,7 +1919,12 @@ defmodule Runic.Workflow do
         %{wrk | runnable_events: wrk.runnable_events ++ [event]}
 
       %RunnableFailed{} = event, wrk ->
-        %{wrk | runnable_events: wrk.runnable_events ++ [event]}
+        wrk
+        |> Map.put(:runnable_events, wrk.runnable_events ++ [event])
+        |> Map.put(
+          :halted_by_failure,
+          Map.get(wrk, :halted_by_failure, false) or halting_failure?(event)
+        )
 
       %ComponentRemoved{name: name}, wrk ->
         remove_component(wrk, name)
@@ -1982,10 +1996,13 @@ defmodule Runic.Workflow do
           from_log(build_events)
           |> then(fn rebuilt ->
             # Merge runnable_events from rebuilt onto base if base is provided
-            %{
-              base_workflow
-              | runnable_events: base_workflow.runnable_events ++ rebuilt.runnable_events
-            }
+            base_workflow
+            |> Map.put(:runnable_events, base_workflow.runnable_events ++ rebuilt.runnable_events)
+            |> Map.put(
+              :halted_by_failure,
+              Map.get(base_workflow, :halted_by_failure, false) or
+                Map.get(rebuilt, :halted_by_failure, false)
+            )
           end)
         else
           base_workflow
@@ -3413,16 +3430,23 @@ defmodule Runic.Workflow do
     policies = resolve_effective_policies(workflow, opts)
     driver_opts = build_driver_opts(opts)
 
-    runnables
-    |> Enum.map(fn runnable ->
-      if policies == [] do
-        Invokable.execute(runnable.node, runnable)
-      else
-        policy = SchedulerPolicy.resolve(runnable, policies)
-        PolicyDriver.execute(runnable, policy, driver_opts)
+    Enum.reduce_while(runnables, workflow, fn runnable, current ->
+      executed =
+        if policies == [] do
+          Invokable.execute(runnable.node, runnable)
+        else
+          policy = SchedulerPolicy.resolve(runnable, policies)
+          PolicyDriver.execute(runnable, policy, driver_opts)
+        end
+
+      updated = apply_execution(executed, current)
+
+      case executed do
+        {%Runnable{status: :failed}, _events} -> {:halt, updated}
+        %Runnable{status: :failed} -> {:halt, updated}
+        _executed -> {:cont, updated}
       end
     end)
-    |> Enum.reduce(workflow, fn executed, wrk -> apply_runnable(wrk, executed) end)
   end
 
   defp execute_runnables_async(workflow, runnables, opts) do
@@ -3432,34 +3456,70 @@ defmodule Runic.Workflow do
     driver_opts = build_driver_opts(opts)
 
     runnables
-    |> Task.async_stream(
-      fn runnable ->
-        if policies == [] do
-          Invokable.execute(runnable.node, runnable)
-        else
-          policy = SchedulerPolicy.resolve(runnable, policies)
-          PolicyDriver.execute(runnable, policy, driver_opts)
-        end
-      end,
-      max_concurrency: max_concurrency,
-      timeout: timeout
-    )
-    |> Enum.reduce(workflow, fn
-      {:ok, executed}, wrk ->
-        apply_runnable(wrk, executed)
+    |> Enum.chunk_every(max_concurrency)
+    |> Enum.reduce_while(workflow, fn batch, current ->
+      results =
+        Task.async_stream(
+          batch,
+          fn runnable ->
+            if policies == [] do
+              Invokable.execute(runnable.node, runnable)
+            else
+              PolicyDriver.execute(
+                runnable,
+                SchedulerPolicy.resolve(runnable, policies),
+                driver_opts
+              )
+            end
+          end,
+          max_concurrency: max_concurrency,
+          timeout: timeout
+        )
 
-      {:exit, reason}, wrk ->
-        Logger.warning("Async execution failed: #{inspect(reason)}")
-        wrk
+      updated =
+        batch
+        |> Stream.zip(results)
+        |> Enum.reduce(current, fn
+          {_runnable, {:ok, executed}}, wrk ->
+            apply_execution(executed, wrk)
+
+          {runnable, {:exit, reason}}, wrk ->
+            Logger.warning("Async execution failed: #{inspect(reason)}")
+
+            runnable
+            |> async_exit_failure(policies, {:task_crashed, reason})
+            |> apply_execution(wrk)
+        end)
+
+      if halted_by_failure?(updated), do: {:halt, updated}, else: {:cont, updated}
     end)
   end
 
-  defp build_driver_opts(opts) do
-    case Keyword.get(opts, :deadline_at) do
-      nil -> []
-      deadline_at -> [deadline_at: deadline_at]
-    end
+  defp async_exit_failure(runnable, [], error), do: Runnable.fail(runnable, error)
+
+  defp async_exit_failure(runnable, policies, error) do
+    policy = SchedulerPolicy.resolve(runnable, policies)
+    PolicyDriver.external_failure(runnable, %{policy | execution_mode: :durable}, error)
   end
+
+  defp build_driver_opts(opts) do
+    []
+    |> then(fn driver_opts ->
+      case Keyword.get(opts, :deadline_at) do
+        nil -> driver_opts
+        deadline_at -> Keyword.put(driver_opts, :deadline_at, deadline_at)
+      end
+    end)
+    |> Keyword.put(:emit_events, true)
+  end
+
+  defp apply_execution({%Runnable{} = executed, events}, workflow) when is_list(events) do
+    workflow
+    |> apply_runnable(executed)
+    |> append_runnable_events(events)
+  end
+
+  defp apply_execution(%Runnable{} = executed, workflow), do: apply_runnable(workflow, executed)
 
   defp maybe_apply_run_context(workflow, opts) do
     case Keyword.get(opts, :run_context) do
@@ -3536,7 +3596,12 @@ defmodule Runic.Workflow do
   def react_until_satisfied(%__MODULE__{} = workflow, nil, opts) do
     opts = maybe_convert_deadline(opts)
     workflow = maybe_apply_run_context(workflow, opts)
-    do_react_until_satisfied(workflow, is_runnable?(workflow), opts)
+
+    if halted_by_failure?(workflow) do
+      workflow
+    else
+      do_react_until_satisfied(workflow, is_runnable?(workflow), opts)
+    end
   end
 
   def react_until_satisfied(%__MODULE__{} = wrk, %Fact{ancestry: nil} = fact, opts) do
@@ -3576,12 +3641,23 @@ defmodule Runic.Workflow do
     |> react(opts)
     |> then(fn wrk ->
       if is_function(checkpoint, 1), do: checkpoint.(wrk)
-      do_react_until_satisfied(wrk, is_runnable?(wrk), opts)
+
+      if halted_by_failure?(wrk) do
+        wrk
+      else
+        do_react_until_satisfied(wrk, is_runnable?(wrk), opts)
+      end
     end)
   end
 
   defp do_react_until_satisfied(%__MODULE__{} = workflow, false = _is_runnable?, _opts),
     do: workflow
+
+  defp halted_by_failure?(%__MODULE__{} = workflow),
+    do: Map.get(workflow, :halted_by_failure, false)
+
+  defp halting_failure?(%RunnableFailed{failure_action: :halt}), do: true
+  defp halting_failure?(_event), do: false
 
   @doc """
   Removes all `%Fact{}` vertices and generation integers from the workflow graph.

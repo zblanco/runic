@@ -3,6 +3,8 @@ defmodule Runic.Workflow.PolicyDriverTest do
 
   alias Runic.Workflow.{Step, Fact, CausalContext, Runnable, PolicyDriver, SchedulerPolicy}
 
+  def accept_error(_error), do: true
+
   defp make_runnable(work_fn, opts \\ []) do
     name = Keyword.get(opts, :name, :test_step)
     step = Step.new(work: work_fn, name: name)
@@ -82,6 +84,14 @@ defmodule Runic.Workflow.PolicyDriverTest do
 
       assert result.status == :completed
     end
+
+    test "a timed attempt that exits normally becomes a failure" do
+      runnable = make_runnable(fn _input -> Process.exit(self(), :normal) end)
+      policy = SchedulerPolicy.new(timeout_ms: 1_000)
+
+      assert %Runnable{status: :failed, error: {:task_crashed, :normal}} =
+               PolicyDriver.execute(runnable, policy)
+    end
   end
 
   describe "retry with backoff" do
@@ -117,6 +127,54 @@ defmodule Runic.Workflow.PolicyDriverTest do
 
       # 1 initial + 3 retries = 4 total
       assert :counters.get(counter, 1) == 4
+    end
+  end
+
+  describe "retry predicate" do
+    test "retry_if stops retries for errors it rejects" do
+      {runnable, counter} = make_flaky_runnable(5)
+      policy = SchedulerPolicy.new(max_retries: 3, retry_if: fn _error -> false end)
+
+      assert PolicyDriver.execute(runnable, policy).status == :failed
+      assert :counters.get(counter, 1) == 1
+    end
+
+    test "retry_if accepts an MFA and retries accepted errors" do
+      {runnable, counter} = make_flaky_runnable(2)
+      policy = SchedulerPolicy.new(max_retries: 3, retry_if: {__MODULE__, :accept_error, []})
+
+      assert PolicyDriver.execute(runnable, policy).status == :completed
+      assert :counters.get(counter, 1) == 3
+    end
+
+    test "retry_if applies to event-emitting execution" do
+      {runnable, counter} = make_flaky_runnable(5)
+
+      policy =
+        SchedulerPolicy.new(
+          max_retries: 3,
+          execution_mode: :durable,
+          retry_if: fn _error -> false end
+        )
+
+      {result, _events} = PolicyDriver.execute(runnable, policy, emit_events: true)
+      assert result.status == :failed
+      assert :counters.get(counter, 1) == 1
+    end
+  end
+
+  describe "external failure" do
+    test "records one terminal durable failure" do
+      runnable = make_runnable(fn input -> input end)
+      policy = SchedulerPolicy.new(execution_mode: :durable, on_failure: :halt)
+
+      assert {%Runnable{status: :failed, error: {:task_crashed, :normal}}, events} =
+               PolicyDriver.external_failure(runnable, policy, {:task_crashed, :normal})
+
+      assert Enum.any?(events, fn
+               %Runic.Workflow.RunnableFailed{failure_action: :halt} -> true
+               _event -> false
+             end)
     end
   end
 

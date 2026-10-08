@@ -247,7 +247,7 @@ defmodule Runic.Runner.Worker do
   end
 
   def handle_call(:step, _from, %__MODULE__{} = state) do
-    if Workflow.is_runnable?(state.workflow) do
+    if dispatchable?(state.workflow) do
       state = dispatch_one(state)
       state = maybe_transition_to_idle(state)
       {:reply, :ok, state}
@@ -315,15 +315,24 @@ defmodule Runic.Runner.Worker do
             active_promises: active_promises
         }
 
-        # Mark all runnables in the promise as crashed
         state =
           if promise do
-            Enum.reduce(promise.runnables, state, fn r, acc ->
-              mark_crashed_runnable(acc, r.id, reason, dispatch_time)
-            end)
+            crashed =
+              Enum.map(promise.runnables, fn runnable ->
+                crashed_runnable_result(state.workflow, runnable, reason)
+              end)
+
+            apply_promise_results(state, crashed)
           else
             state
           end
+
+        duration = task_duration(dispatch_time)
+
+        state =
+          if promise,
+            do: notify_scheduler_complete(state, {:promise, promise}, duration),
+            else: state
 
         state = maybe_checkpoint(state)
         state = dispatch_runnables(state)
@@ -342,7 +351,7 @@ defmodule Runic.Runner.Worker do
         {dispatch_time, dispatch_times} = Map.pop(state.dispatch_times, ref)
         state = %{state | active_tasks: active_tasks, dispatch_times: dispatch_times}
 
-        state = mark_crashed_runnable(state, runnable_id, reason, dispatch_time)
+        state = apply_crashed_runnable(state, runnable_id, reason, dispatch_time)
         state = maybe_checkpoint(state)
         state = dispatch_runnables(state)
         state = maybe_transition_to_idle(state)
@@ -518,21 +527,29 @@ defmodule Runic.Runner.Worker do
     end)
   end
 
-  defp mark_crashed_runnable(state, runnable_id, reason, dispatch_time) do
-    # Find the runnable in the workflow graph so we can mark it as failed.
-    # Without this, the :runnable edge stays in the graph and is_runnable?
-    # returns true forever — causing a deadlock.
+  defp apply_crashed_runnable(state, runnable_id, reason, dispatch_time) do
     case find_runnable_by_id(state.workflow, runnable_id) do
       nil ->
         state
 
       runnable ->
-        failed = Runnable.fail(runnable, {:task_crashed, reason})
-        invoke_hook(state.hooks, :on_failed, [runnable, reason, state])
-        emit_runnable_result(failed, state.id, dispatch_time)
-        workflow = Workflow.apply_runnable(state.workflow, failed)
-        %{state | workflow: workflow}
+        result = crashed_runnable_result(state.workflow, runnable, reason)
+
+        state
+        |> apply_promise_results([result])
+        |> notify_scheduler_complete({:runnable, elem(result, 0)}, task_duration(dispatch_time))
     end
+  end
+
+  defp crashed_runnable_result(workflow, runnable, reason) do
+    policy = SchedulerPolicy.resolve(runnable, workflow.scheduler_policies)
+    PolicyDriver.external_failure(runnable, policy, {:task_crashed, reason})
+  end
+
+  defp task_duration(nil), do: 0
+
+  defp task_duration(dispatch_time) do
+    System.monotonic_time(:millisecond) - dispatch_time
   end
 
   defp find_runnable_by_id(workflow, runnable_id) do
@@ -617,6 +634,9 @@ defmodule Runic.Runner.Worker do
   defp dispatch_runnables(%__MODULE__{dispatch_mode: :manual} = state), do: state
   defp dispatch_runnables(%__MODULE__{} = state), do: do_dispatch_runnables(state, :all)
   defp dispatch_one(%__MODULE__{} = state), do: do_dispatch_runnables(state, 1)
+
+  defp do_dispatch_runnables(%__MODULE__{workflow: %{halted_by_failure: true}} = state, _limit),
+    do: state
 
   defp do_dispatch_runnables(%__MODULE__{} = state, limit) do
     {workflow, runnables} = Workflow.prepare_for_dispatch(state.workflow)
@@ -888,10 +908,10 @@ defmodule Runic.Runner.Worker do
         execute_runnable(runnable, policy)
       rescue
         e ->
-          Runnable.fail(runnable, {:execution_error, e})
+          PolicyDriver.external_failure(runnable, policy, {:execution_error, e})
       catch
         kind, reason ->
-          Runnable.fail(runnable, {kind, reason})
+          PolicyDriver.external_failure(runnable, policy, {kind, reason})
       end
     end
 
@@ -1088,7 +1108,7 @@ defmodule Runic.Runner.Worker do
 
   defp maybe_transition_to_idle(%__MODULE__{active_tasks: tasks, workflow: wf} = state)
        when map_size(tasks) == 0 do
-    if not Workflow.is_runnable?(wf) do
+    if not dispatchable?(wf) do
       if state.status == :running do
         duration = System.monotonic_time(:millisecond) - state.started_at
 
@@ -1109,6 +1129,9 @@ defmodule Runic.Runner.Worker do
   end
 
   defp maybe_transition_to_idle(state), do: state
+
+  defp dispatchable?(workflow),
+    do: not Map.get(workflow, :halted_by_failure, false) and Workflow.is_runnable?(workflow)
 
   defp maybe_recover_work(%__MODULE__{workflow: workflow} = state, resumed) do
     pending_count = workflow |> Workflow.pending_runnables() |> length()

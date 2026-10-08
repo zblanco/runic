@@ -44,6 +44,13 @@ defmodule Runic.Workflow.SchedulerPolicy do
 
   Any other return value causes the runnable to fail with `{:invalid_fallback_return, value}`.
 
+  ## Retry Predicate
+
+  `:retry_if` limits retries to accepted errors. It is `nil` by default, which
+  retries every failure up to `max_retries`. A function receives the attempt
+  error. An `{module, function, args}` tuple receives the error as its first
+  argument. Only `true` permits another attempt.
+
   ## Example
 
       alias Runic.Workflow.SchedulerPolicy
@@ -73,7 +80,8 @@ defmodule Runic.Workflow.SchedulerPolicy do
     :deadline_ms,
     :circuit_breaker,
     :executor,
-    :executor_opts
+    :executor_opts,
+    :retry_if
   ]
 
   defstruct max_retries: 0,
@@ -89,7 +97,8 @@ defmodule Runic.Workflow.SchedulerPolicy do
             deadline_ms: nil,
             circuit_breaker: nil,
             executor: nil,
-            executor_opts: []
+            executor_opts: [],
+            retry_if: nil
 
   @type fallback_return ::
           Runnable.t()
@@ -97,6 +106,9 @@ defmodule Runic.Workflow.SchedulerPolicy do
           | {:value, term()}
 
   @type fallback_fn :: (Runnable.t(), term() -> fallback_return()) | nil
+
+  @typedoc "Decides if a failed attempt can retry. `nil` retries every failure."
+  @type retry_if :: (term() -> boolean()) | {module(), atom(), list()} | nil
 
   @type t :: %__MODULE__{
           max_retries: non_neg_integer(),
@@ -112,7 +124,8 @@ defmodule Runic.Workflow.SchedulerPolicy do
           deadline_ms: non_neg_integer() | nil,
           circuit_breaker: map() | nil,
           executor: module() | :inline | nil,
-          executor_opts: keyword()
+          executor_opts: keyword(),
+          retry_if: retry_if()
         }
 
   @doc """
