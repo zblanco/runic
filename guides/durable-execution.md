@@ -382,7 +382,7 @@ The Worker supports multiple checkpointing strategies to balance durability agai
 | `:every_cycle` | Persist after each react cycle (default) | Maximum durability, moderate overhead |
 | `:on_complete` | Persist only when workflow satisfies | Fast execution, risk of losing in-progress work |
 | `{:every_n, n}` | Persist every Nth completed runnable | Tunable balance between durability and throughput |
-| `:manual` | Only persist on explicit `checkpoint/2` call | Full user control |
+| `:manual` | Skip cycle checkpoints; explicit checkpoints and final idle/stop saves still apply | Caller-controlled intermediate checkpoints |
 
 ```elixir
 # Checkpoint every 5th completed runnable
@@ -396,8 +396,83 @@ Runic.Runner.start_workflow(MyApp.Runner, :approval_flow, workflow,
 )
 
 # Later, explicitly checkpoint
-Runic.Runner.checkpoint(MyApp.Runner, :approval_flow)
+:ok = Runic.Runner.checkpoint(MyApp.Runner, :approval_flow)
 ```
+
+### Persistence Failures and Completion
+
+`checkpoint/2` returns `:ok` after the configured Store acknowledges the write.
+If append, fact/payload storage, or a legacy save/checkpoint returns an error,
+the call returns `{:error, {:persistence_failed, reason}}`. Pending events retain
+their original values and order, and the acknowledged cursor stays unchanged.
+A successful retry clears the batch and uses the cursor returned by the Store.
+
+```elixir
+case Runic.Runner.checkpoint(MyApp.Runner, :approval_flow) do
+  :ok -> :saved
+  {:error, {:persistence_failed, reason}} -> {:retry_later, reason}
+end
+
+{:ok, %{status: status, event_cursor: cursor, pending_events: count}} =
+  Runic.Runner.persistence_status(MyApp.Runner, :approval_flow)
+# status: :saved | :pending | {:error, {:persistence_failed, reason}}
+```
+
+The cursor is the latest append acknowledged by this Worker, starting at zero
+before any append acknowledgement, including after resume. Legacy snapshot Stores
+do not supply a cursor; `pending_events` counts event-stream buffers, not snapshot
+size. `:saved` refers to the current persisted workflow state; an active task may
+still produce further results. ETS acknowledgement survives Worker restarts, but
+does not provide durability across VM restarts.
+
+Computation completion remains compatible: `on_complete` still receives
+`(workflow_id, workflow)` when execution finishes, even if the final save fails.
+The Worker remains idle with unsaved progress available for retry. `on_idle`
+receives Worker state including `:persistence`, and workflow `:stop` telemetry
+includes the same field. Neither callback nor workflow `:stop` alone claims
+durable completion. Applications requiring persistence should act on an acknowledged
+checkpoint or check persistence status before announcing saved progress.
+
+Observe automatic failures through an additive hook:
+
+```elixir
+hooks: [
+  on_persistence_error: fn operation, reason, worker_state ->
+    # Runs inside the Worker: notify a separate application coordinator.
+    send(coordinator, {:persistence_error, worker_state.id, operation, reason})
+  end
+]
+```
+
+The operation is `:build`, `:checkpoint`, or `:save`; `reason` is
+`{:persistence_failed, store_reason}`. Hook exceptions are logged. Do not
+synchronously call Worker APIs from its own hooks. Store `:stop` telemetry means
+the callback returned and includes `:operation` and `:result`; returned errors
+are distinguishable from successful acknowledgements. Store `:exception`
+telemetry covers raised exceptions and exits.
+
+`stop/3` with its default `persist: true` returns a persistence error and keeps
+the Worker alive if saving fails. Retry the stop or checkpoint after recovery.
+`persist: false` explicitly discards in-memory progress and stops without saving.
+Failure to append the initial build log returns a structured startup error rather
+than a pattern-match crash, before any workflow work is dispatched.
+
+**Retry and memory ownership:** Each scheduled or explicit checkpoint and final
+save makes one attempt; there is no background retry loop or built-in backoff.
+Later cycle checkpoints can retry retained data according to the chosen strategy.
+After a workflow becomes idle, retry is caller-driven. Dispatch continues after
+failed automatic saves, so buffers can grow during an outage. Applications must
+bound admitted work, observe errors/counts, and enforce their own memory limits
+and bounded retry/backoff policy. Retained events do not survive Worker death;
+application records may remain the recovery authority for unfinished batches.
+
+**Adapter ownership:** Appends should atomically accept a complete ordered batch
+or fail without accepting any events. Ambiguous remote acknowledgements require
+adapter deduplication or an explicitly documented limitation; resending alone
+does not guarantee exactly-once persistence or external effects. Fact and payload
+writes must tolerate retries with the same key/value. Unreferenced values from
+partially successful multi-callback saves are an adapter retention concern.
+Existing event formats and optional Store capabilities are unchanged.
 
 ### Crash Recovery with `resume/3`
 
@@ -544,12 +619,13 @@ The Runner emits telemetry events at key lifecycle points:
 | Event | When |
 |-------|------|
 | `[:runic, :runner, :workflow, :start]` | Workflow Worker initialized |
-| `[:runic, :runner, :workflow, :stop]` | Workflow satisfied (all runnables exhausted) |
+| `[:runic, :runner, :workflow, :stop]` | Computation finished; includes `:persistence` outcome |
 | `[:runic, :runner, :runnable, :start]` | Runnable dispatched to a task |
 | `[:runic, :runner, :runnable, :stop]` | Runnable completed (includes `duration` measurement) |
 | `[:runic, :runner, :runnable, :exception]` | Runnable failed permanently |
 | `[:runic, :runner, :store, :start]` | Store operation started |
-| `[:runic, :runner, :store, :stop]` | Store operation completed |
+| `[:runic, :runner, :store, :stop]` | Store callback returned; includes `:operation` and `:result` |
+| `[:runic, :runner, :store, :exception]` | Store callback raised or exited |
 
 ```elixir
 # Attach a handler for monitoring

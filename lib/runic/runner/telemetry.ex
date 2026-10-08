@@ -18,8 +18,9 @@ defmodule Runic.Runner.Telemetry do
 
   ### Store Events
     * `[:runic, :runner, :store, :start]` — store operation started
-    * `[:runic, :runner, :store, :stop]` — store operation completed
-    * `[:runic, :runner, :store, :exception]` — store operation failed
+    * `[:runic, :runner, :store, :stop]` — store operation returned; metadata
+      includes `:operation` and `:result` (including returned `{:error, reason}`)
+    * `[:runic, :runner, :store, :exception]` — store operation raised or exited
 
   ### Promise Events
     * `[:runic, :runner, :promise, :start]` — promise dispatched
@@ -103,12 +104,14 @@ defmodule Runic.Runner.Telemetry do
   `[:runic, :runner, :store, :stop]` (or `:exception`).
   """
   def store_span(operation, metadata, fun) do
+    metadata = Map.put(metadata, :operation, operation)
+
     :telemetry.span(
       [:runic, :runner, :store],
-      Map.put(metadata, :operation, operation),
+      metadata,
       fn ->
         result = fun.()
-        {result, metadata}
+        {result, Map.put(metadata, :result, result)}
       end
     )
   end

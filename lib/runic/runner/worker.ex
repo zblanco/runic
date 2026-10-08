@@ -47,9 +47,16 @@ defmodule Runic.Runner.Worker do
     - `on_complete: fn runnable, duration_ms, worker_state -> :ok end`
     - `on_failed: fn runnable, reason, worker_state -> :ok end`
     - `on_idle: fn worker_state -> :ok end`
+    - `on_persistence_error: fn operation, reason, worker_state -> :ok end`
     - `transform_runnables: fn runnables, workflow -> runnables end`
 
   Hook exceptions are logged but do not crash the Worker.
+
+  Computation completion (`on_complete` and `on_idle`) does not imply successful
+  persistence. Failed writes retain pending data, invoke `on_persistence_error`,
+  and remain visible through `Runic.Runner.persistence_status/2`. Retry is driven
+  by the checkpoint strategy or explicit calls; applications must bound admission
+  and pending-buffer growth during an extended Store outage.
   """
 
   use GenServer
@@ -87,6 +94,7 @@ defmodule Runic.Runner.Worker do
     started_at: nil,
     event_cursor: 0,
     uncommitted_events: [],
+    persistence: :pending,
     hooks: %{},
     override_executors: %{},
     promise_opts: []
@@ -188,14 +196,23 @@ defmodule Runic.Runner.Worker do
       promise_opts: promise_opts
     }
 
-    Telemetry.workflow_event(:start, %{id: workflow_id, workflow_name: workflow.name})
-
     # Persist initial build events for event-sourced stores (skip on resume)
     resumed = Keyword.get(opts, :resumed, false)
-    state = maybe_persist_build_log(state, resumed)
-    state = maybe_recover_work(state, resumed)
 
-    {:ok, state}
+    case maybe_persist_build_log(state, resumed) do
+      {:ok, state} ->
+        state =
+          if state.workflow.uncommitted_events == [],
+            do: state,
+            else: collect_pending_events(state, state.workflow, [])
+
+        Telemetry.workflow_event(:start, %{id: workflow_id, workflow_name: workflow.name})
+        {:ok, maybe_recover_work(state, resumed)}
+
+      {:error, reason, state} ->
+        cleanup_executors(state)
+        {:stop, reason}
+    end
   end
 
   @impl GenServer
@@ -209,7 +226,7 @@ defmodule Runic.Runner.Worker do
       |> maybe_apply_run_context(opts)
       |> Workflow.plan_eagerly(input)
 
-    state = %{state | workflow: workflow, status: :running}
+    state = %{state | workflow: workflow, status: :running} |> mark_persistence_pending()
     state = dispatch_runnables(state)
 
     state = maybe_transition_to_idle(state)
@@ -235,16 +252,37 @@ defmodule Runic.Runner.Worker do
     {:reply, {:ok, state.workflow}, state}
   end
 
+  def handle_call(:persistence_status, _from, state) do
+    pending_events = length(state.uncommitted_events) + length(state.workflow.uncommitted_events)
+
+    {:reply,
+     {:ok,
+      %{
+        status: state.persistence,
+        event_cursor: state.event_cursor,
+        pending_events: pending_events
+      }}, state}
+  end
+
   def handle_call({:stop, opts}, _from, state) do
     persist? = Keyword.get(opts, :persist, true)
-    state = if persist?, do: maybe_persist(state), else: state
-    cleanup_executors(state)
-    {:stop, :normal, :ok, state}
+    result = if persist?, do: persist(state, :save), else: {:ok, state}
+
+    case result do
+      {:ok, state} ->
+        cleanup_executors(state)
+        {:stop, :normal, :ok, state}
+
+      {:error, reason, state} ->
+        {:reply, {:error, reason}, state}
+    end
   end
 
   def handle_call(:checkpoint, _from, state) do
-    state = do_checkpoint(state)
-    {:reply, :ok, state}
+    case do_checkpoint(state) do
+      {:ok, state} -> {:reply, :ok, state}
+      {:error, reason, state} -> {:reply, {:error, reason}, state}
+    end
   end
 
   # Task completed successfully — the result is a %Runnable{}
@@ -532,46 +570,9 @@ defmodule Runic.Runner.Worker do
         workflow
       end
 
-    # Collect uncommitted events from the workflow for event-sourced persistence.
-    # Events are stored in reverse order by apply_runnable/2 (prepend for O(1)),
-    # so reverse here to restore chronological order.
-    {store_mod, store_state} = state.store
-    new_uncommitted = Enum.reverse(workflow.uncommitted_events)
-    # Include durable lifecycle events in the stream too
-    all_new_events = new_uncommitted ++ events
-
-    # Persist fact values to the content-addressed fact store before checkpointing
-    # events that reference them by hash.
-    flush_pending_facts(all_new_events, store_mod, store_state)
-
-    # Strip values from FactProduced events when the store supports fact-level
-    # storage. Values are already persisted via flush_pending_facts above;
-    # keeping only hashes in the event stream enables lean replay on recovery.
-    lean_events =
-      if function_exported?(store_mod, :save_fact, 3) do
-        strip_fact_values(all_new_events)
-      else
-        all_new_events
-      end
-
     state =
-      if Runic.Runner.Store.supports_stream?(store_mod) and lean_events != [] do
-        %{
-          state
-          | workflow: %{workflow | uncommitted_events: []},
-            active_tasks: active_tasks,
-            dispatch_times: dispatch_times,
-            uncommitted_events: state.uncommitted_events ++ lean_events,
-            event_cursor: state.event_cursor + length(lean_events)
-        }
-      else
-        %{
-          state
-          | workflow: workflow,
-            active_tasks: active_tasks,
-            dispatch_times: dispatch_times
-        }
-      end
+      %{state | active_tasks: active_tasks, dispatch_times: dispatch_times}
+      |> collect_pending_events(workflow, events)
 
     state = notify_scheduler_complete(state, {:runnable, executed}, duration)
     state = maybe_checkpoint(state)
@@ -959,29 +960,7 @@ defmodule Runic.Runner.Worker do
           workflow
         end
 
-      {store_mod, store_state} = acc.store
-      new_uncommitted = Enum.reverse(workflow.uncommitted_events)
-      all_new_events = new_uncommitted ++ events
-
-      flush_pending_facts(all_new_events, store_mod, store_state)
-
-      lean_events =
-        if function_exported?(store_mod, :save_fact, 3) do
-          strip_fact_values(all_new_events)
-        else
-          all_new_events
-        end
-
-      if Runic.Runner.Store.supports_stream?(store_mod) and lean_events != [] do
-        %{
-          acc
-          | workflow: %{workflow | uncommitted_events: []},
-            uncommitted_events: acc.uncommitted_events ++ lean_events,
-            event_cursor: acc.event_cursor + length(lean_events)
-        }
-      else
-        %{acc | workflow: workflow}
-      end
+      collect_pending_events(acc, workflow, events)
     end)
   end
 
@@ -1048,18 +1027,23 @@ defmodule Runic.Runner.Worker do
   defp maybe_transition_to_idle(%__MODULE__{active_tasks: tasks, workflow: wf} = state)
        when map_size(tasks) == 0 do
     if not Workflow.is_runnable?(wf) do
-      if state.status == :running do
-        duration = System.monotonic_time(:millisecond) - state.started_at
+      state =
+        if state.status == :running do
+          state = state |> persist(:save) |> persistence_state()
+          duration = System.monotonic_time(:millisecond) - state.started_at
 
-        Telemetry.workflow_event(:stop, %{duration: duration}, %{
-          id: state.id,
-          workflow_name: state.workflow.name
-        })
+          Telemetry.workflow_event(:stop, %{duration: duration}, %{
+            id: state.id,
+            workflow_name: state.workflow.name,
+            persistence: state.persistence
+          })
 
-        state = maybe_persist(state)
-        maybe_notify_complete(state)
-        invoke_hook(state.hooks, :on_idle, [state])
-      end
+          maybe_notify_complete(state)
+          invoke_hook(state.hooks, :on_idle, [state])
+          state
+        else
+          state
+        end
 
       %{state | status: :idle}
     else
@@ -1090,7 +1074,7 @@ defmodule Runic.Runner.Worker do
         "(#{pending_count} recorded in-flight)"
     )
 
-    state = %{state | workflow: workflow, status: :running}
+    state = %{state | workflow: workflow, status: :running} |> mark_persistence_pending()
     state = dispatch_runnables(state)
     maybe_transition_to_idle(state)
   end
@@ -1122,6 +1106,7 @@ defmodule Runic.Runner.Worker do
       on_complete: Keyword.get(hook_list, :on_complete),
       on_failed: Keyword.get(hook_list, :on_failed),
       on_idle: Keyword.get(hook_list, :on_idle),
+      on_persistence_error: Keyword.get(hook_list, :on_persistence_error),
       transform_runnables: Keyword.get(hook_list, :transform_runnables)
     }
   end
@@ -1200,24 +1185,37 @@ defmodule Runic.Runner.Worker do
   # --- Fact Persistence ---
 
   defp flush_pending_facts(events, store_mod, store_state) do
+    Enum.reduce_while(events, :ok, fn
+      %FactProduced{} = event, :ok ->
+        with :ok <- save_fact(event, store_mod, store_state),
+             :ok <- save_payload(event, store_mod, store_state) do
+          {:cont, :ok}
+        else
+          {:error, _} = error -> {:halt, error}
+        end
+
+      _event, :ok ->
+        {:cont, :ok}
+    end)
+  end
+
+  defp save_fact(event, store_mod, store_state) do
     if function_exported?(store_mod, :save_fact, 3) do
-      Enum.each(events, fn
-        %FactProduced{hash: h, value: v} -> store_mod.save_fact(h, v, store_state)
-        _ -> :ok
-      end)
-    end
-
-    if function_exported?(store_mod, :save_payload, 3) do
-      Enum.each(events, fn
-        %FactProduced{payload_digest: %Runic.Identity{} = digest, value: value} ->
-          encoded_payload = :erlang.term_to_binary(value, [:deterministic])
-          store_mod.save_payload(digest, encoded_payload, store_state)
-
-        _other ->
-          :ok
-      end)
+      store_mod.save_fact(event.hash, event.value, store_state)
+    else
+      :ok
     end
   end
+
+  defp save_payload(%FactProduced{payload_digest: %Runic.Identity{} = digest} = event, mod, st) do
+    if function_exported?(mod, :save_payload, 3) do
+      mod.save_payload(digest, :erlang.term_to_binary(event.value, [:deterministic]), st)
+    else
+      :ok
+    end
+  end
+
+  defp save_payload(_event, _mod, _st), do: :ok
 
   defp strip_fact_values(events) do
     Enum.map(events, fn
@@ -1233,40 +1231,16 @@ defmodule Runic.Runner.Worker do
   defp maybe_checkpoint(%{checkpoint_strategy: :on_complete} = state), do: state
 
   defp maybe_checkpoint(%{checkpoint_strategy: :every_cycle} = state) do
-    do_checkpoint(state)
+    state |> do_checkpoint() |> persistence_state()
   end
 
   defp maybe_checkpoint(%{checkpoint_strategy: {:every_n, n}} = state) do
     new_count = state.cycle_count + 1
     state = %{state | cycle_count: new_count}
-    if rem(new_count, n) == 0, do: do_checkpoint(state), else: state
+    if rem(new_count, n) == 0, do: state |> do_checkpoint() |> persistence_state(), else: state
   end
 
-  defp do_checkpoint(%{store: {store_mod, store_state}, id: id} = state) do
-    if Runic.Runner.Store.supports_stream?(store_mod) do
-      # Event-sourced path: append only uncommitted events
-      unless Enum.empty?(state.uncommitted_events) do
-        Telemetry.store_span(:checkpoint, %{workflow_id: id}, fn ->
-          store_mod.append(id, state.uncommitted_events, store_state)
-        end)
-      end
-
-      %{state | uncommitted_events: []}
-    else
-      # Legacy path: save full log
-      Telemetry.store_span(:checkpoint, %{workflow_id: id}, fn ->
-        log = Workflow.event_log(state.workflow)
-
-        if function_exported?(store_mod, :checkpoint, 3) do
-          store_mod.checkpoint(id, log, store_state)
-        else
-          store_mod.save(id, log, store_state)
-        end
-      end)
-
-      state
-    end
-  end
+  defp do_checkpoint(state), do: persist(state, :checkpoint)
 
   # --- Persistence ---
 
@@ -1277,38 +1251,96 @@ defmodule Runic.Runner.Worker do
     if Runic.Runner.Store.supports_stream?(store_mod) and not resumed do
       build_events = Workflow.build_log(wf)
 
-      unless Enum.empty?(build_events) do
-        {:ok, cursor} = store_mod.append(id, build_events, store_state)
-        %{state | event_cursor: cursor}
-      else
-        state
-      end
+      result =
+        Telemetry.store_span(:build, %{workflow_id: id}, fn ->
+          if build_events == [],
+            do: {:ok, 0},
+            else: store_mod.append(id, build_events, store_state)
+        end)
+
+      acknowledge_persistence(result, state, :build)
     else
-      state
+      {:ok, if(resumed, do: %{state | persistence: :saved}, else: state)}
     end
   end
 
-  defp maybe_persist(%{store: nil} = state), do: state
+  defp collect_pending_events(state, workflow, lifecycle_events) do
+    {store_mod, _store_state} = state.store
 
-  defp maybe_persist(%{store: {store_mod, store_state}, id: id} = state) do
     if Runic.Runner.Store.supports_stream?(store_mod) do
-      # Event-sourced: flush any remaining uncommitted events
-      unless Enum.empty?(state.uncommitted_events) do
-        Telemetry.store_span(:save, %{workflow_id: id}, fn ->
-          store_mod.append(id, state.uncommitted_events, store_state)
-        end)
-      end
+      # Workflow buffers are reversed; the Worker owns a chronological retry batch.
+      events = Enum.reverse(workflow.uncommitted_events) ++ lifecycle_events
 
-      %{state | uncommitted_events: []}
+      state = %{
+        state
+        | workflow: %{workflow | uncommitted_events: []},
+          uncommitted_events: state.uncommitted_events ++ events
+      }
+
+      if events == [], do: state, else: mark_persistence_pending(state)
     else
-      # Legacy: save full log snapshot
-      Telemetry.store_span(:save, %{workflow_id: id}, fn ->
-        store_mod.save(id, Workflow.event_log(state.workflow), store_state)
+      %{state | workflow: workflow} |> mark_persistence_pending()
+    end
+  end
+
+  defp mark_persistence_pending(%{persistence: {:error, _}} = state), do: state
+  defp mark_persistence_pending(state), do: %{state | persistence: :pending}
+
+  defp persist(%{store: {mod, st}, id: id} = state, operation) do
+    state = collect_pending_events(state, state.workflow, [])
+
+    result =
+      Telemetry.store_span(operation, %{workflow_id: id}, fn ->
+        if Runic.Runner.Store.supports_stream?(mod) do
+          append_pending_events(state, mod, st)
+        else
+          log = Workflow.event_log(state.workflow)
+
+          if operation == :checkpoint and function_exported?(mod, :checkpoint, 3) do
+            mod.checkpoint(id, log, st)
+          else
+            mod.save(id, log, st)
+          end
+        end
       end)
 
-      state
+    acknowledge_persistence(result, state, operation)
+  end
+
+  defp append_pending_events(%{uncommitted_events: []} = state, _mod, _st),
+    do: {:ok, state.event_cursor}
+
+  defp append_pending_events(state, mod, st) do
+    # Keep full values in the retry batch until BOTH value writes and append succeed.
+    with :ok <- flush_pending_facts(state.uncommitted_events, mod, st) do
+      events =
+        if function_exported?(mod, :save_fact, 3) do
+          strip_fact_values(state.uncommitted_events)
+        else
+          state.uncommitted_events
+        end
+
+      mod.append(state.id, events, st)
     end
   end
+
+  defp acknowledge_persistence({:ok, cursor}, state, _operation) do
+    {:ok, %{state | uncommitted_events: [], event_cursor: cursor, persistence: :saved}}
+  end
+
+  defp acknowledge_persistence(:ok, state, _operation),
+    do: {:ok, %{state | persistence: :saved}}
+
+  defp acknowledge_persistence({:error, reason}, state, operation) do
+    error = {:persistence_failed, reason}
+    state = %{state | persistence: {:error, error}}
+    Logger.warning("Worker #{inspect(state.id)} #{operation} failed: #{inspect(reason)}")
+    invoke_hook(state.hooks, :on_persistence_error, [operation, error, state])
+    {:error, error, state}
+  end
+
+  defp persistence_state({:ok, state}), do: state
+  defp persistence_state({:error, _reason, state}), do: state
 
   # --- Completion Callbacks ---
 
