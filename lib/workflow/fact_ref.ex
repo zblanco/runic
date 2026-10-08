@@ -12,8 +12,9 @@ defmodule Runic.Workflow.FactRef do
           payload_digest: Runic.Identity.t() | nil,
           hash: Runic.Workflow.Fact.hash(),
           ancestry: {Runic.Workflow.Fact.hash(), Runic.Workflow.Fact.hash()} | nil,
-          causal_ancestry: Runic.Workflow.FactAncestry.t() | nil
+          causal_ancestry: Runic.Workflow.FactAncestry.t() | nil,
+          meta: map()
         }
 
-  defstruct [:id, :content_digest, :payload_digest, :hash, :ancestry, :causal_ancestry]
+  defstruct [:id, :content_digest, :payload_digest, :hash, :ancestry, :causal_ancestry, meta: %{}]
 end
