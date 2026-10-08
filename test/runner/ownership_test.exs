@@ -276,6 +276,122 @@ defmodule Runic.Runner.OwnershipTest do
     assert_receive {:DOWN, ^worker_ref, :process, ^worker, _}, 1_000
   end
 
+  test "timeout rejects a queued child dispatch after killing its parent", ctx do
+    observer = self()
+
+    inner =
+      Runic.workflow(
+        steps: [
+          Runic.step(
+            fn input ->
+              send(observer, :child_started)
+              block(observer, input)
+            end,
+            name: :inner
+          )
+        ]
+      )
+      |> Workflow.set_scheduler_policies([{:inner, %{timeout_ms: 60_000}}])
+
+    outer =
+      Runic.workflow(
+        steps: [
+          Runic.step(
+            fn input ->
+              send(observer, {:outer_started, self(), Runic.TaskScope.current()})
+              receive do: (:nested -> :ok)
+              Workflow.react_until_satisfied(inner, input)
+            end,
+            name: :outer
+          )
+        ]
+      )
+      |> Workflow.set_scheduler_policies([{:outer, %{timeout_ms: 150}}])
+
+    assert {:ok, _worker} =
+             Runner.start_workflow(ctx.runner, :wf, outer,
+               owner: self(),
+               hooks: [
+                 on_failed: fn _, reason, _ -> send(observer, {:failed, reason}) end,
+                 on_idle: fn _ -> send(observer, :idle) end
+               ]
+             )
+
+    assert :ok = Runner.run(ctx.runner, :wf, 1)
+    assert_receive {:outer_started, parent, scope}, 1_000
+    parent_ref = Process.monitor(parent)
+    :ok = :sys.suspend(scope)
+    on_exit(fn -> if Process.alive?(scope), do: :sys.resume(scope) end)
+
+    # Queue cancellation first, then let the still-live parent request its child.
+    wait_for_call(scope, :cancel)
+    send(parent, :nested)
+    wait_for_call(scope, :dispatch)
+    :ok = :sys.resume(scope)
+
+    assert_receive {:DOWN, ^parent_ref, :process, ^parent, :killed}, 1_000
+    assert_receive {:failed, {:timeout, 150}}, 1_000
+    assert_receive :idle, 1_000
+    state = :sys.get_state(scope)
+    refute Enum.any?(state.tasks, fn {_ref, task} -> task.parent == parent end)
+    refute_received :child_started
+  end
+
+  for ownership <- [:owned, :background] do
+    test "scope failure stops blocked inline work with #{ownership} ownership", ctx do
+      observer = self()
+      owner = spawn(fn -> receive do: (:finish -> :ok) end)
+      owner_ref = Process.monitor(owner)
+      on_exit(fn -> if Process.alive?(owner), do: Process.exit(owner, :kill) end)
+
+      step =
+        Runic.step(
+          fn input ->
+            send(observer, {:scope, Runic.TaskScope.current()})
+            block(observer, input)
+          end,
+          name: :blocked
+        )
+
+      selected_owner = if unquote(ownership) == :owned, do: owner, else: :background
+
+      assert {:ok, worker} =
+               Runner.start_workflow(ctx.runner, :wf, Runic.workflow(steps: [step]),
+                 executor: :inline,
+                 owner: selected_owner
+               )
+
+      on_exit(fn -> if Process.alive?(worker), do: Process.exit(worker, :kill) end)
+      worker_ref = Process.monitor(worker)
+      assert :ok = Runner.run(ctx.runner, :wf, 1)
+      assert_receive {:scope, scope}, 1_000
+      assert_receive {:started, ^worker}, 1_000
+      scope_ref = Process.monitor(scope)
+      Process.exit(scope, :kill)
+      assert_receive {:DOWN, ^scope_ref, :process, ^scope, :killed}, 1_000
+      send(owner, :finish)
+      assert_receive {:DOWN, ^owner_ref, :process, ^owner, :normal}, 1_000
+      assert_receive {:DOWN, ^worker_ref, :process, ^worker, _}, 1_000
+    end
+  end
+
+  test "cancel stops inline work even when its scope registration is unavailable", ctx do
+    {worker, _task} = start_blocked(ctx.runner, [], executor: :inline, owner: self())
+    [{scope, _}] = Registry.lookup(Module.concat(ctx.runner, Registry), {Runic.TaskScope, worker})
+
+    :sys.replace_state(scope, fn state ->
+      Registry.unregister(Module.concat(ctx.runner, Registry), {Runic.TaskScope, worker})
+      state
+    end)
+
+    worker_ref = Process.monitor(worker)
+    scope_ref = Process.monitor(scope)
+    assert {:error, :ownership_scope_unavailable} = Runner.cancel(ctx.runner, :wf)
+    refute Process.alive?(worker)
+    assert_receive {:DOWN, ^worker_ref, :process, ^worker, _}, 1_000
+    assert_receive {:DOWN, ^scope_ref, :process, ^scope, :normal}, 1_000
+  end
+
   test "a lost task scope cannot confirm cancellation" do
     {:ok, scope} = Runic.TaskScope.start(owner: self())
     ref = Process.monitor(scope)
@@ -291,6 +407,22 @@ defmodule Runic.Runner.OwnershipTest do
     assert_receive {:started, task}, 1_000
     on_exit(fn -> if Process.alive?(task), do: Process.exit(task, :kill) end)
     {worker, task}
+  end
+
+  defp wait_for_call(scope, tag, deadline \\ System.monotonic_time(:millisecond) + 1_000) do
+    {:messages, messages} = Process.info(scope, :messages)
+
+    queued? =
+      Enum.any?(messages, fn
+        {:"$gen_call", _from, request} when is_tuple(request) -> elem(request, 0) == tag
+        _ -> false
+      end)
+
+    unless queued? do
+      assert System.monotonic_time(:millisecond) < deadline, "#{tag} call was not queued"
+      :erlang.yield()
+      wait_for_call(scope, tag, deadline)
+    end
   end
 
   defp blocked_workflow(observer, policy) do

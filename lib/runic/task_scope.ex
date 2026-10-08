@@ -120,6 +120,7 @@ defmodule Runic.TaskScope do
   def init(opts) do
     owner = Keyword.fetch!(opts, :owner)
     external_owner = Keyword.get(opts, :external_owner, :background)
+    if Keyword.get(opts, :guard_owner, false), do: start_owner_guard(owner)
 
     {:ok,
      %{
@@ -139,38 +140,11 @@ defmodule Runic.TaskScope do
   end
 
   def handle_call({:dispatch, caller, work, supervisor}, _from, state) do
-    scope = self()
-    handle = make_ref()
-    state = if supervisor, do: state, else: ensure_supervisor(state)
-
-    result =
-      Task.Supervisor.start_child(
-        supervisor || state.supervisor,
-        fn ->
-          scope_ref = Process.monitor(scope)
-
-          receive do
-            {^scope, :start} ->
-              Process.demonitor(scope_ref, [:flush])
-              result = within(scope, work)
-              send(scope, {:result, handle, result})
-
-            {:DOWN, ^scope_ref, :process, ^scope, _} ->
-              :ok
-          end
-        end,
-        shutdown: :brutal_kill
-      )
-
-    case result do
-      {:ok, pid} ->
-        # Register before opening the gate, so cancellation covers started work.
-        state = register(state, pid, caller, handle, caller)
-        send(pid, {scope, :start})
-        {:reply, {:ok, handle, pid}, state}
-
-      {:error, reason} ->
-        {:reply, {:error, reason}, state}
+    # Cancellation can consume the parent's DOWN before a queued dispatch arrives.
+    if Process.alive?(caller) do
+      dispatch_task(caller, work, supervisor, state)
+    else
+      {:reply, {:error, :owner_down}, state}
     end
   end
 
@@ -240,6 +214,66 @@ defmodule Runic.TaskScope do
 
     if is_pid(state.supervisor) and Process.alive?(state.supervisor),
       do: Supervisor.stop(state.supervisor, :normal, :infinity)
+  end
+
+  defp dispatch_task(caller, work, supervisor, state) do
+    scope = self()
+    handle = make_ref()
+    state = if supervisor, do: state, else: ensure_supervisor(state)
+
+    result =
+      Task.Supervisor.start_child(
+        supervisor || state.supervisor,
+        fn ->
+          scope_ref = Process.monitor(scope)
+
+          receive do
+            {^scope, :start} ->
+              Process.demonitor(scope_ref, [:flush])
+              result = within(scope, work)
+              send(scope, {:result, handle, result})
+
+            {:DOWN, ^scope_ref, :process, ^scope, _} ->
+              :ok
+          end
+        end,
+        shutdown: :brutal_kill
+      )
+
+    case result do
+      {:ok, pid} ->
+        # Register before opening the gate, so cancellation covers started work.
+        state = register(state, pid, caller, handle, caller)
+        send(pid, {scope, :start})
+        {:reply, {:ok, handle, pid}, state}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
+  defp start_owner_guard(owner) do
+    scope = self()
+
+    {guard, guard_ref} =
+      spawn_monitor(fn ->
+        scope_ref = Process.monitor(scope)
+        owner_ref = Process.monitor(owner)
+        send(scope, {:owner_guard_ready, self()})
+
+        # A blocked inline Worker cannot receive its own scope DOWN message.
+        receive do
+          {:DOWN, ^scope_ref, :process, ^scope, :normal} -> :ok
+          {:DOWN, ^scope_ref, :process, ^scope, _} -> Process.exit(owner, :kill)
+          {:DOWN, ^owner_ref, :process, ^owner, _} -> :ok
+        end
+      end)
+
+    # Install the monitor before returning, including for immediate normal close.
+    receive do
+      {:owner_guard_ready, ^guard} -> Process.demonitor(guard_ref, [:flush])
+      {:DOWN, ^guard_ref, :process, ^guard, reason} -> exit({:owner_guard_failed, reason})
+    end
   end
 
   defp ensure_supervisor(%{supervisor: nil} = state) do

@@ -463,6 +463,8 @@ A managed Worker owns the native work that the default Task executor starts.
 Its task scope also covers Task executor overrides, timed PolicyDriver tasks,
 and the work processes of parallel Flow Promises. Work-process failures remain
 isolated from the Worker. Completed tasks release their tracking entries.
+A separate monitor stops the Worker after abnormal scope failure, including
+inline work that blocks the Worker's message loop and traps exits.
 
 Managed execution uses `owner: :background` by default. It can outlive the
 process that called `start_workflow/4` or `run/4`. For request-owned work, pass
@@ -497,8 +499,9 @@ confirms quiescence: the Worker and its native task scope have stopped, no new
 work can be admitted to that Worker, and late results cannot be applied. A
 replacement Worker rejects old handles. Results accepted before cancellation
 remain accepted; cancellation does not reverse them.
-An unavailable or failed ownership scope returns an error instead of claiming
-confirmed cancellation.
+Cancellation still stops a known Worker when its scope registration is missing.
+An unavailable or failed ownership scope returns an error because native
+quiescence cannot be confirmed.
 
 `stop/3` first saves when `persist: true`. A failed save leaves the same Worker,
 task scope, pending data, and live work available for recovery. A successful
@@ -511,8 +514,9 @@ Immediate `Workflow.react/3` and `react_until_satisfied/3` calls belong to their
 caller. Synchronous work runs in that process. Async work and timed work use
 caller-owned scopes and stop after caller death. Timed work reuses an enclosing
 managed scope when available, so cancelling an outer task also covers its
-native inner work. Native async crashes are failed activations and cannot
-leave the same activation running in an endless loop.
+native inner work. A queued child dispatch is rejected if its parent has died,
+including after timeout cancellation. Native async crashes are failed activations
+and cannot leave the same activation running in an endless loop.
 
 Custom executors must state their own cleanup and owner-death guarantees.
 Their optional cleanup callback remains contained if it raises or throws;

@@ -201,6 +201,7 @@ defmodule Runic.Runner.Worker do
     {:ok, task_scope} =
       Runic.TaskScope.start(
         owner: self(),
+        guard_owner: true,
         external_owner: Keyword.get(opts, :owner, :background),
         name: {:via, Registry, {Module.concat(runner, Registry), {Runic.TaskScope, self()}}}
       )

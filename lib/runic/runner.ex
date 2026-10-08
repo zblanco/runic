@@ -263,6 +263,8 @@ defmodule Runic.Runner do
   Worker that cannot handle calls. `:ok` confirms that the Worker and its task
   scope have stopped. It does not acknowledge persistence or undo completed
   external effects. Custom executors retain their own cleanup contract.
+  If the scope registration is unavailable, the Worker is still stopped, but
+  cancellation returns an error because native quiescence cannot be confirmed.
 
   Cancelling a Worker cancels all of its inputs. A concurrent result already
   accepted by the Worker remains accepted; later results cannot be applied by
@@ -291,7 +293,16 @@ defmodule Runic.Runner do
             end
 
           [] ->
-            {:error, :ownership_scope_unavailable}
+            case DynamicSupervisor.terminate_child(
+                   Module.concat(runner, WorkerSupervisor),
+                   worker
+                 ) do
+              result when result in [:ok, {:error, :not_found}] ->
+                {:error, :ownership_scope_unavailable}
+
+              error ->
+                error
+            end
         end
     end
   end
