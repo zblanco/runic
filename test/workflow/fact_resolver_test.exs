@@ -1,7 +1,9 @@
 defmodule Runic.Workflow.FactResolverTest do
   use ExUnit.Case, async: true
 
+  alias Runic.Workflow
   alias Runic.Workflow.{Fact, FactRef, FactResolver, Facts}
+  alias Runic.Workflow.Events.FactProduced
   alias Runic.Runner.Store.ETS
 
   setup do
@@ -25,6 +27,32 @@ defmodule Runic.Workflow.FactResolverTest do
     test "passes through a full Fact unchanged", %{resolver: resolver} do
       fact = Fact.new(value: 42, ancestry: {1, 2})
       assert {:ok, ^fact} = FactResolver.resolve(fact, resolver)
+    end
+
+    test "keeps metadata when a FactRef is hydrated", %{
+      resolver: resolver,
+      store_state: store_state
+    } do
+      fact = Fact.new(value: "hello", ancestry: {10, 20}, meta: %{owner: :component})
+      :ok = ETS.save_fact(fact.hash, fact.value, store_state)
+
+      ref = Facts.to_ref(fact)
+      assert ref.meta == %{owner: :component}
+      assert {:ok, %Fact{meta: %{owner: :component}}} = FactResolver.resolve(ref, resolver)
+    end
+
+    test "keeps metadata when a lean event is replayed" do
+      fact = Fact.new(value: "hello", meta: %{owner: :component})
+
+      event =
+        fact
+        |> FactProduced.new(producer_label: :input, weight: 0)
+        |> Map.put(:value, nil)
+
+      workflow = Workflow.from_events([event], Workflow.new(), fact_mode: :ref)
+
+      assert %FactRef{meta: %{owner: :component}} =
+               Map.fetch!(workflow.graph.vertices, fact.hash)
     end
 
     test "resolves a FactRef from the store", %{resolver: resolver, store_state: store_state} do

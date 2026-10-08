@@ -32,7 +32,8 @@ defmodule Runic.Workflow.Facts do
       payload_digest: fact.payload_digest,
       hash: fact.hash,
       ancestry: fact.ancestry,
-      causal_ancestry: fact.causal_ancestry
+      causal_ancestry: fact.causal_ancestry,
+      meta: fact.meta
     }
   end
 end

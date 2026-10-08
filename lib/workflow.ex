@@ -1642,7 +1642,8 @@ defmodule Runic.Workflow do
       payload_digest: e.payload_digest,
       hash: e.hash,
       ancestry: e.ancestry,
-      causal_ancestry: e.causal_ancestry
+      causal_ancestry: e.causal_ancestry,
+      meta: e.meta
     }
 
     wf = log_fact(wf, ref)
