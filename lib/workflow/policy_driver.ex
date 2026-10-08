@@ -68,22 +68,27 @@ defmodule Runic.Workflow.PolicyDriver do
             result
 
           :failed ->
-            if attempt < policy.max_retries do
-              delay = compute_delay(policy, attempt)
-              if delay > 0, do: Process.sleep(delay)
-              reset = reset_for_retry(runnable)
-              do_execute(reset, policy, attempt + 1, opts)
-            else
-              case policy.fallback do
-                nil ->
-                  case policy.on_failure do
-                    :skip -> skip_runnable(result)
-                    :halt -> result
-                  end
+            case retry_decision(policy, result.error, attempt) do
+              :retry ->
+                delay = compute_delay(policy, attempt)
+                if delay > 0, do: Process.sleep(delay)
+                reset = reset_for_retry(runnable)
+                do_execute(reset, policy, attempt + 1, opts)
 
-                fallback when is_function(fallback) ->
-                  handle_fallback(result, result.error, policy)
-              end
+              :stop ->
+                case policy.fallback do
+                  nil ->
+                    case policy.on_failure do
+                      :skip -> skip_runnable(result)
+                      :halt -> result
+                    end
+
+                  fallback when is_function(fallback) ->
+                    handle_fallback(result, result.error, policy, opts)
+                end
+
+              {:error, reason} ->
+                Runnable.fail(result, {:retry_predicate_failed, reason, result.error})
             end
         end
 
@@ -116,45 +121,54 @@ defmodule Runic.Workflow.PolicyDriver do
             {result, [dispatched_event]}
 
           :failed ->
-            if attempt < policy.max_retries do
-              delay = compute_delay(policy, attempt)
-              if delay > 0, do: Process.sleep(delay)
-              reset = reset_for_retry(runnable)
-              {final, rest_events} = do_execute_with_events(reset, policy, attempt + 1, opts)
-              {final, rest_events ++ [dispatched_event]}
-            else
-              case policy.fallback do
-                nil ->
-                  failure_action =
-                    case policy.on_failure do
-                      :skip -> :skip
-                      :halt -> :halt
+            case retry_decision(policy, result.error, attempt) do
+              :retry ->
+                delay = compute_delay(policy, attempt)
+                if delay > 0, do: Process.sleep(delay)
+                reset = reset_for_retry(runnable)
+                {final, rest_events} = do_execute_with_events(reset, policy, attempt + 1, opts)
+                {final, rest_events ++ [dispatched_event]}
+
+              :stop ->
+                case policy.fallback do
+                  nil ->
+                    failure_action =
+                      case policy.on_failure do
+                        :skip -> :skip
+                        :halt -> :halt
+                      end
+
+                    failed_event = build_failed_event(result, attempt + 1, failure_action)
+
+                    final =
+                      case policy.on_failure do
+                        :skip -> skip_runnable(result)
+                        :halt -> result
+                      end
+
+                    {final, [failed_event, dispatched_event]}
+
+                  fallback when is_function(fallback) ->
+                    fallback_result = handle_fallback(result, result.error, policy, opts)
+
+                    case fallback_result.status do
+                      :completed ->
+                        duration = System.monotonic_time(:millisecond) - start_time
+
+                        completed_event =
+                          build_completed_event(fallback_result, attempt, duration)
+
+                        {fallback_result, [completed_event, dispatched_event]}
+
+                      :failed ->
+                        failed_event = build_failed_event(fallback_result, attempt + 1, :halt)
+                        {fallback_result, [failed_event, dispatched_event]}
                     end
+                end
 
-                  failed_event = build_failed_event(result, attempt + 1, failure_action)
-
-                  final =
-                    case policy.on_failure do
-                      :skip -> skip_runnable(result)
-                      :halt -> result
-                    end
-
-                  {final, [failed_event, dispatched_event]}
-
-                fallback when is_function(fallback) ->
-                  fallback_result = handle_fallback(result, result.error, policy)
-
-                  case fallback_result.status do
-                    :completed ->
-                      duration = System.monotonic_time(:millisecond) - start_time
-                      completed_event = build_completed_event(fallback_result, attempt, duration)
-                      {fallback_result, [completed_event, dispatched_event]}
-
-                    :failed ->
-                      failed_event = build_failed_event(fallback_result, attempt + 1, :halt)
-                      {fallback_result, [failed_event, dispatched_event]}
-                  end
-              end
+              {:error, reason} ->
+                failed = Runnable.fail(result, {:retry_predicate_failed, reason, result.error})
+                {failed, [build_failed_event(failed, attempt + 1, :halt), dispatched_event]}
             end
         end
 
@@ -210,7 +224,12 @@ defmodule Runic.Workflow.PolicyDriver do
   end
 
   defp strip_non_serializable(%SchedulerPolicy{} = policy) do
-    %{policy | fallback: nil, idempotency_key: nil}
+    predicate = Map.get(policy, :retry_if)
+
+    policy
+    |> Map.put(:fallback, nil)
+    |> Map.put(:idempotency_key, nil)
+    |> Map.put(:retry_if, if(is_function(predicate), do: nil, else: predicate))
   end
 
   # ---------------------------------------------------------------------------
@@ -244,16 +263,39 @@ defmodule Runic.Workflow.PolicyDriver do
       :infinity ->
         Invokable.execute(runnable.node, runnable)
 
+      0 ->
+        Runnable.fail(runnable, {:timeout, 0})
+
       ms ->
-        task = Task.async(fn -> Invokable.execute(runnable.node, runnable) end)
+        # A temporary local scope contains abnormal Task exits without changing
+        # the caller's trap_exit flag or requiring an application supervisor.
+        {:ok, supervisor} = Task.Supervisor.start_link()
 
-        case Task.yield(task, ms) do
-          {:ok, result} ->
-            result
+        try do
+          task =
+            Task.Supervisor.async_nolink(supervisor, fn ->
+              case check_deadline(opts) do
+                :ok ->
+                  Invokable.execute(runnable.node, runnable)
 
-          nil ->
-            Task.shutdown(task, :brutal_kill)
-            Runnable.fail(runnable, {:timeout, ms})
+                {:deadline_exceeded, remaining} ->
+                  Runnable.fail(runnable, {:deadline_exceeded, remaining})
+              end
+            end)
+
+          case Task.yield(task, ms) do
+            {:ok, result} ->
+              result
+
+            {:exit, reason} ->
+              Runnable.fail(runnable, {:task_crashed, reason})
+
+            nil ->
+              Task.shutdown(task, :brutal_kill)
+              Runnable.fail(runnable, {:timeout, ms})
+          end
+        after
+          Supervisor.stop(supervisor, :normal, :infinity)
         end
     end
   end
@@ -300,18 +342,53 @@ defmodule Runic.Workflow.PolicyDriver do
     %{runnable | status: :pending, result: nil, error: nil, events: nil}
   end
 
-  defp handle_fallback(%Runnable{} = runnable, error, %SchedulerPolicy{fallback: fallback}) do
+  # Shared by event-emitting and ordinary local execution. No retry machinery
+  # or application-specific error taxonomy is hidden in the predicate.
+  defp retry_decision(%SchedulerPolicy{max_retries: max}, _error, attempt) when attempt >= max,
+    do: :stop
+
+  defp retry_decision(policy, error, _attempt) do
+    accepted =
+      case Map.get(policy, :retry_if) do
+        nil ->
+          true
+
+        fun when is_function(fun, 1) ->
+          fun.(error)
+
+        {module, function, args} when is_atom(module) and is_atom(function) and is_list(args) ->
+          apply(module, function, [error | args])
+
+        other ->
+          {:invalid_predicate, other}
+      end
+
+    case accepted do
+      true -> :retry
+      false -> :stop
+      other -> {:error, {:invalid_return, other}}
+    end
+  catch
+    kind, reason -> {:error, {kind, reason}}
+  end
+
+  defp handle_fallback(
+         %Runnable{} = runnable,
+         error,
+         %SchedulerPolicy{fallback: fallback} = policy,
+         opts
+       ) do
     case fallback.(runnable, error) do
       %Runnable{} = modified ->
-        no_retry_policy = %SchedulerPolicy{max_retries: 0, fallback: nil}
-        execute(modified, no_retry_policy)
+        no_retry_policy = %{policy | max_retries: 0, fallback: nil, on_failure: :halt}
+        execute(modified, no_retry_policy, Keyword.delete(opts, :emit_events))
 
       {:retry_with, %{} = overrides} ->
         merged_meta = Map.merge(runnable.context.meta_context, overrides)
         updated_context = %{runnable.context | meta_context: merged_meta}
         updated_runnable = reset_for_retry(%{runnable | context: updated_context})
-        no_retry_policy = %SchedulerPolicy{max_retries: 0, fallback: nil}
-        execute(updated_runnable, no_retry_policy)
+        no_retry_policy = %{policy | max_retries: 0, fallback: nil, on_failure: :halt}
+        execute(updated_runnable, no_retry_policy, Keyword.delete(opts, :emit_events))
 
       {:value, term} ->
         result_fact =

@@ -87,6 +87,7 @@ defmodule Runic.Workflow.FactResolver do
       hash: ref.hash,
       ancestry: ref.ancestry,
       causal_ancestry: ref.causal_ancestry,
+      meta: Map.get(ref, :meta, %{}),
       value: value
     }
   end

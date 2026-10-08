@@ -1642,7 +1642,8 @@ defmodule Runic.Workflow do
       payload_digest: e.payload_digest,
       hash: e.hash,
       ancestry: e.ancestry,
-      causal_ancestry: e.causal_ancestry
+      causal_ancestry: e.causal_ancestry,
+      meta: e.meta
     }
 
     wf = log_fact(wf, ref)
@@ -4345,7 +4346,16 @@ defmodule Runic.Workflow do
     wf = Enum.reduce(events, workflow, fn event, wf -> apply_event(wf, event) end)
 
     # 2. Run hook apply_fns if present (collected during execute, not serializable)
-    wf = apply_hook_fns(wf, runnable.hook_apply_fns || [])
+    {wf, dynamic_build_events} =
+      case runnable.hook_apply_fns || [] do
+        [] ->
+          {wf, []}
+
+        hook_apply_fns ->
+          build_event_count = length(wf.build_log)
+          wf = apply_hook_fns(wf, hook_apply_fns)
+          {wf, wf |> build_log() |> Enum.drop(build_event_count)}
+      end
 
     # 3. Coordination finalization (Join completion check, etc.)
     #    Returns {wf, derived_events} — derived events are already folded into wf
@@ -4364,7 +4374,9 @@ defmodule Runic.Workflow do
     # 5. Buffer all events as uncommitted (only when emit_events is enabled)
     if wf.emit_events do
       all_new =
-        Enum.reverse(activation_events) ++ Enum.reverse(derived_events) ++ Enum.reverse(events)
+        Enum.reverse(activation_events) ++
+          Enum.reverse(derived_events) ++
+          Enum.reverse(dynamic_build_events) ++ Enum.reverse(events)
 
       %{wf | uncommitted_events: all_new ++ wf.uncommitted_events}
     else

@@ -44,6 +44,19 @@ defmodule Runic.Workflow.SchedulerPolicy do
 
   Any other return value causes the runnable to fail with `{:invalid_fallback_return, value}`.
 
+  ## Retry classification
+
+  `retry_if` optionally classifies failed attempts before a retry: use a
+  one-argument function or `{module, function, extra_args}` (error first).
+  `nil` retries all errors within `max_retries`; `false` proceeds to the usual
+  fallback/skip/failure path. A non-boolean return, raise, throw, or catchable
+  exit fails closed with `{:retry_predicate_failed, reason, original_error}`
+  and does not invoke fallback. No predicate runs after retries are exhausted.
+
+  These are bounded local retries, not durable retry scheduling. Function
+  predicates are omitted from lifecycle policy metadata; an MFA reference is
+  retained but does not by itself establish deployment-safe code compatibility.
+
   ## Example
 
       alias Runic.Workflow.SchedulerPolicy
@@ -73,7 +86,8 @@ defmodule Runic.Workflow.SchedulerPolicy do
     :deadline_ms,
     :circuit_breaker,
     :executor,
-    :executor_opts
+    :executor_opts,
+    :retry_if
   ]
 
   defstruct max_retries: 0,
@@ -89,7 +103,8 @@ defmodule Runic.Workflow.SchedulerPolicy do
             deadline_ms: nil,
             circuit_breaker: nil,
             executor: nil,
-            executor_opts: []
+            executor_opts: [],
+            retry_if: nil
 
   @type fallback_return ::
           Runnable.t()
@@ -112,7 +127,8 @@ defmodule Runic.Workflow.SchedulerPolicy do
           deadline_ms: non_neg_integer() | nil,
           circuit_breaker: map() | nil,
           executor: module() | :inline | nil,
-          executor_opts: keyword()
+          executor_opts: keyword(),
+          retry_if: (term() -> boolean()) | {module(), atom(), list()} | nil
         }
 
   @doc """

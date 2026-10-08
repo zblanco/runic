@@ -77,7 +77,10 @@ defmodule Runic.Runner do
     children =
       build_store_children(store_module, store_opts, explicit_store?) ++
         [
-          {Registry, keys: :unique, name: Module.concat(name, Registry)},
+          {Registry,
+           keys: :unique,
+           name: Module.concat(name, Registry),
+           meta: [partitioned_task_supervisor: match?({:partition, _}, task_supervisor_opts)]},
           build_task_supervisor_child(name, task_supervisor_opts),
           {DynamicSupervisor, name: Module.concat(name, WorkerSupervisor), strategy: :one_for_one}
         ]
@@ -104,6 +107,12 @@ defmodule Runic.Runner do
 
   @doc """
   Starts a new workflow under this runner.
+
+  ## Options
+
+  - `:dispatch_mode` - Controls when ready work is dispatched. Use
+    `:automatic` (default) for normal execution or `:manual` to dispatch one
+    scheduler unit at a time with `step/2`.
 
   Returns `{:ok, pid}` or `{:error, {:already_started, pid}}`.
   Initial event-stream persistence failures return
@@ -137,6 +146,38 @@ defmodule Runic.Runner do
     case lookup(runner, workflow_id) do
       nil -> {:error, :not_found}
       pid -> GenServer.cast(pid, {:run, input, opts})
+    end
+  end
+
+  @doc """
+  Dispatches one ready scheduler unit from a manually dispatched workflow.
+
+  The call returns after the unit is dispatched. It returns `{:error, :busy}`
+  while prior work is active and `{:error, :not_runnable}` when the workflow
+  has no ready work.
+
+  `:ok` acknowledges admission, not completion or persistence. An inline unit
+  may finish during the call. A Promise is one unit and may contain several
+  components. Manual mode is Worker-local configuration, not a durable pause
+  or human-approval record; pass `dispatch_mode: :manual` again when resuming.
+  """
+  def step(runner, workflow_id) do
+    case lookup(runner, workflow_id) do
+      nil -> {:error, :not_found}
+      pid -> GenServer.call(pid, :step)
+    end
+  end
+
+  @doc """
+  Changes a manually dispatched workflow to automatic dispatch.
+
+  Ready work is dispatched immediately. The workflow stays in automatic mode
+  for the rest of the Worker process.
+  """
+  def continue(runner, workflow_id) do
+    case lookup(runner, workflow_id) do
+      nil -> {:error, :not_found}
+      pid -> GenServer.call(pid, :continue)
     end
   end
 
@@ -276,9 +317,15 @@ defmodule Runic.Runner do
 
   The encoded format is tagged and versioned so `resume/3` can distinguish
   Runic workflow snapshots from legacy adapter-specific blobs.
+
+  Top-level `run_context` is omitted and must be supplied again on resume.
+  This does not sanitize captured bindings, policies, or resources embedded
+  elsewhere in the graph; raw snapshots are trusted, version-coupled data,
+  not a portable or secret-free workflow format.
   """
   @spec encode_snapshot(Workflow.t()) :: binary()
   def encode_snapshot(%Workflow{} = workflow) do
+    workflow = %{workflow | run_context: %{}}
     :erlang.term_to_binary({@snapshot_tag, @snapshot_version, workflow})
   end
 
@@ -290,7 +337,7 @@ defmodule Runic.Runner do
   def decode_snapshot(snapshot) when is_binary(snapshot) do
     case :erlang.binary_to_term(snapshot) do
       {@snapshot_tag, @snapshot_version, %Workflow{} = workflow} ->
-        {:ok, workflow}
+        {:ok, normalize_snapshot_workflow(workflow)}
 
       {@snapshot_tag, version, _workflow} ->
         {:error, {:unsupported_snapshot, version}}
@@ -300,6 +347,10 @@ defmodule Runic.Runner do
     end
   rescue
     ArgumentError -> {:error, :invalid_snapshot}
+  end
+
+  defp normalize_snapshot_workflow(workflow) do
+    Map.put(workflow, :run_context, %{})
   end
 
   @doc """
@@ -320,6 +371,11 @@ defmodule Runic.Runner do
       - `:lazy` — All facts stay as `FactRef` structs, resolved on demand
         during dispatch. Maximum memory savings, but requires resolution
         before any fact value can be used.
+    - `:run_context` — Runtime-only component context. It is applied before
+      pending work is recovered and is not loaded from persisted state.
+    - `:scheduler_policies` — Runtime policy overrides. They are applied before
+      pending work is recovered.
+    - `:scheduler_policies_mode` — `:merge` (default) or `:replace`.
   """
   def resume(runner, workflow_id, opts \\ []) do
     {store_mod, store_state} = get_store(runner)

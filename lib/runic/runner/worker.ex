@@ -86,8 +86,10 @@ defmodule Runic.Runner.Worker do
     :scheduler,
     :scheduler_opts,
     :scheduler_state,
+    dispatch_mode: :automatic,
     status: :idle,
     active_tasks: %{},
+    active_executors: %{},
     active_promises: %{},
     dispatch_times: %{},
     cycle_count: 0,
@@ -127,6 +129,9 @@ defmodule Runic.Runner.Worker do
     runner = Keyword.fetch!(opts, :runner)
     workflow_id = Keyword.fetch!(opts, :workflow_id)
     workflow = Keyword.fetch!(opts, :workflow)
+    resumed = Keyword.get(opts, :resumed, false)
+
+    workflow = maybe_apply_resume_options(workflow, opts, resumed)
 
     {store_mod, store_state} = Runic.Runner.get_store(runner)
 
@@ -150,14 +155,11 @@ defmodule Runic.Runner.Worker do
           resolver
       end
 
-    task_supervisor = Module.concat(runner, TaskSupervisor)
+    task_supervisor = task_supervisor_ref(runner, workflow_id)
 
     # Initialize executor
     executor = Keyword.get(opts, :executor, Runic.Runner.Executor.Task)
     executor_opts = Keyword.get(opts, :executor_opts, [])
-
-    {executor_state, executor} =
-      init_executor(executor, executor_opts, task_supervisor)
 
     # Parse hooks
     hooks = parse_hooks(Keyword.get(opts, :hooks, []))
@@ -174,6 +176,10 @@ defmodule Runic.Runner.Worker do
       )
 
     scheduler_state = init_scheduler(scheduler, scheduler_opts)
+
+    # Validate/init the scheduler before allocating executor resources.
+    {executor_state, executor} =
+      init_executor(executor, executor_opts, task_supervisor)
 
     state = %__MODULE__{
       id: workflow_id,
@@ -192,13 +198,12 @@ defmodule Runic.Runner.Worker do
       scheduler: scheduler,
       scheduler_opts: scheduler_opts,
       scheduler_state: scheduler_state,
+      dispatch_mode: dispatch_mode(opts),
       hooks: hooks,
       promise_opts: promise_opts
     }
 
     # Persist initial build events for event-sourced stores (skip on resume)
-    resumed = Keyword.get(opts, :resumed, false)
-
     case maybe_persist_build_log(state, resumed) do
       {:ok, state} ->
         state =
@@ -264,13 +269,38 @@ defmodule Runic.Runner.Worker do
       }}, state}
   end
 
+  def handle_call(:step, _from, %__MODULE__{dispatch_mode: :automatic} = state) do
+    {:reply, {:error, :automatic_dispatch}, state}
+  end
+
+  def handle_call(:step, _from, %__MODULE__{active_tasks: tasks} = state)
+      when map_size(tasks) > 0 do
+    {:reply, {:error, :busy}, state}
+  end
+
+  def handle_call(:step, _from, %__MODULE__{} = state) do
+    if Workflow.is_runnable?(state.workflow) do
+      state = dispatch_one(state)
+      state = maybe_transition_to_idle(state)
+      {:reply, :ok, state}
+    else
+      {:reply, {:error, :not_runnable}, state}
+    end
+  end
+
+  def handle_call(:continue, _from, %__MODULE__{} = state) do
+    state = %{state | dispatch_mode: :automatic}
+    state = dispatch_runnables(state)
+    state = maybe_transition_to_idle(state)
+    {:reply, :ok, state}
+  end
+
   def handle_call({:stop, opts}, _from, state) do
     persist? = Keyword.get(opts, :persist, true)
     result = if persist?, do: persist(state, :save), else: {:ok, state}
 
     case result do
       {:ok, state} ->
-        cleanup_executors(state)
         {:stop, :normal, :ok, state}
 
       {:error, reason, state} ->
@@ -287,15 +317,17 @@ defmodule Runic.Runner.Worker do
 
   # Task completed successfully — the result is a %Runnable{}
   @impl GenServer
-  def handle_info({ref, %Runnable{} = executed}, state) when is_reference(ref) do
+  def handle_info({ref, %Runnable{} = executed}, %{active_tasks: tasks} = state)
+      when is_reference(ref) and :erlang.map_get(ref, tasks) == executed.id do
     Process.demonitor(ref, [:flush])
     state = handle_task_result(ref, executed, [], state)
     {:noreply, state}
   end
 
   # Task completed with durable events — {%Runnable{}, [event]}
-  def handle_info({ref, {%Runnable{} = executed, events}}, state)
-      when is_reference(ref) and is_list(events) do
+  def handle_info({ref, {%Runnable{} = executed, events}}, %{active_tasks: tasks} = state)
+      when is_reference(ref) and is_list(events) and
+             :erlang.map_get(ref, tasks) == executed.id do
     Process.demonitor(ref, [:flush])
     state = handle_task_result(ref, executed, events, state)
     {:noreply, state}
@@ -303,6 +335,8 @@ defmodule Runic.Runner.Worker do
 
   # Task crashed
   def handle_info({:DOWN, ref, :process, _pid, reason}, state) when is_reference(ref) do
+    state = release_executor(state, ref)
+
     case Map.pop(state.active_tasks, ref) do
       {nil, _} ->
         {:noreply, state}
@@ -362,9 +396,13 @@ defmodule Runic.Runner.Worker do
   end
 
   # Promise completed — batch of executed runnables
-  def handle_info({ref, {:promise_result, promise_id, executed_runnables}}, state)
-      when is_reference(ref) do
+  def handle_info(
+        {ref, {:promise_result, promise_id, executed_runnables}},
+        %{active_tasks: tasks} = state
+      )
+      when is_reference(ref) and :erlang.map_get(ref, tasks) == {:promise, promise_id} do
     Process.demonitor(ref, [:flush])
+    state = release_executor(state, ref)
 
     {_tag, active_tasks} = Map.pop(state.active_tasks, ref)
     {dispatch_time, dispatch_times} = Map.pop(state.dispatch_times, ref)
@@ -401,9 +439,13 @@ defmodule Runic.Runner.Worker do
   end
 
   # Promise partially failed — some runnables completed, one failed
-  def handle_info({ref, {:promise_partial, promise_id, completed, failed}}, state)
-      when is_reference(ref) do
+  def handle_info(
+        {ref, {:promise_partial, promise_id, completed, failed}},
+        %{active_tasks: tasks} = state
+      )
+      when is_reference(ref) and :erlang.map_get(ref, tasks) == {:promise, promise_id} do
     Process.demonitor(ref, [:flush])
+    state = release_executor(state, ref)
 
     {_tag, active_tasks} = Map.pop(state.active_tasks, ref)
     {dispatch_time, dispatch_times} = Map.pop(state.dispatch_times, ref)
@@ -458,13 +500,7 @@ defmodule Runic.Runner.Worker do
   end
 
   defp init_executor(executor_mod, executor_opts, task_supervisor) do
-    # Default TaskExecutor needs the task_supervisor
-    opts =
-      if executor_mod == Runic.Runner.Executor.Task do
-        Keyword.put_new(executor_opts, :task_supervisor, task_supervisor)
-      else
-        executor_opts
-      end
+    opts = Keyword.put_new(executor_opts, :task_supervisor, task_supervisor)
 
     case executor_mod.init(opts) do
       {:ok, executor_state} ->
@@ -494,6 +530,13 @@ defmodule Runic.Runner.Worker do
     end
   end
 
+  defp dispatch_mode(opts) do
+    case Keyword.get(opts, :dispatch_mode, :automatic) do
+      mode when mode in [:automatic, :manual] -> mode
+      mode -> raise ArgumentError, "invalid dispatch mode: #{inspect(mode)}"
+    end
+  end
+
   defp notify_scheduler_complete(state, dispatch_unit, duration) do
     if function_exported?(state.scheduler, :on_complete, 3) do
       scheduler_state =
@@ -509,15 +552,37 @@ defmodule Runic.Runner.Worker do
       state
   end
 
+  defp notify_scheduler_dispatch(state, unit) do
+    if function_exported?(state.scheduler, :on_dispatch, 2) do
+      %{state | scheduler_state: state.scheduler.on_dispatch(unit, state.scheduler_state)}
+    else
+      state
+    end
+  rescue
+    error ->
+      Logger.warning("Scheduler on_dispatch raised: #{inspect(error)}")
+      state
+  end
+
+  defp safe_executor_callback(module, callback, args, fallback) do
+    apply(module, callback, args)
+  catch
+    kind, reason ->
+      Logger.warning("Executor #{inspect(module)}.#{callback} failed: #{inspect({kind, reason})}")
+
+      fallback
+  end
+
   defp cleanup_executors(%__MODULE__{executor: executor, executor_state: executor_state} = state) do
     # Cleanup default executor
     if executor != :inline and function_exported?(executor, :cleanup, 1) do
-      executor.cleanup(executor_state)
+      safe_executor_callback(executor, :cleanup, [executor_state], :ok)
     end
 
     # Cleanup override executors
-    Enum.each(state.override_executors, fn {mod, es} ->
-      if function_exported?(mod, :cleanup, 1), do: mod.cleanup(es)
+    Enum.each(state.override_executors, fn {{mod, _opts}, es} ->
+      if function_exported?(mod, :cleanup, 1),
+        do: safe_executor_callback(mod, :cleanup, [es], :ok)
     end)
   end
 
@@ -544,6 +609,7 @@ defmodule Runic.Runner.Worker do
   end
 
   defp handle_task_result(ref, executed, events, state) do
+    state = release_executor(state, ref)
     {_runnable_id, active_tasks} = Map.pop(state.active_tasks, ref)
     {dispatch_time, dispatch_times} = Map.pop(state.dispatch_times, ref)
 
@@ -580,7 +646,11 @@ defmodule Runic.Runner.Worker do
     maybe_transition_to_idle(state)
   end
 
-  defp dispatch_runnables(%__MODULE__{} = state) do
+  defp dispatch_runnables(%__MODULE__{dispatch_mode: :manual} = state), do: state
+  defp dispatch_runnables(%__MODULE__{} = state), do: do_dispatch_runnables(state, :all)
+  defp dispatch_one(%__MODULE__{} = state), do: do_dispatch_runnables(state, 1)
+
+  defp do_dispatch_runnables(%__MODULE__{} = state, limit) do
     {workflow, runnables} = Workflow.prepare_for_dispatch(state.workflow)
     state = %{state | workflow: workflow}
 
@@ -613,14 +683,16 @@ defmodule Runic.Runner.Worker do
     candidates =
       Enum.map(candidates, &maybe_resolve_input_fact(&1, state.resolver))
 
-    dispatch_via_scheduler(candidates, state)
+    dispatch_via_scheduler(candidates, state, limit)
   end
 
-  defp dispatch_via_scheduler(runnables, state) do
+  defp dispatch_via_scheduler(runnables, state, limit) do
     {units, scheduler_state} =
       safe_plan_dispatch(state.scheduler, state.workflow, runnables, state.scheduler_state)
 
     state = %{state | scheduler_state: scheduler_state}
+
+    units = if limit == :all, do: units, else: Enum.take(units, limit)
 
     # Dispatch units until available slots are exhausted.
     # Each unit (runnable or promise) costs 1 slot regardless of internal count.
@@ -630,6 +702,8 @@ defmodule Runic.Runner.Worker do
       if available <= 0 do
         {:halt, acc}
       else
+        acc = notify_scheduler_dispatch(acc, unit)
+
         acc =
           case unit do
             {:runnable, runnable} ->
@@ -666,7 +740,7 @@ defmodule Runic.Runner.Worker do
     work_fn = build_work_fn(runnable, policy)
 
     # Determine which executor to use: per-component override or default
-    {executor, executor_state, state} = resolve_executor(policy, state)
+    {executor, executor_state, executor_origin, state} = resolve_executor(policy, state)
 
     now = System.monotonic_time(:millisecond)
 
@@ -704,11 +778,12 @@ defmodule Runic.Runner.Worker do
       executor_mod ->
         {handle, new_executor_state} = executor_mod.dispatch(work_fn, [], executor_state)
 
-        state = update_executor_state(state, executor_mod, new_executor_state)
+        state = update_executor_state(state, executor_origin, new_executor_state)
 
         %{
           state
           | active_tasks: Map.put(state.active_tasks, handle, runnable.id),
+            active_executors: Map.put(state.active_executors, handle, executor_origin),
             dispatch_times: Map.put(state.dispatch_times, handle, now)
         }
     end
@@ -775,11 +850,12 @@ defmodule Runic.Runner.Worker do
       executor_mod ->
         {handle, new_executor_state} = executor_mod.dispatch(work_fn, [], executor_state)
 
-        state = update_executor_state(state, executor_mod, new_executor_state)
+        state = update_executor_state(state, :default, new_executor_state)
 
         %{
           state
           | active_tasks: Map.put(state.active_tasks, handle, {:promise, promise.id}),
+            active_executors: Map.put(state.active_executors, handle, :default),
             active_promises: Map.put(state.active_promises, promise.id, promise),
             dispatch_times: Map.put(state.dispatch_times, handle, now)
         }
@@ -970,40 +1046,77 @@ defmodule Runic.Runner.Worker do
 
     case override_executor do
       nil ->
-        {state.executor, state.executor_state, state}
+        {state.executor, state.executor_state, :default, state}
 
       :inline ->
-        {:inline, nil, state}
+        {:inline, nil, :inline, state}
 
       override_mod ->
-        case Map.get(state.override_executors, override_mod) do
+        override_key = {override_mod, override_opts}
+
+        case Map.get(state.override_executors, override_key) do
           nil ->
             # Lazy-init the override executor
             {es, _mod} = init_executor(override_mod, override_opts, state.task_supervisor)
 
             state = %{
               state
-              | override_executors: Map.put(state.override_executors, override_mod, es)
+              | override_executors: Map.put(state.override_executors, override_key, es)
             }
 
-            {override_mod, es, state}
+            {override_mod, es, {:override, override_key}, state}
 
           es ->
-            {override_mod, es, state}
+            {override_mod, es, {:override, override_key}, state}
         end
     end
   end
 
-  defp update_executor_state(state, executor_mod, new_executor_state) do
-    if executor_mod == state.executor do
-      %{state | executor_state: new_executor_state}
-    else
-      %{
-        state
-        | override_executors: Map.put(state.override_executors, executor_mod, new_executor_state)
-      }
+  defp update_executor_state(state, :default, new_executor_state),
+    do: %{state | executor_state: new_executor_state}
+
+  defp update_executor_state(state, {:override, override_key}, new_executor_state) do
+    %{
+      state
+      | override_executors: Map.put(state.override_executors, override_key, new_executor_state)
+    }
+  end
+
+  defp release_executor(state, handle) do
+    case Map.pop(state.active_executors, handle) do
+      {nil, active_executors} ->
+        %{state | active_executors: active_executors}
+
+      {executor_origin, active_executors} ->
+        state = %{state | active_executors: active_executors}
+        executor_mod = executor_module(state, executor_origin)
+
+        if function_exported?(executor_mod, :release, 2) do
+          executor_state = executor_state(state, executor_origin)
+
+          update_executor_state(
+            state,
+            executor_origin,
+            safe_executor_callback(
+              executor_mod,
+              :release,
+              [handle, executor_state],
+              executor_state
+            )
+          )
+        else
+          state
+        end
     end
   end
+
+  defp executor_module(state, :default), do: state.executor
+  defp executor_module(_state, {:override, {executor_mod, _opts}}), do: executor_mod
+
+  defp executor_state(state, :default), do: state.executor_state
+
+  defp executor_state(state, {:override, override_key}),
+    do: Map.fetch!(state.override_executors, override_key)
 
   defp maybe_resolve_input_fact(runnable, nil), do: runnable
 
@@ -1081,9 +1194,23 @@ defmodule Runic.Runner.Worker do
 
   defp merge_runtime_policies(opts, workflow_policies) do
     case Keyword.get(opts, :scheduler_policies) do
-      nil -> workflow_policies
-      overrides -> SchedulerPolicy.merge_policies(overrides, workflow_policies)
+      nil ->
+        workflow_policies
+
+      overrides ->
+        mode = Keyword.get(opts, :scheduler_policies_mode, :merge)
+        SchedulerPolicy.merge_policies(overrides, workflow_policies, mode)
     end
+  end
+
+  defp maybe_apply_resume_options(workflow, _opts, false), do: workflow
+
+  defp maybe_apply_resume_options(workflow, opts, true) do
+    policies = merge_runtime_policies(opts, workflow.scheduler_policies)
+
+    workflow
+    |> maybe_set_policies(policies, workflow.scheduler_policies)
+    |> maybe_apply_run_context(opts)
   end
 
   defp maybe_set_policies(workflow, policies, current) when policies == current, do: workflow
@@ -1095,6 +1222,16 @@ defmodule Runic.Runner.Worker do
     case Keyword.get(opts, :run_context) do
       nil -> workflow
       ctx when is_map(ctx) -> Workflow.put_run_context(workflow, ctx)
+    end
+  end
+
+  defp task_supervisor_ref(runner, workflow_id) do
+    supervisor = Module.concat(runner, TaskSupervisor)
+    registry = Module.concat(runner, Registry)
+
+    case Registry.meta(registry, :partitioned_task_supervisor) do
+      {:ok, true} -> {:via, PartitionSupervisor, {supervisor, workflow_id}}
+      _other -> supervisor
     end
   end
 
