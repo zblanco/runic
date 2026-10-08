@@ -86,6 +86,7 @@ defmodule Runic.Runner.Worker do
     :scheduler,
     :scheduler_opts,
     :scheduler_state,
+    dispatch_mode: :automatic,
     status: :idle,
     active_tasks: %{},
     active_promises: %{},
@@ -192,6 +193,7 @@ defmodule Runic.Runner.Worker do
       scheduler: scheduler,
       scheduler_opts: scheduler_opts,
       scheduler_state: scheduler_state,
+      dispatch_mode: dispatch_mode(opts),
       hooks: hooks,
       promise_opts: promise_opts
     }
@@ -262,6 +264,32 @@ defmodule Runic.Runner.Worker do
         event_cursor: state.event_cursor,
         pending_events: pending_events
       }}, state}
+  end
+
+  def handle_call(:step, _from, %__MODULE__{dispatch_mode: :automatic} = state) do
+    {:reply, {:error, :automatic_dispatch}, state}
+  end
+
+  def handle_call(:step, _from, %__MODULE__{active_tasks: tasks} = state)
+      when map_size(tasks) > 0 do
+    {:reply, {:error, :busy}, state}
+  end
+
+  def handle_call(:step, _from, %__MODULE__{} = state) do
+    if Workflow.is_runnable?(state.workflow) do
+      state = dispatch_one(state)
+      state = maybe_transition_to_idle(state)
+      {:reply, :ok, state}
+    else
+      {:reply, {:error, :not_runnable}, state}
+    end
+  end
+
+  def handle_call(:continue, _from, %__MODULE__{} = state) do
+    state = %{state | dispatch_mode: :automatic}
+    state = dispatch_runnables(state)
+    state = maybe_transition_to_idle(state)
+    {:reply, :ok, state}
   end
 
   def handle_call({:stop, opts}, _from, state) do
@@ -494,6 +522,13 @@ defmodule Runic.Runner.Worker do
     end
   end
 
+  defp dispatch_mode(opts) do
+    case Keyword.get(opts, :dispatch_mode, :automatic) do
+      mode when mode in [:automatic, :manual] -> mode
+      mode -> raise ArgumentError, "invalid dispatch mode: #{inspect(mode)}"
+    end
+  end
+
   defp notify_scheduler_complete(state, dispatch_unit, duration) do
     if function_exported?(state.scheduler, :on_complete, 3) do
       scheduler_state =
@@ -580,7 +615,11 @@ defmodule Runic.Runner.Worker do
     maybe_transition_to_idle(state)
   end
 
-  defp dispatch_runnables(%__MODULE__{} = state) do
+  defp dispatch_runnables(%__MODULE__{dispatch_mode: :manual} = state), do: state
+  defp dispatch_runnables(%__MODULE__{} = state), do: do_dispatch_runnables(state, :all)
+  defp dispatch_one(%__MODULE__{} = state), do: do_dispatch_runnables(state, 1)
+
+  defp do_dispatch_runnables(%__MODULE__{} = state, limit) do
     {workflow, runnables} = Workflow.prepare_for_dispatch(state.workflow)
     state = %{state | workflow: workflow}
 
@@ -613,14 +652,16 @@ defmodule Runic.Runner.Worker do
     candidates =
       Enum.map(candidates, &maybe_resolve_input_fact(&1, state.resolver))
 
-    dispatch_via_scheduler(candidates, state)
+    dispatch_via_scheduler(candidates, state, limit)
   end
 
-  defp dispatch_via_scheduler(runnables, state) do
+  defp dispatch_via_scheduler(runnables, state, limit) do
     {units, scheduler_state} =
       safe_plan_dispatch(state.scheduler, state.workflow, runnables, state.scheduler_state)
 
     state = %{state | scheduler_state: scheduler_state}
+
+    units = if limit == :all, do: units, else: Enum.take(units, limit)
 
     # Dispatch units until available slots are exhausted.
     # Each unit (runnable or promise) costs 1 slot regardless of internal count.

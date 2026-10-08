@@ -105,6 +105,12 @@ defmodule Runic.Runner do
   @doc """
   Starts a new workflow under this runner.
 
+  ## Options
+
+  - `:dispatch_mode` - Controls when ready work is dispatched. Use
+    `:automatic` (default) for normal execution or `:manual` to dispatch one
+    scheduler unit at a time with `step/2`.
+
   Returns `{:ok, pid}` or `{:error, {:already_started, pid}}`.
   Initial event-stream persistence failures return
   `{:error, {:persistence_failed, reason}}` without starting a Worker.
@@ -137,6 +143,33 @@ defmodule Runic.Runner do
     case lookup(runner, workflow_id) do
       nil -> {:error, :not_found}
       pid -> GenServer.cast(pid, {:run, input, opts})
+    end
+  end
+
+  @doc """
+  Dispatches one ready scheduler unit from a manually dispatched workflow.
+
+  The call returns after the unit is dispatched. It returns `{:error, :busy}`
+  while prior work is active and `{:error, :not_runnable}` when the workflow
+  has no ready work.
+  """
+  def step(runner, workflow_id) do
+    case lookup(runner, workflow_id) do
+      nil -> {:error, :not_found}
+      pid -> GenServer.call(pid, :step)
+    end
+  end
+
+  @doc """
+  Changes a manually dispatched workflow to automatic dispatch.
+
+  Ready work is dispatched immediately. The workflow stays in automatic mode
+  for the rest of the Worker process.
+  """
+  def continue(runner, workflow_id) do
+    case lookup(runner, workflow_id) do
+      nil -> {:error, :not_found}
+      pid -> GenServer.call(pid, :continue)
     end
   end
 
