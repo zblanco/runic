@@ -77,7 +77,10 @@ defmodule Runic.Runner do
     children =
       build_store_children(store_module, store_opts, explicit_store?) ++
         [
-          {Registry, keys: :unique, name: Module.concat(name, Registry)},
+          {Registry,
+           keys: :unique,
+           name: Module.concat(name, Registry),
+           meta: [partitioned_task_supervisor: match?({:partition, _}, task_supervisor_opts)]},
           build_task_supervisor_child(name, task_supervisor_opts),
           {DynamicSupervisor, name: Module.concat(name, WorkerSupervisor), strategy: :one_for_one}
         ]
@@ -281,6 +284,7 @@ defmodule Runic.Runner do
   """
   @spec encode_snapshot(Workflow.t()) :: binary()
   def encode_snapshot(%Workflow{} = workflow) do
+    workflow = %{workflow | run_context: %{}}
     :erlang.term_to_binary({@snapshot_tag, @snapshot_version, workflow})
   end
 
@@ -292,7 +296,7 @@ defmodule Runic.Runner do
   def decode_snapshot(snapshot) when is_binary(snapshot) do
     case :erlang.binary_to_term(snapshot) do
       {@snapshot_tag, @snapshot_version, %Workflow{} = workflow} ->
-        {:ok, workflow}
+        {:ok, normalize_snapshot_workflow(workflow)}
 
       {@snapshot_tag, version, _workflow} ->
         {:error, {:unsupported_snapshot, version}}
@@ -302,6 +306,22 @@ defmodule Runic.Runner do
     end
   rescue
     ArgumentError -> {:error, :invalid_snapshot}
+  end
+
+  defp normalize_snapshot_workflow(workflow) do
+    workflow = Map.put(workflow, :run_context, %{})
+
+    if Map.has_key?(workflow, :halted_by_failure) do
+      workflow
+    else
+      halted_by_failure =
+        Enum.any?(Map.get(workflow, :runnable_events, []), fn
+          %Runic.Workflow.RunnableFailed{failure_action: :halt} -> true
+          _event -> false
+        end)
+
+      Map.put(workflow, :halted_by_failure, halted_by_failure)
+    end
   end
 
   @doc """
@@ -322,6 +342,11 @@ defmodule Runic.Runner do
       - `:lazy` — All facts stay as `FactRef` structs, resolved on demand
         during dispatch. Maximum memory savings, but requires resolution
         before any fact value can be used.
+    - `:run_context` — Runtime-only component context. It is applied before
+      pending work is recovered and is not loaded from persisted state.
+    - `:scheduler_policies` — Runtime policy overrides. They are applied before
+      pending work is recovered.
+    - `:scheduler_policies_mode` — `:merge` (default) or `:replace`.
   """
   def resume(runner, workflow_id, opts \\ []) do
     {store_mod, store_state} = get_store(runner)
