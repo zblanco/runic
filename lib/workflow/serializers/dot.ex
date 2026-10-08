@@ -181,6 +181,7 @@ defmodule Runic.Workflow.Serializers.DOT do
   defp node_style(%Workflow.FanOut{}), do: {"parallelogram", "#2c5282", "white"}
   defp node_style(%Workflow.FanIn{}), do: {"parallelogram", "#285e61", "white"}
   defp node_style(%Workflow.Join{}), do: {"hexagon", "#744210", "white"}
+  defp node_style(%Workflow.InputBinding{}), do: {"box", "#4a3f35", "white"}
   defp node_style(%Workflow.Accumulator{}), do: {"cylinder", "#22543d", "white"}
   defp node_style(%Workflow.Rule{}), do: {"doubleoctagon", "#742a2a", "white"}
   defp node_style(%Workflow.Map{}), do: {"component", "#1a365d", "white"}

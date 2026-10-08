@@ -15,18 +15,25 @@ defmodule Runic.Workflow.Runnable do
   - The node to invoke
   - The input fact triggering invocation
   - Minimal causal context (no full workflow reference)
+  - A compact, data-only invocation plan when the node has a call contract
   - After execution: result, status, and events for reducing into workflow
   """
 
-  alias Runic.Workflow.{Fact, CausalContext}
+  alias Runic.Identity
+  alias Runic.Workflow.{CausalContext, Fact}
+  alias Runic.Workflow.Invocation.Plan
 
   @type status :: :pending | :completed | :failed | :skipped
 
   @type t :: %__MODULE__{
-          id: integer() | nil,
+          id: term() | nil,
+          activation_id: Identity.t() | nil,
+          attempt_id: Identity.t() | nil,
+          attempt_number: non_neg_integer(),
           node: struct(),
           input_fact: Fact.t(),
           context: CausalContext.t() | nil,
+          invocation: map() | nil,
           status: status(),
           result: term() | nil,
           events: [struct()] | nil,
@@ -36,9 +43,13 @@ defmodule Runic.Workflow.Runnable do
 
   defstruct [
     :id,
+    :activation_id,
+    :attempt_id,
+    :attempt_number,
     :node,
     :input_fact,
     :context,
+    :invocation,
     :status,
     :result,
     :events,
@@ -49,12 +60,18 @@ defmodule Runic.Workflow.Runnable do
   @doc """
   Creates a new Runnable in pending state.
 
-  The id is a hash of {node.hash, fact.hash} for idempotency tracking.
+  The id is a domain-separated hash of the node and Fact identities for
+  idempotency tracking.
   """
   @spec new(struct(), Fact.t(), CausalContext.t()) :: t()
   def new(node, fact, context) do
+    activation_id = runnable_id(node, fact)
+
     %__MODULE__{
-      id: :erlang.phash2({node.hash, fact.hash}),
+      id: activation_id,
+      activation_id: activation_id,
+      attempt_id: Identity.derive(:attempt, [activation_id, 0]),
+      attempt_number: 0,
       node: node,
       input_fact: fact,
       context: context,
@@ -65,10 +82,13 @@ defmodule Runic.Workflow.Runnable do
   @doc """
   Creates a new Runnable with explicit id.
   """
-  @spec new(integer(), struct(), Fact.t(), CausalContext.t()) :: t()
+  @spec new(term(), struct(), Fact.t(), CausalContext.t()) :: t()
   def new(id, node, fact, context) do
     %__MODULE__{
       id: id,
+      activation_id: if(is_struct(id, Identity), do: id),
+      attempt_id: if(is_struct(id, Identity), do: Identity.derive(:attempt, [id, 0])),
+      attempt_number: 0,
       node: node,
       input_fact: fact,
       context: context,
@@ -76,13 +96,31 @@ defmodule Runic.Workflow.Runnable do
     }
   end
 
+  @doc false
+  @spec with_invocation(t(), Plan.t()) :: t()
+  def with_invocation(%__MODULE__{} = runnable, %Plan{} = invocation) do
+    %{runnable | invocation: invocation}
+  end
+
   @doc """
   Generates a stable runnable id from node and fact hashes.
   """
-  @spec runnable_id(struct(), Fact.t()) :: integer()
+  @spec runnable_id(struct(), Fact.t()) :: Identity.t()
   def runnable_id(node, fact) do
-    :erlang.phash2({node.hash, fact.hash})
+    Identity.derive(:activation, [:local, fact.hash, node.hash])
   end
+
+  @doc false
+  @spec for_attempt(t(), non_neg_integer()) :: t()
+  def for_attempt(%__MODULE__{activation_id: %Identity{} = activation_id} = runnable, attempt) do
+    %{
+      runnable
+      | attempt_number: attempt,
+        attempt_id: Identity.derive(:attempt, [activation_id, attempt])
+    }
+  end
+
+  def for_attempt(%__MODULE__{} = runnable, attempt), do: %{runnable | attempt_number: attempt}
 
   @doc """
   Marks a runnable as completed with result and events.

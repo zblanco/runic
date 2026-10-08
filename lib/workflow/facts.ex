@@ -25,5 +25,14 @@ defmodule Runic.Workflow.Facts do
 
   @doc "Converts a Fact to a FactRef, discarding the value."
   @spec to_ref(Fact.t()) :: FactRef.t()
-  def to_ref(%Fact{hash: h, ancestry: a}), do: %FactRef{hash: h, ancestry: a}
+  def to_ref(%Fact{} = fact) do
+    %FactRef{
+      id: fact.id,
+      content_digest: fact.content_digest,
+      payload_digest: fact.payload_digest,
+      hash: fact.hash,
+      ancestry: fact.ancestry,
+      causal_ancestry: fact.causal_ancestry
+    }
+  end
 end

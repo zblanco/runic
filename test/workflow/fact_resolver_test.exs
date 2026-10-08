@@ -1,7 +1,7 @@
 defmodule Runic.Workflow.FactResolverTest do
   use ExUnit.Case, async: true
 
-  alias Runic.Workflow.{Fact, FactRef, FactResolver}
+  alias Runic.Workflow.{Fact, FactRef, FactResolver, Facts}
   alias Runic.Runner.Store.ETS
 
   setup do
@@ -43,6 +43,17 @@ defmodule Runic.Workflow.FactResolverTest do
     test "returns error when FactRef is not in store", %{resolver: resolver} do
       ref = %FactRef{hash: 999_999, ancestry: {1, 2}}
       assert {:error, :not_found} = FactResolver.resolve(ref, resolver)
+    end
+
+    test "rejects a stored value that does not match the payload digest", %{
+      resolver: resolver,
+      store_state: store_state
+    } do
+      fact = Fact.new(value: "expected", ancestry: {1, 2})
+      :ok = ETS.save_fact(fact.hash, "corrupt", store_state)
+
+      assert {:error, %Runic.Identity.IntegrityError{}} =
+               fact |> Facts.to_ref() |> FactResolver.resolve(resolver)
     end
 
     test "resolves a FactRef from the cache without hitting the store", %{store: store} do

@@ -34,7 +34,7 @@ defmodule Runic.Workflow.HookEvent do
   @type t :: %__MODULE__{
           timing: timing(),
           node: struct(),
-          node_hash: integer(),
+          node_hash: term(),
           input_fact: Runic.Workflow.Fact.t(),
           result: term() | nil
         }

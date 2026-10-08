@@ -7,6 +7,7 @@ defmodule Runic.Workflow.FactResolver do
   """
 
   alias Runic.Workflow.{Fact, FactRef}
+  alias Runic.Identity
 
   defstruct [:store, cache: %{}]
 
@@ -31,18 +32,18 @@ defmodule Runic.Workflow.FactResolver do
   @spec resolve(Fact.t() | FactRef.t(), t()) :: {:ok, Fact.t()} | {:error, term()}
   def resolve(%Fact{value: v} = fact, _resolver) when not is_nil(v), do: {:ok, fact}
 
-  def resolve(%FactRef{hash: h, ancestry: a}, %__MODULE__{} = resolver) do
+  def resolve(%FactRef{hash: h} = ref, %__MODULE__{} = resolver) do
     case Map.get(resolver.cache, h) do
       nil ->
         {mod, st} = resolver.store
 
         case mod.load_fact(h, st) do
-          {:ok, value} -> {:ok, %Fact{hash: h, ancestry: a, value: value}}
+          {:ok, value} -> resolve_value(ref, value)
           {:error, _} = err -> err
         end
 
       value ->
-        {:ok, %Fact{hash: h, ancestry: a, value: value}}
+        resolve_value(ref, value)
     end
   end
 
@@ -77,4 +78,27 @@ defmodule Runic.Workflow.FactResolver do
 
     %{resolver | cache: loaded}
   end
+
+  defp resolved_fact(%FactRef{} = ref, value) do
+    %Fact{
+      id: ref.id,
+      content_digest: ref.content_digest,
+      payload_digest: ref.payload_digest,
+      hash: ref.hash,
+      ancestry: ref.ancestry,
+      causal_ancestry: ref.causal_ancestry,
+      value: value
+    }
+  end
+
+  defp resolve_value(%FactRef{payload_digest: %Identity{} = digest} = ref, value) do
+    payload_document = %{codec: :runic_canonical, schema_version: 1, value: value}
+
+    case Identity.verify(digest, payload_document) do
+      :ok -> {:ok, resolved_fact(ref, value)}
+      {:error, error} -> {:error, error}
+    end
+  end
+
+  defp resolve_value(%FactRef{} = ref, value), do: {:ok, resolved_fact(ref, value)}
 end

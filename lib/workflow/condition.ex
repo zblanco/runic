@@ -34,16 +34,16 @@ defmodule Runic.Workflow.Condition do
 
   @type meta_ref :: %{
           kind: atom(),
-          target: atom() | integer() | {atom(), atom()},
+          target: atom() | Runic.Identity.t() | integer() | {atom(), atom()},
           field_path: list(atom()),
           context_key: atom()
         }
 
   @type t :: %__MODULE__{
           name: String.t() | atom() | nil,
-          hash: integer() | nil,
+          hash: Runic.Identity.t() | integer() | binary() | nil,
           work: function(),
-          work_hash: integer() | nil,
+          work_hash: Runic.Identity.t() | integer() | binary() | nil,
           closure: Closure.t() | nil,
           arity: non_neg_integer(),
           meta_refs: list(meta_ref())

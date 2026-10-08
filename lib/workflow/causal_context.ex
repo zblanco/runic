@@ -21,14 +21,15 @@ defmodule Runic.Workflow.CausalContext do
   - **Accumulator**: `last_known_state` for stateful operations
   - **Join**: `join_context` with satisfaction tracking
   - **FanOut**: `fan_out_context` with reduce tracking
-  - **FanIn**: `fan_in_context` with readiness and sister values
+  - **FanIn**: `fan_in_context` with stable batch lookup keys; readiness and ordered values
+    are resolved by the coordinator against the current workflow during apply
   - **All nodes**: `meta_context` for graph-resolved meta expression values, `run_context` for external runtime values from `context/1` expressions
   """
 
   alias Runic.Workflow.Fact
 
   @type t :: %__MODULE__{
-          node_hash: integer() | nil,
+          node_hash: term() | nil,
           input_fact: Fact.t() | nil,
           ancestry_depth: non_neg_integer(),
           hooks: {list(), list()},
@@ -70,7 +71,7 @@ defmodule Runic.Workflow.CausalContext do
   @doc """
   Builds a basic context with node hash, input fact, and ancestry depth.
   """
-  @spec basic(integer(), Fact.t(), non_neg_integer()) :: t()
+  @spec basic(term(), Fact.t(), non_neg_integer()) :: t()
   def basic(node_hash, input_fact, ancestry_depth) do
     %__MODULE__{
       node_hash: node_hash,

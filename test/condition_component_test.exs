@@ -295,7 +295,7 @@ defmodule ConditionComponentTest do
 
       assert conj.condition_hashes == MapSet.new([inline_cond.hash])
       assert conj.condition_refs == [:ham]
-      assert is_integer(conj.hash)
+      assert %Runic.Identity{domain: :component_definition} = conj.hash
     end
 
     test "Conjunction.new/2 produces stable hashes" do
@@ -323,7 +323,7 @@ defmodule ConditionComponentTest do
         end
 
       assert %Rule{} = rule
-      assert is_integer(rule.hash)
+      assert %Runic.Identity{domain: :component_definition} = rule.hash
     end
 
     test "rule with condition ref has conjunction with condition_refs" do
@@ -477,7 +477,7 @@ defmodule ConditionComponentTest do
         end
 
       assert %Rule{} = rule
-      assert is_integer(rule.hash)
+      assert %Runic.Identity{domain: :component_definition} = rule.hash
     end
 
     test "rule with || syntax compiles" do
@@ -626,7 +626,7 @@ defmodule ConditionComponentTest do
           then(fn %{value: v} -> {:result, v} end)
         end
 
-      assert is_integer(rule.condition_hash)
+      assert %Runic.Identity{domain: :component_definition} = rule.condition_hash
     end
 
     test "condition_hash is consistent within a single or rule" do
@@ -637,7 +637,7 @@ defmodule ConditionComponentTest do
           then(fn %{value: v} -> {:result, v} end)
         end
 
-      assert is_integer(rule.condition_hash)
+      assert %Runic.Identity{domain: :component_definition} = rule.condition_hash
       assert rule.condition_hash != rule.reaction_hash
     end
   end

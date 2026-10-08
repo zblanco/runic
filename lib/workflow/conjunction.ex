@@ -20,7 +20,7 @@ defmodule Runic.Workflow.Conjunction do
     condition_hashes = conditions |> MapSet.new(& &1.hash)
 
     %__MODULE__{
-      hash: condition_hashes |> Components.fact_hash(),
+      hash: condition_hashes |> Enum.sort() |> Components.fact_hash(),
       condition_hashes: condition_hashes
     }
   end

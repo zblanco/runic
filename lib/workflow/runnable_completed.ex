@@ -11,7 +11,9 @@ defmodule Runic.Workflow.RunnableCompleted do
 
   @type t :: %__MODULE__{
           runnable_id: term(),
-          node_hash: non_neg_integer(),
+          activation_id: Runic.Identity.t() | nil,
+          attempt_id: Runic.Identity.t() | nil,
+          node_hash: term(),
           result_fact: Runic.Workflow.Fact.t(),
           completed_at: integer(),
           attempt: non_neg_integer(),
@@ -20,6 +22,8 @@ defmodule Runic.Workflow.RunnableCompleted do
 
   defstruct [
     :runnable_id,
+    :activation_id,
+    :attempt_id,
     :node_hash,
     :result_fact,
     :completed_at,

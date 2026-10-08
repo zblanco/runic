@@ -166,8 +166,8 @@ defmodule RunicTest do
         Runic.rule(fn item when is_integer(item) and item > 41 and item < 43 -> "fourty two" end)
 
       assert match?(%Rule{}, rule)
-      assert is_integer(rule.condition_hash)
-      assert is_integer(rule.reaction_hash)
+      assert %Runic.Identity{domain: :component_definition} = rule.condition_hash
+      assert %Runic.Identity{domain: :component_definition} = rule.reaction_hash
 
       wrk_of_rule = Runic.transmute(rule)
 

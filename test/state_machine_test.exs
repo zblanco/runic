@@ -269,8 +269,7 @@ defmodule Runic.StateMachineTest do
           reducer: fn x, acc -> acc + x end
         )
 
-      assert is_integer(sm.hash)
-      assert sm.hash != 0
+      assert %Runic.Identity{domain: :component_definition} = sm.hash
     end
 
     test "different reducers produce different hashes" do

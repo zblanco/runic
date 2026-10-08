@@ -2,7 +2,7 @@ defmodule Runic.MixProject do
   use Mix.Project
 
   @repo_url "https://github.com/zblanco/runic"
-  @version "0.1.0-alpha.8"
+  @version "0.1.0-alpha.11"
 
   def project do
     [
@@ -39,7 +39,7 @@ defmodule Runic.MixProject do
         Guides: ~r/guides\/.*/
       ],
       groups_for_modules: [
-        Core: [Runic, Runic.Workflow],
+        Core: [Runic, Runic.Workflow, Runic.Workflow.Connection],
         Components: [
           Runic.Workflow.Step,
           Runic.Workflow.Rule,
@@ -86,6 +86,7 @@ defmodule Runic.MixProject do
         ],
         Internal: [
           Runic.Workflow.Fact,
+          Runic.Workflow.Definition,
           Runic.Workflow.FanOut,
           Runic.Workflow.FanIn,
           Runic.Workflow.Runnable,
@@ -142,7 +143,7 @@ defmodule Runic.MixProject do
     [
       {:uniq, "~> 0.6.1"},
       {:telemetry, "~> 1.0"},
-      {:multigraph, "~> 0.16.1-mg.4"},
+      {:multigraph, "~> 0.16.1-mg.5"},
       {:ex_doc, "~> 0.34", only: :dev, runtime: false, warn_if_outdated: true},
       {:tidewave, "~> 0.4", only: :dev},
       {:bandit, "~> 1.0", only: :dev},

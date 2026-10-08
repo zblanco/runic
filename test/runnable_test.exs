@@ -1,7 +1,8 @@
 defmodule Runic.Workflow.RunnableTest do
   use ExUnit.Case, async: true
 
-  alias Runic.Workflow.{Runnable, CausalContext, Fact}
+  alias Runic.Identity
+  alias Runic.Workflow.{CausalContext, Fact, Runnable}
   alias Runic.Workflow.Step
 
   describe "Runnable.new/3" do
@@ -16,10 +17,12 @@ defmodule Runic.Workflow.RunnableTest do
       assert runnable.node == step
       assert runnable.input_fact == fact
       assert runnable.context == context
-      assert is_integer(runnable.id)
+      assert %Identity{domain: :activation} = runnable.id
       assert runnable.result == nil
       assert runnable.events == nil
       assert runnable.error == nil
+      assert runnable.id == Runnable.runnable_id(step, fact)
+      assert %Identity{domain: :attempt} = runnable.attempt_id
     end
 
     test "generates stable id from node and fact hashes" do
@@ -66,7 +69,7 @@ defmodule Runic.Workflow.RunnableTest do
 
       id = Runnable.runnable_id(step, fact)
 
-      assert is_integer(id)
+      assert %Identity{domain: :activation} = id
       assert id == Runnable.runnable_id(step, fact)
     end
   end

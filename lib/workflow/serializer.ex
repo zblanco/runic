@@ -37,11 +37,13 @@ defmodule Runic.Workflow.Serializer do
   @doc """
   Returns a unique, Mermaid-safe node ID for a vertex.
   """
+  def node_id(%{hash: %Runic.Identity{} = identity}), do: identity_node_id(identity)
   def node_id(%{hash: hash}) when is_integer(hash), do: "n#{hash}"
-  def node_id(%{hash: hash}) when is_binary(hash), do: "n#{:erlang.phash2(hash)}"
+  def node_id(%{hash: hash}) when is_binary(hash), do: binary_node_id(hash)
   def node_id(%Runic.Workflow.Root{}), do: "root"
+  def node_id(%Runic.Identity{} = identity), do: identity_node_id(identity)
   def node_id(hash) when is_integer(hash), do: "n#{hash}"
-  def node_id(other), do: "n#{:erlang.phash2(other)}"
+  def node_id(other), do: other |> :erlang.term_to_binary([:deterministic]) |> binary_node_id()
 
   @doc """
   Returns a display label for a vertex node.
@@ -58,6 +60,8 @@ defmodule Runic.Workflow.Serializer do
   def node_label(%Runic.Workflow.FanIn{hash: hash}), do: "FanIn(#{hash})"
 
   def node_label(%Runic.Workflow.Join{hash: hash}), do: "Join(#{hash})"
+
+  def node_label(%Runic.Workflow.InputBinding{hash: hash}), do: "InputBinding(#{hash})"
 
   def node_label(%Runic.Workflow.Accumulator{name: name}) when not is_nil(name),
     do: "Acc: #{escape_label(name)}"
@@ -108,6 +112,7 @@ defmodule Runic.Workflow.Serializer do
   def node_shape(%Runic.Workflow.FanOut{}), do: {:parallelogram, "[/", "/]"}
   def node_shape(%Runic.Workflow.FanIn{}), do: {:parallelogram, "[\\", "\\]"}
   def node_shape(%Runic.Workflow.Join{}), do: {:hexagon, "{{", "}}"}
+  def node_shape(%Runic.Workflow.InputBinding{}), do: {:rect, "[", "]"}
   def node_shape(%Runic.Workflow.Accumulator{}), do: {:cylinder, "[(", ")]"}
   def node_shape(%Runic.Workflow.Rule{}), do: {:subroutine, "[[", "]]"}
   def node_shape(%Runic.Workflow.Map{}), do: {:stadium, "([", "])"}
@@ -126,6 +131,7 @@ defmodule Runic.Workflow.Serializer do
   def node_class(%Runic.Workflow.FanOut{}), do: "fanout"
   def node_class(%Runic.Workflow.FanIn{}), do: "fanin"
   def node_class(%Runic.Workflow.Join{}), do: "join"
+  def node_class(%Runic.Workflow.InputBinding{}), do: "inputbinding"
   def node_class(%Runic.Workflow.Accumulator{}), do: "accumulator"
   def node_class(%Runic.Workflow.Rule{}), do: "rule"
   def node_class(%Runic.Workflow.Map{}), do: "map"
@@ -134,6 +140,13 @@ defmodule Runic.Workflow.Serializer do
   def node_class(%Runic.Workflow.Conjunction{}), do: "conjunction"
   def node_class(%Runic.Workflow.Fact{}), do: "fact"
   def node_class(_), do: "default"
+
+  defp identity_node_id(identity), do: "n_" <> Runic.Identity.short_string(identity, 24)
+
+  defp binary_node_id(binary) do
+    identity = Runic.Identity.digest(:node_occurrence, {:display_binary, binary})
+    identity_node_id(identity)
+  end
 
   @doc """
   Escapes special characters for Mermaid labels.

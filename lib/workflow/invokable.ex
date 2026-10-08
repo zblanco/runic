@@ -130,13 +130,10 @@ defprotocol Runic.Workflow.Invokable do
           result_fact = Fact.new(value: result, ancestry: {node.hash, fact.hash})
 
           events = [
-            %FactProduced{
-              hash: result_fact.hash,
-              value: result_fact.value,
-              ancestry: result_fact.ancestry,
+            FactProduced.new(result_fact,
               producer_label: :produced,
               weight: ctx.ancestry_depth + 1
-            },
+            ),
             %ActivationConsumed{
               fact_hash: fact.hash,
               node_hash: node.hash,
@@ -234,13 +231,10 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Root do
 
   def execute(%Root{} = _root, %Runnable{input_fact: fact} = runnable) do
     events = [
-      %FactProduced{
-        hash: fact.hash,
-        value: fact.value,
-        ancestry: fact.ancestry,
+      FactProduced.new(fact,
         producer_label: :input,
         weight: 0
-      }
+      )
     ]
 
     Runnable.complete(runnable, fact, events)
@@ -364,7 +358,8 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Step do
   alias Runic.Workflow.{
     Fact,
     Step,
-    Components,
+    CallContract,
+    Invocation,
     Runnable,
     CausalContext,
     HookRunner
@@ -379,7 +374,14 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Step do
         %Workflow{} = workflow,
         %Fact{} = fact
       ) do
-    result = Components.run(step.work, fact.value, Components.arity_of(step.work))
+    context = build_context(step, workflow, fact)
+
+    result =
+      step
+      |> CallContract.for_step()
+      |> Invocation.plan()
+      |> Invocation.materialize(fact.value, context)
+      |> Invocation.call(step.work)
 
     result_fact = Fact.new(value: result, ancestry: {step.hash, fact.hash})
 
@@ -395,35 +397,32 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Step do
   end
 
   def prepare(%Step{} = step, %Workflow{} = workflow, %Fact{} = fact) do
-    fan_out_context = build_fan_out_context(workflow, step, fact)
+    context = build_context(step, workflow, fact)
 
-    meta_context =
-      if Step.has_meta_refs?(step) do
-        Workflow.prepare_meta_context(workflow, step)
-      else
-        %{}
-      end
+    invocation =
+      step
+      |> CallContract.for_step()
+      |> Invocation.plan()
 
-    run_context = Workflow.get_run_context(workflow, step.name)
+    runnable =
+      step
+      |> Runnable.new(fact, context)
+      |> Runnable.with_invocation(invocation)
 
-    context =
-      CausalContext.new(
-        node_hash: step.hash,
-        input_fact: fact,
-        ancestry_depth: Workflow.ancestry_depth(workflow, fact),
-        hooks: Workflow.get_hooks(workflow, step.hash),
-        fan_out_context: fan_out_context,
-        meta_context: meta_context,
-        run_context: run_context
-      )
-
-    {:ok, Runnable.new(step, fact, context)}
+    {:ok, runnable}
   end
 
   def execute(%Step{} = step, %Runnable{input_fact: fact, context: ctx} = runnable) do
+    invocation =
+      runnable.invocation ||
+        step
+        |> CallContract.for_step()
+        |> Invocation.plan()
+
     with {:ok, before_apply_fns} <- HookRunner.run_before(ctx, step, fact) do
       try do
-        result = run_step_work(step, fact.value, ctx)
+        invocation = Invocation.materialize(invocation, fact.value, ctx)
+        result = Invocation.call(invocation, step.work)
 
         result_fact = Fact.new(value: result, ancestry: {step.hash, fact.hash})
 
@@ -446,36 +445,35 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Step do
     end
   end
 
-  defp run_step_work(step, input, ctx) do
-    effective_context = merge_effective_context(ctx.meta_context, ctx.run_context)
-    arity = Components.arity_of(step.work)
+  defp build_context(step, workflow, fact) do
+    fan_out_context = build_fan_out_context(workflow, step, fact)
 
-    cond do
-      effective_context != %{} and arity >= 2 ->
-        step.work.(input, effective_context)
+    meta_context =
+      if Step.has_meta_refs?(step) do
+        Workflow.prepare_meta_context(workflow, step)
+      else
+        %{}
+      end
 
-      Step.has_meta_refs?(step) and ctx.meta_context != %{} ->
-        Step.run_with_meta_context(step, input, ctx.meta_context)
+    run_context = Workflow.get_run_context(workflow, step.name)
 
-      true ->
-        Components.run(step.work, input, arity)
-    end
+    CausalContext.new(
+      node_hash: step.hash,
+      input_fact: fact,
+      ancestry_depth: Workflow.ancestry_depth(workflow, fact),
+      hooks: Workflow.get_hooks(workflow, step.hash),
+      fan_out_context: fan_out_context,
+      meta_context: meta_context,
+      run_context: run_context
+    )
   end
-
-  defp merge_effective_context(meta, run) when map_size(meta) == 0 and map_size(run) == 0, do: %{}
-  defp merge_effective_context(meta, run) when map_size(run) == 0, do: meta
-  defp merge_effective_context(meta, run) when map_size(meta) == 0, do: run
-  defp merge_effective_context(meta, run), do: Map.merge(run, meta)
 
   defp build_events(step, input_fact, result_fact, ctx) do
     events = [
-      %FactProduced{
-        hash: result_fact.hash,
-        value: result_fact.value,
-        ancestry: result_fact.ancestry,
+      FactProduced.new(result_fact,
         producer_label: :produced,
         weight: ctx.ancestry_depth + 1
-      },
+      ),
       %ActivationConsumed{
         fact_hash: input_fact.hash,
         node_hash: step.hash,
@@ -647,6 +645,74 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Step do
   # def runnable_connection(_step), do: :runnable
   # def resolved_connection(_step), do: :ran
   # def causal_connection(_step), do: :produced
+end
+
+defimpl Runic.Workflow.Invokable, for: Runic.Workflow.InputBinding do
+  alias Runic.Workflow
+
+  alias Runic.Workflow.{CausalContext, Fact, InputBinding, Runnable}
+  alias Runic.Workflow.Events.{ActivationConsumed, FactProduced}
+
+  def match_or_execute(_binding), do: :execute
+
+  def invoke(%InputBinding{} = binding, %Workflow{} = workflow, %Fact{} = fact) do
+    result = InputBinding.bind(binding, fact.value)
+
+    result_fact =
+      Fact.new(
+        value: result,
+        ancestry: {binding.hash, fact.hash},
+        meta: InputBinding.fact_meta(binding)
+      )
+
+    causal_depth = Workflow.ancestry_depth(workflow, fact) + 1
+
+    workflow
+    |> Workflow.log_fact(result_fact)
+    |> Workflow.draw_connection(binding, result_fact, :produced, weight: causal_depth)
+    |> Workflow.mark_runnable_as_ran(binding, fact)
+    |> Workflow.prepare_next_runnables(binding, result_fact)
+  end
+
+  def prepare(%InputBinding{} = binding, %Workflow{} = workflow, %Fact{} = fact) do
+    context =
+      CausalContext.new(
+        node_hash: binding.hash,
+        input_fact: fact,
+        ancestry_depth: Workflow.ancestry_depth(workflow, fact)
+      )
+
+    {:ok, Runnable.new(binding, fact, context)}
+  end
+
+  def execute(%InputBinding{} = binding, %Runnable{input_fact: fact, context: ctx} = runnable) do
+    try do
+      result = InputBinding.bind(binding, fact.value)
+
+      result_fact =
+        Fact.new(
+          value: result,
+          ancestry: {binding.hash, fact.hash},
+          meta: InputBinding.fact_meta(binding)
+        )
+
+      events = [
+        FactProduced.new(result_fact,
+          producer_label: :produced,
+          weight: ctx.ancestry_depth + 1
+        ),
+        %ActivationConsumed{
+          fact_hash: fact.hash,
+          node_hash: binding.hash,
+          from_label: :runnable
+        }
+      ]
+
+      Runnable.complete(runnable, result_fact, events)
+    rescue
+      error -> Runnable.fail(runnable, error)
+    end
+  end
 end
 
 defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Conjunction do
@@ -825,13 +891,10 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Accumulator do
         case HookRunner.run_after(ctx, acc, fact, next_state_produced_fact) do
           {:ok, after_apply_fns} ->
             events = [
-              %FactProduced{
-                hash: next_state_produced_fact.hash,
-                value: next_state_produced_fact.value,
-                ancestry: next_state_produced_fact.ancestry,
+              FactProduced.new(next_state_produced_fact,
                 producer_label: :state_produced,
                 weight: ctx.ancestry_depth + 1
-              },
+              ),
               %ActivationConsumed{
                 fact_hash: fact.hash,
                 node_hash: acc.hash,
@@ -867,13 +930,10 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Accumulator do
                 init_ancestry: init_fact.ancestry,
                 weight: ctx.ancestry_depth + 1
               },
-              %FactProduced{
-                hash: next_state_produced_fact.hash,
-                value: next_state_produced_fact.value,
-                ancestry: next_state_produced_fact.ancestry,
+              FactProduced.new(next_state_produced_fact,
                 producer_label: :state_produced,
                 weight: ctx.ancestry_depth + 1
-              },
+              ),
               %ActivationConsumed{
                 fact_hash: fact.hash,
                 node_hash: acc.hash,
@@ -1093,6 +1153,7 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.FanOut do
 
   alias Runic.Workflow.{
     Fact,
+    FactAncestry,
     FanOut,
     Runnable,
     CausalContext
@@ -1112,9 +1173,22 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.FanOut do
 
       causal_depth = Workflow.ancestry_depth(workflow, source_fact) + 1
 
-      Enum.reduce(source_fact.value, workflow, fn value, wrk ->
+      source_fact.value
+      |> Enum.with_index()
+      |> Enum.reduce(workflow, fn {value, output_index}, wrk ->
+        causal_ancestry =
+          FactAncestry.from_legacy(
+            {fan_out.hash, source_fact.hash},
+            output_port: :fan_out,
+            output_index: output_index
+          )
+
         fact =
-          Fact.new(value: value, ancestry: {fan_out.hash, source_fact.hash})
+          Fact.new(
+            value: value,
+            ancestry: {fan_out.hash, source_fact.hash},
+            causal_ancestry: causal_ancestry
+          )
 
         wrk
         |> Workflow.log_fact(fact)
@@ -1151,8 +1225,22 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.FanOut do
 
   def execute(%FanOut{} = fan_out, %Runnable{input_fact: source_fact, context: ctx} = runnable) do
     emitted_facts =
-      Enum.map(Enum.to_list(source_fact.value), fn value ->
-        Fact.new(value: value, ancestry: {fan_out.hash, source_fact.hash})
+      source_fact.value
+      |> Enum.with_index()
+      |> Enum.map(fn {value, output_index} ->
+        causal_ancestry =
+          FactAncestry.from_legacy(
+            {fan_out.hash, source_fact.hash},
+            activation_id: runnable.activation_id,
+            output_port: :fan_out,
+            output_index: output_index
+          )
+
+        Fact.new(
+          value: value,
+          ancestry: {fan_out.hash, source_fact.hash},
+          causal_ancestry: causal_ancestry
+        )
       end)
 
     fan_out_events =
@@ -1161,8 +1249,11 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.FanOut do
           fan_out_hash: fan_out.hash,
           source_fact_hash: source_fact.hash,
           emitted_fact_hash: fact.hash,
+          emitted_content_digest: fact.content_digest,
+          emitted_payload_digest: fact.payload_digest,
           emitted_value: fact.value,
           emitted_ancestry: fact.ancestry,
+          emitted_causal_ancestry: fact.causal_ancestry,
           weight: ctx.ancestry_depth + 1
         }
       end)
@@ -1487,35 +1578,10 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.FanIn do
       %FanOut{} ->
         source_fact_hash = find_fan_out_source_fact_hash(workflow, fact)
 
-        already_completed = has_reduced_output?(workflow, fan_in, source_fact_hash)
-        completed_key = {:fan_in_completed, source_fact_hash, fan_in.hash}
-        already_completed = already_completed or Map.get(workflow.mapped, completed_key, false)
-
+        # Completion belongs to Coordinator.finalize/3 against the current graph.
+        # Every arrival only needs stable lookup keys, never a batch snapshot.
         expected_key = {source_fact_hash, fan_out.hash}
         seen_key = {source_fact_hash, parent_step_hash}
-
-        expected_list = workflow.mapped[expected_key] || []
-        expected_set = MapSet.new(expected_list)
-        seen_map = workflow.mapped[seen_key] || %{}
-        seen_set = MapSet.new(Map.keys(seen_map))
-
-        ready =
-          not already_completed and
-            not Enum.empty?(expected_set) and
-            MapSet.equal?(expected_set, seen_set)
-
-        # Collect sister values in order if ready
-        sister_values =
-          if ready do
-            expected_in_order = Enum.reverse(expected_list)
-
-            for origin <- expected_in_order do
-              sister_hash = seen_map[origin]
-              workflow.graph.vertices[sister_hash].value
-            end
-          else
-            nil
-          end
 
         context =
           CausalContext.new(
@@ -1528,13 +1594,8 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.FanIn do
               mode: :fan_out_reduce,
               source_fact_hash: source_fact_hash,
               fan_out_hash: fan_out.hash,
-              ready: ready,
-              already_completed: already_completed,
-              sister_values: sister_values,
               expected_key: expected_key,
-              seen_key: seen_key,
-              expected_list: expected_list,
-              seen_map: seen_map
+              seen_key: seen_key
             },
             meta_context: meta_context,
             run_context: run_context
@@ -1575,13 +1636,10 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.FanIn do
           case HookRunner.run_after(ctx, fan_in, fact, reduced_fact) do
             {:ok, after_apply_fns} ->
               events = [
-                %FactProduced{
-                  hash: reduced_fact.hash,
-                  value: reduced_fact.value,
-                  ancestry: reduced_fact.ancestry,
+                FactProduced.new(reduced_fact,
                   producer_label: :reduced,
                   weight: ctx.ancestry_depth + 1
-                },
+                ),
                 %ActivationConsumed{
                   fact_hash: fact.hash,
                   node_hash: fan_in.hash,
@@ -1618,8 +1676,7 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.FanIn do
 
   defp find_upstream_fan_out(workflow, fan_in) do
     workflow.graph
-    |> Multigraph.in_edges(fan_in)
-    |> Enum.filter(&(&1.label == :fan_in))
+    |> Multigraph.in_edges(fan_in, by: :fan_in)
     |> List.first(%{})
     |> Map.get(:v1)
   end
