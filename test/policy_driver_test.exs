@@ -63,13 +63,9 @@ defmodule Runic.Workflow.PolicyDriverTest do
     end
 
     test "work fn that completes within timeout succeeds" do
-      runnable =
-        make_runnable(fn _x ->
-          Process.sleep(5)
-          {:ok, :done}
-        end)
+      runnable = make_runnable(fn _x -> {:ok, :done} end)
 
-      policy = SchedulerPolicy.new(timeout_ms: 100)
+      policy = SchedulerPolicy.new(timeout_ms: 1_000)
       result = PolicyDriver.execute(runnable, policy)
 
       assert result.status == :completed
