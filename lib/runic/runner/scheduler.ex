@@ -87,6 +87,9 @@ defmodule Runic.Runner.Scheduler do
   This closes local admission bookkeeping; it does not assert node execution or
   success. Profiling code must not treat an unresolved unit as a successful sample.
   A returned Promise has `status: :resolved` or `:failed` for a partial result.
+  A resolved parallel Promise can contain failed members. Its status reports
+  aggregate completion, not success of every member. Adaptive aggregate samples
+  estimate duration and do not measure per-member failure rates.
 
   Optional — used by adaptive schedulers for profiling.
   """

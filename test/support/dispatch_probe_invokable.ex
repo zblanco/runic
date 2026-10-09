@@ -9,7 +9,7 @@ defimpl Runic.Workflow.Invokable, for: Runic.Test.DispatchProbe do
     send(node.owner, {:prepared, node.hash, workflow.name})
 
     case node.mode do
-      :ok ->
+      mode when mode in [:ok, :invalid_result] ->
         {:ok, Runnable.new(node, fact, CausalContext.basic(node.hash, fact, 0))}
 
       mode when mode in [:skip, :defer] ->
@@ -22,5 +22,6 @@ defimpl Runic.Workflow.Invokable, for: Runic.Test.DispatchProbe do
     end
   end
 
+  def execute(%{mode: :invalid_result}, _runnable), do: :invalid_result
   def execute(_node, runnable), do: Runnable.complete(runnable, :ok, [])
 end

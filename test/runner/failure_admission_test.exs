@@ -58,6 +58,72 @@ defmodule Runic.Runner.FailureAdmissionTest do
     assert {:error, :admission_stopped} = Runner.step(runner, :manual)
   end
 
+  for executor <- [:inline, Runic.Runner.Executor.Task] do
+    test "mixed executor chains use a free slot with default #{executor}", %{runner: runner} do
+      owner = self()
+      first = Runic.step(fn value -> value + 1 end, name: :first)
+
+      child =
+        Runic.step(
+          fn value ->
+            send(owner, :inline_child)
+            value + 1
+          end,
+          name: :child
+        )
+
+      blocked =
+        Runic.step(
+          fn value ->
+            send(owner, {:blocked, self()})
+
+            receive do
+              :release -> value
+            end
+          end,
+          name: :blocked
+        )
+
+      policies =
+        if unquote(executor) == :inline do
+          [{:blocked, %{executor: Runic.Runner.Executor.Task}}]
+        else
+          [{:first, %{executor: :inline}}, {:child, %{executor: :inline}}]
+        end
+
+      workflow =
+        Runic.workflow(steps: [{first, [child]}, blocked])
+        |> Workflow.set_scheduler_policies(policies)
+
+      {:ok, _} =
+        Runner.start_workflow(runner, :mixed, workflow,
+          executor: unquote(executor),
+          max_concurrency: 2,
+          on_complete: fn _, _ -> send(owner, :drained) end,
+          hooks: [
+            transform_runnables: fn units, _ ->
+              Enum.sort_by(units, &(&1.node.name != :first))
+            end
+          ]
+        )
+
+      :ok = Runner.run(runner, :mixed, 1)
+      assert_receive {:blocked, task}, 1_000
+
+      try do
+        assert_receive :inline_child, 1_000
+        assert {:ok, %{status: :open, active_units: 1}} = Runner.admission_status(runner, :mixed)
+        refute_received :inline_child
+      after
+        send(task, :release)
+      end
+
+      assert_receive :drained, 1_000
+      assert {:ok, results} = Runner.get_results(runner, :mixed)
+      assert Enum.sort(results) == [1, 2, 3]
+    end
+  end
+
   test "outer loss retains prepared work without fabricated node failure", %{runner: runner} do
     owner = self()
     workflow = Runic.workflow(steps: [Runic.step(fn value -> value + 1 end, name: :first)])

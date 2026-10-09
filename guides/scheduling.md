@@ -757,6 +757,9 @@ new scope. The graph has no permanent halt field, and replay does not create one
 Async execution processes task completions as they arrive and fills free slots.
 After a failure, it admits no new tasks and retains results from tasks already
 admitted. There is no whole-group wait before a free slot can be used.
+Results are applied in completion order, which can change the latest state when
+several activations update one component. Use serial evaluation or a scheduler
+with an explicit application order when state or effect order matters.
 
 For a Runner Worker, a final node failure stops admission until explicit
 `Runner.continue/2` or stop/resume. `Runner.admission_status/2` returns the current
@@ -766,6 +769,8 @@ executor ended without a result. Multiple causes remain visible while units
 drain. `step/2` returns `{:error, :admission_stopped}` in a stopped scope.
 `run/4` can add input but does not reopen admission. `continue/2` returns
 `{:error, :busy}` if a stopped scope still has active units.
+Do not query Worker APIs synchronously from callbacks or hooks. Have a hook
+notify an observer process, which can query after the callback returns.
 
 This local example uses inline execution so each call can be inspected without
 a wait loop:

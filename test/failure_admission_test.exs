@@ -5,6 +5,64 @@ defmodule Runic.FailureAdmissionTest do
   require Runic
   alias Runic.Workflow
 
+  for outcome <- [:success, :failure] do
+    test "async cleanup preserves a trapping caller's mailbox after #{outcome}" do
+      observer = self()
+      marker = make_ref()
+
+      first =
+        Runic.step(
+          fn value ->
+            if unquote(outcome) == :failure, do: raise("stop"), else: value + 1
+          end,
+          name: :first
+        )
+
+      child = Runic.step(fn value -> value + 1 end, name: :child)
+      workflow = Runic.workflow(steps: [{first, [child]}])
+
+      {caller, monitor} =
+        spawn_monitor(fn ->
+          Process.flag(:trap_exit, true)
+          send(self(), {:keep, marker})
+          send(self(), {:EXIT, observer, :normal})
+          Workflow.react_until_satisfied(workflow, 1, async: true)
+
+          send(
+            observer,
+            {:mailbox, self(), Process.info(self(), :messages), Process.info(self(), :trap_exit)}
+          )
+        end)
+
+      assert_receive {:mailbox, ^caller, {:messages, messages}, {:trap_exit, true}}, 1_000
+      assert Enum.sort(messages) == Enum.sort([{:keep, marker}, {:EXIT, observer, :normal}])
+      assert_receive {:DOWN, ^monitor, :process, ^caller, :normal}, 1_000
+    end
+  end
+
+  test "an invalid custom task result is retained as uncertain without a mailbox leak" do
+    observer = self()
+    node = %Runic.Test.DispatchProbe{hash: 987_321, owner: observer, mode: :invalid_result}
+    fact = Runic.Workflow.Fact.new(value: :input)
+    workflow = Workflow.new()
+
+    workflow = %{
+      workflow
+      | graph: Multigraph.add_edge(workflow.graph, fact, node, label: :runnable)
+    }
+
+    {caller, monitor} =
+      spawn_monitor(fn ->
+        result = Workflow.react(workflow, async: true)
+        send(observer, {:invalid_result, self(), result, Process.info(self(), :messages)})
+      end)
+
+    assert_receive {:invalid_result, ^caller, result, {:messages, []}}, 1_000
+    assert Workflow.is_runnable?(result)
+    assert result.runnable_events == []
+    assert_receive {:DOWN, ^monitor, :process, ^caller, :normal}, 1_000
+  end
+
   for async <- [false, true] do
     test "halt stops this evaluation and a later call can continue, async #{async}" do
       counter = :atomics.new(1, [])

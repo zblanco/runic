@@ -3344,6 +3344,9 @@ defmodule Runic.Workflow do
   execution retains results from tasks already admitted. Ready work remains in
   the returned graph and can run in a later call. There is no permanent graph halt.
 
+  Async results are applied in completion order. Use serial evaluation or a
+  scheduler with an explicit application order when state or effect order matters.
+
   If an async task exits or reaches the outer `:timeout` without a result, its
   outcome is uncertain. The call logs that loss, stops admission, and retains
   the activation. A later call can repeat external effects. Use a policy
@@ -3468,6 +3471,12 @@ defmodule Runic.Workflow do
       async_cycle(workflow, runnables, %{}, false, config)
     after
       Supervisor.stop(supervisor, :normal, :infinity)
+
+      receive do
+        {:EXIT, ^supervisor, :normal} -> :ok
+      after
+        0 -> :ok
+      end
     end
   end
 
@@ -3545,14 +3554,21 @@ defmodule Runic.Workflow do
 
   defp receive_async_result(active, timeout) do
     receive do
-      {ref, %Runnable{} = executed} when is_map_key(active, ref) -> {:result, ref, executed}
+      {ref, executed} when is_map_key(active, ref) -> {:result, ref, executed}
       {:DOWN, ref, :process, _pid, reason} when is_map_key(active, ref) -> {:down, ref, reason}
     after
       timeout -> nil
     end
   end
 
-  defp apply_async_result({:result, ref, executed}, workflow, pending, active, stopped?, config) do
+  defp apply_async_result(
+         {:result, ref, %Runnable{} = executed},
+         workflow,
+         pending,
+         active,
+         stopped?,
+         config
+       ) do
     Process.demonitor(ref, [:flush])
     workflow = apply_runnable(workflow, executed)
 
@@ -3563,6 +3579,11 @@ defmodule Runic.Workflow do
       stopped? or executed.status == :failed,
       config
     )
+  end
+
+  defp apply_async_result({:result, ref, _invalid}, workflow, pending, active, stopped?, config) do
+    Process.demonitor(ref, [:flush])
+    apply_async_result({:down, ref, :invalid_result}, workflow, pending, active, stopped?, config)
   end
 
   defp apply_async_result({:down, ref, reason}, workflow, pending, active, _stopped?, config) do

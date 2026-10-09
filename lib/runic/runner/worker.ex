@@ -62,6 +62,8 @@ defmodule Runic.Runner.Worker do
   The graph can still contain ready work. Callers can use
   `Runic.Runner.admission_status/2` to distinguish open admission from a stopped
   scope. Hooks that receive Worker state can inspect `admission_causes` directly.
+  Do not call Worker query APIs synchronously from a callback or hook. Notify an
+  observer process and let it query after the callback returns.
   """
 
   use GenServer
@@ -384,12 +386,10 @@ defmodule Runic.Runner.Worker do
         {:noreply, state}
 
       {{:promise, promise_id}, active_tasks} ->
-        if reason != :normal do
-          Logger.warning(
-            "Runner promise task crashed for workflow #{inspect(state.id)}, " <>
-              "promise #{inspect(promise_id)}: #{inspect(reason)}"
-          )
-        end
+        Logger.warning(
+          "Runner Promise ended without a result for workflow #{inspect(state.id)}, " <>
+            "promise #{inspect(promise_id)}: #{inspect(reason)}"
+        )
 
         {_dispatch_time, dispatch_times} = Map.pop(state.dispatch_times, ref)
         {_promise, active_promises} = Map.pop(state.active_promises, promise_id)
@@ -410,12 +410,10 @@ defmodule Runic.Runner.Worker do
         {:noreply, state}
 
       {runnable_id, active_tasks} ->
-        if reason != :normal do
-          Logger.warning(
-            "Runner task crashed for workflow #{inspect(state.id)}, " <>
-              "runnable #{inspect(runnable_id)}: #{inspect(reason)}"
-          )
-        end
+        Logger.warning(
+          "Runner task ended without a result for workflow #{inspect(state.id)}, " <>
+            "runnable #{inspect(runnable_id)}: #{inspect(reason)}"
+        )
 
         {_dispatch_time, dispatch_times} = Map.pop(state.dispatch_times, ref)
         state = %{state | active_tasks: active_tasks, dispatch_times: dispatch_times}
@@ -721,7 +719,8 @@ defmodule Runic.Runner.Worker do
 
     # Inline completions do not re-enter a stale scheduler proposal. After this
     # proposal is consumed, prepare a new one if it can make further progress.
-    if limit == :all and next.active_tasks == %{} and next.workflow != workflow and
+    if limit == :all and map_size(next.active_tasks) < next.max_concurrency and
+         next.workflow != workflow and
          next.admission_causes == [] and Workflow.is_runnable?(next.workflow) do
       dispatch_runnables(next)
     else

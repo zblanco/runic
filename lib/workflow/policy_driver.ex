@@ -296,6 +296,12 @@ defmodule Runic.Workflow.PolicyDriver do
           end
         after
           Supervisor.stop(supervisor, :normal, :infinity)
+
+          receive do
+            {:EXIT, ^supervisor, :normal} -> :ok
+          after
+            0 -> :ok
+          end
         end
     end
   end

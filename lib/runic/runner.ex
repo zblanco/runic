@@ -208,6 +208,9 @@ defmodule Runic.Runner do
   active units drain. Causes are local to the Worker and are not replayed from
   graph history. This state does not report persistence acknowledgement; use
   `persistence_status/2` for that boundary.
+
+  Do not call this synchronously from a Worker callback or hook. Have the hook
+  notify an observer process, which can query after the callback returns.
   """
   def admission_status(runner, workflow_id) do
     case lookup(runner, workflow_id) do

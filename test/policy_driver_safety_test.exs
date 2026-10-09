@@ -33,6 +33,36 @@ defmodule Runic.Workflow.PolicyDriverSafetyTest do
   end
 
   for emit <- [false, true] do
+    test "timed cleanup preserves a trapping caller's mailbox with events #{emit}" do
+      observer = self()
+      marker = make_ref()
+      work = runnable(fn _ -> :done end)
+
+      {caller, monitor} =
+        spawn_monitor(fn ->
+          Process.flag(:trap_exit, true)
+          send(self(), {:keep, marker})
+
+          {completed, _events} =
+            PolicyDriver.execute(work, SchedulerPolicy.new(timeout_ms: 1_000),
+              emit_events: unquote(emit)
+            )
+            |> unwrap()
+
+          send(
+            observer,
+            {:timed_mailbox, self(), Process.info(self(), :messages),
+             Process.info(self(), :trap_exit), completed.status}
+          )
+        end)
+
+      assert_receive {:timed_mailbox, ^caller, {:messages, [{:keep, ^marker}]},
+                      {:trap_exit, true}, :completed},
+                     1_000
+
+      assert_receive {:DOWN, ^monitor, :process, ^caller, :normal}, 1_000
+    end
+
     test "retry predicate and fallback share the event/non-event decision with events #{emit}" do
       attempts = :counters.new(1, [:atomics])
 
