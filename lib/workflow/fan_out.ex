@@ -5,6 +5,19 @@ defmodule Runic.Workflow.FanOut do
   FanOut just splits input facts - separate steps as defined in the map expression will do the processing.
   """
   defstruct [:hash, :name]
+
+  # Shared by ordinary-node preparation and FanIn. Ancestry coordinates are
+  # present on lightweight references; locating a batch must not hydrate values.
+  @doc false
+  def origin(workflow, %{ancestry: {producer, parent}} = fact)
+      when is_struct(fact, Runic.Workflow.Fact) or is_struct(fact, Runic.Workflow.FactRef) do
+    case Map.get(workflow.graph.vertices, producer) do
+      %__MODULE__{} -> {parent, producer, fact.hash}
+      _ -> origin(workflow, Map.get(workflow.graph.vertices, parent))
+    end
+  end
+
+  def origin(_workflow, _fact), do: nil
 end
 
 defimpl Runic.Workflow.Activator, for: Runic.Workflow.FanOut do

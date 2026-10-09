@@ -387,24 +387,28 @@ defmodule Runic.Workflow.PolicyDriver do
         execute(updated_runnable, no_retry_policy, Keyword.delete(opts, :emit_events))
 
       {:value, term} ->
-        result_fact =
-          Fact.new(value: term, ancestry: {runnable.node.hash, runnable.input_fact.hash})
+        if Runic.Workflow.SingleOutput.supported?(runnable.node) do
+          Runic.Workflow.SingleOutput.complete_value(runnable, term)
+        else
+          result_fact =
+            Fact.new(value: term, ancestry: {runnable.node.hash, runnable.input_fact.hash})
 
-        alias Runic.Workflow.Events.{FactProduced, ActivationConsumed}
+          alias Runic.Workflow.Events.{FactProduced, ActivationConsumed}
 
-        events = [
-          FactProduced.new(result_fact,
-            producer_label: :produced,
-            weight: (runnable.context.ancestry_depth || 0) + 1
-          ),
-          %ActivationConsumed{
-            fact_hash: runnable.input_fact.hash,
-            node_hash: runnable.node.hash,
-            from_label: :runnable
-          }
-        ]
+          events = [
+            FactProduced.new(result_fact,
+              producer_label: :produced,
+              weight: (runnable.context.ancestry_depth || 0) + 1
+            ),
+            %ActivationConsumed{
+              fact_hash: runnable.input_fact.hash,
+              node_hash: runnable.node.hash,
+              from_label: :runnable
+            }
+          ]
 
-        Runnable.complete(runnable, result_fact, events)
+          Runnable.complete(runnable, result_fact, events)
+        end
 
       other ->
         Runnable.fail(runnable, {:invalid_fallback_return, other})
