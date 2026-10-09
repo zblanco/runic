@@ -75,7 +75,7 @@ defmodule Runic.FailureAdmissionRacesTest do
       assert_receive {:DOWN, ^scope_ref, :process, ^scope, :normal}, 2_000
       assert_receive {:DOWN, ^supervisor_ref, :process, ^supervisor, _}, 2_000
       assert :atomics.get(counts, 1) == 1
-      assert result.runnable_events == []
+      refute Enum.any?(result.runnable_events, &is_struct(&1, Workflow.RunnableFailed))
 
       if unquote(order) == :result_first do
         assert Workflow.raw_productions(result) == [2]

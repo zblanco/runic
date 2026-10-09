@@ -455,6 +455,7 @@ defmodule Runic.Runner.Worker do
             active_promises: active_promises
         }
 
+        state = record_execution_loss(state, unit, reason)
         state = stop_admission(state, :uncertain, {:promise, promise_id}, reason)
 
         state = maybe_checkpoint(state)
@@ -472,6 +473,7 @@ defmodule Runic.Runner.Worker do
         {_dispatch_time, dispatch_times} = Map.pop(state.dispatch_times, ref)
         state = %{state | active_tasks: active_tasks, dispatch_times: dispatch_times}
 
+        state = record_execution_loss(state, unit, reason)
         state = stop_admission(state, :uncertain, {:runnable, runnable_id}, reason)
         state = maybe_checkpoint(state)
         state = dispatch_runnables(state)
@@ -682,6 +684,12 @@ defmodule Runic.Runner.Worker do
     end)
 
     Runic.TaskScope.close(state.task_scope)
+  end
+
+  defp record_execution_loss(state, unit, reason) do
+    event = Runic.Workflow.ExecutionUncertain.new(unit, reason)
+    workflow = Workflow.append_runnable_events(state.workflow, [event])
+    collect_pending_events(state, workflow, [event])
   end
 
   defp stop_admission(state, kind, unit, reason) do

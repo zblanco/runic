@@ -59,7 +59,7 @@ defmodule Runic.FailureAdmissionTest do
 
     assert_receive {:invalid_result, ^caller, result, {:messages, []}}, 1_000
     assert Workflow.is_runnable?(result)
-    assert result.runnable_events == []
+    refute Enum.any?(result.runnable_events, &is_struct(&1, Workflow.RunnableFailed))
     assert_receive {:DOWN, ^monitor, :process, ^caller, :normal}, 1_000
   end
 
@@ -167,7 +167,7 @@ defmodule Runic.FailureAdmissionTest do
     workflow = Runic.workflow(steps: [step]) |> Workflow.enable_event_emission()
     result = Workflow.react_until_satisfied(workflow, 1, async: true)
     assert Workflow.is_runnable?(result)
-    assert result.runnable_events == []
+    refute Enum.any?(result.runnable_events, &is_struct(&1, Workflow.RunnableFailed))
     assert Workflow.raw_productions(result) == []
   end
 
@@ -185,7 +185,7 @@ defmodule Runic.FailureAdmissionTest do
     workflow = Runic.workflow(steps: [step]) |> Workflow.enable_event_emission()
     result = Workflow.react_until_satisfied(workflow, 1, async: true, timeout: 10)
     assert Workflow.is_runnable?(result)
-    assert result.runnable_events == []
+    refute Enum.any?(result.runnable_events, &is_struct(&1, Workflow.RunnableFailed))
     assert Workflow.raw_productions(result) == []
   end
 
@@ -215,7 +215,7 @@ defmodule Runic.FailureAdmissionTest do
     refute Process.alive?(work)
     assert_receive {:DOWN, ^ref, :process, ^work, _}, 1_000
     assert Workflow.is_runnable?(result)
-    assert result.runnable_events == []
+    refute Enum.any?(result.runnable_events, &is_struct(&1, Workflow.RunnableFailed))
     assert Workflow.raw_productions(result) == []
   end
 

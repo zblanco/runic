@@ -247,6 +247,7 @@ defmodule Runic.Workflow do
   alias Runic.Workflow.RunnableDispatched
   alias Runic.Workflow.RunnableCompleted
   alias Runic.Workflow.RunnableFailed
+  alias Runic.Workflow.ExecutionUncertain
   alias Runic.Workflow.Private
   alias Runic.Workflow.Events.FactProduced
   alias Runic.Workflow.Events.ActivationConsumed
@@ -1929,6 +1930,9 @@ defmodule Runic.Workflow do
       %RunnableFailed{} = event, wrk ->
         %{wrk | runnable_events: wrk.runnable_events ++ [event]}
 
+      %ExecutionUncertain{} = event, wrk ->
+        %{wrk | runnable_events: wrk.runnable_events ++ [event]}
+
       %ComponentRemoved{name: name}, wrk ->
         remove_component(wrk, name)
     end)
@@ -1989,7 +1993,8 @@ defmodule Runic.Workflow do
           is_struct(event, ReactionOccurred) or
           is_struct(event, RunnableDispatched) or
           is_struct(event, RunnableCompleted) or
-          is_struct(event, RunnableFailed)
+          is_struct(event, RunnableFailed) or
+          is_struct(event, ExecutionUncertain)
       end)
 
     base =
@@ -3370,6 +3375,12 @@ defmodule Runic.Workflow do
   `:timeout_ms` for node-level timeout, retry, and fallback handling. This API
   returns a graph, not a structured execution outcome.
 
+  With event emission enabled, accepted attempts append dispatched, completed,
+  or failed lifecycle events to `runnable_events`. Executor loss records an
+  `ExecutionUncertain` observation with its prepared activation identities and
+  observed reason. Replay retains that observation without consuming the work
+  or claiming that an Action failed or an external effect did not occur.
+
   Ready-work retention is subject to the existing structural downstream
   suppression in `apply_runnable/2`. It does not isolate failure between inputs
   or guarantee exact replay of a partly ready Join after failure.
@@ -3452,11 +3463,12 @@ defmodule Runic.Workflow do
 
   defp execute_runnables_serial(workflow, runnables, opts) do
     policies = resolve_effective_policies(workflow, opts)
-    driver_opts = build_driver_opts(opts)
+    driver_opts = Keyword.put(build_driver_opts(opts), :emit_events, workflow.emit_events)
 
     Enum.reduce_while(runnables, {workflow, false}, fn runnable, {wrk, false} ->
-      executed = execute_with_policy(runnable, policies, driver_opts)
-      result = {apply_runnable(wrk, executed), executed.status == :failed}
+      {executed, events} = execute_with_policy(runnable, policies, driver_opts)
+      wrk = wrk |> append_runnable_events(events) |> apply_runnable(executed)
+      result = {wrk, executed.status == :failed}
       if executed.status == :failed, do: {:halt, result}, else: {:cont, result}
     end)
   end
@@ -3465,7 +3477,7 @@ defmodule Runic.Workflow do
     max_concurrency = Keyword.get(opts, :max_concurrency, System.schedulers_online())
     timeout = Keyword.get(opts, :timeout, :infinity)
     policies = resolve_effective_policies(workflow, opts)
-    driver_opts = build_driver_opts(opts)
+    driver_opts = Keyword.put(build_driver_opts(opts), :emit_events, workflow.emit_events)
 
     unless is_integer(max_concurrency) and max_concurrency > 0 do
       raise ArgumentError, "max_concurrency must be a positive integer"
@@ -3487,10 +3499,19 @@ defmodule Runic.Workflow do
     end)
   end
 
-  defp execute_with_policy(runnable, [], _opts), do: Invokable.execute(runnable.node, runnable)
+  defp execute_with_policy(runnable, [], opts) do
+    if Keyword.get(opts, :emit_events, false) do
+      PolicyDriver.execute(runnable, %SchedulerPolicy{}, opts)
+    else
+      {Invokable.execute(runnable.node, runnable), []}
+    end
+  end
 
   defp execute_with_policy(runnable, policies, opts) do
-    PolicyDriver.execute(runnable, SchedulerPolicy.resolve(runnable, policies), opts)
+    case PolicyDriver.execute(runnable, SchedulerPolicy.resolve(runnable, policies), opts) do
+      {%Runnable{}, _events} = result -> result
+      %Runnable{} = executed -> {executed, []}
+    end
   end
 
   defp async_cycle(workflow, pending, active, stopped?, config) do
@@ -3513,7 +3534,7 @@ defmodule Runic.Workflow do
             async_cycle(
               workflow,
               rest,
-              Map.put(active, handle, {pid, deadline}),
+              Map.put(active, handle, {pid, deadline, runnable}),
               stopped?,
               config
             )
@@ -3531,7 +3552,9 @@ defmodule Runic.Workflow do
 
             case receive_async_result(active, wait) do
               nil ->
-                {ref, {_pid, _}} = Enum.find(active, fn {_, {_, at}} -> at == deadline end)
+                {ref, {_pid, _, runnable}} =
+                  Enum.find(active, fn {_, {_, at, _}} -> at == deadline end)
+
                 :ok = Runic.TaskScope.cancel(config.scope, ref)
 
                 # Scope replies precede cancellation acknowledgement. Preserve a
@@ -3539,6 +3562,10 @@ defmodule Runic.Workflow do
                 case receive_async_result(%{ref => Map.fetch!(active, ref)}, 0) do
                   nil ->
                     Logger.warning("Async execution outcome is uncertain: task timeout")
+
+                    workflow =
+                      record_execution_loss(workflow, runnable, {:timeout, config.timeout})
+
                     async_cycle(workflow, pending, Map.delete(active, ref), true, config)
 
                   result ->
@@ -3562,6 +3589,25 @@ defmodule Runic.Workflow do
     after
       timeout -> nil
     end
+  end
+
+  defp apply_async_result(
+         {:result, ref, {%Runnable{} = executed, events}},
+         workflow,
+         pending,
+         active,
+         stopped?,
+         config
+       )
+       when is_list(events) do
+    apply_async_result(
+      {:result, ref, executed},
+      append_runnable_events(workflow, events),
+      pending,
+      active,
+      stopped?,
+      config
+    )
   end
 
   defp apply_async_result(
@@ -3589,8 +3635,16 @@ defmodule Runic.Workflow do
 
   defp apply_async_result({:down, ref, reason}, workflow, pending, active, _stopped?, config) do
     Logger.warning("Async execution outcome is uncertain: #{inspect(reason)}")
+    {_pid, _deadline, runnable} = Map.fetch!(active, ref)
+    workflow = record_execution_loss(workflow, runnable, reason)
     async_cycle(workflow, pending, Map.delete(active, ref), true, config)
   end
+
+  defp record_execution_loss(%__MODULE__{emit_events: true} = workflow, runnable, reason) do
+    append_runnable_events(workflow, [ExecutionUncertain.new({:runnable, runnable}, reason)])
+  end
+
+  defp record_execution_loss(workflow, _runnable, _reason), do: workflow
 
   defp build_driver_opts(opts) do
     case Keyword.get(opts, :deadline_at) do

@@ -63,7 +63,8 @@ defmodule Runic.MixProject do
           Runic.Workflow.PolicyDriver,
           Runic.Workflow.RunnableDispatched,
           Runic.Workflow.RunnableCompleted,
-          Runic.Workflow.RunnableFailed
+          Runic.Workflow.RunnableFailed,
+          Runic.Workflow.ExecutionUncertain
         ],
         Runner: [
           Runic.Runner,
