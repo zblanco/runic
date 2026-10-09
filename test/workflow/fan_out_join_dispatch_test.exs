@@ -16,8 +16,8 @@ defmodule Workflow.FanOutJoinDispatchTest do
 
   Regression tests for two fixed bugs:
 
-  1. Worker deadlock on task crash — the :DOWN handler now marks the crashed
-     runnable as failed and calls dispatch_runnables to continue the loop.
+  1. Worker deadlock on task crash — the :DOWN handler stops admission with an
+     uncertain outcome and reports completion after active work drains.
 
   2. Failed step breaking Join completion — handle_failed_runnable now calls
      skip_downstream_subgraph to transitively mark all downstream nodes as
@@ -105,12 +105,12 @@ defmodule Workflow.FanOutJoinDispatchTest do
 
       :ok = Runic.Runner.run(runner_name, workflow_id, %{text: "look", state: %{hp: 50}})
 
-      # The Worker should not get stuck. It should mark the crashed step as
-      # failed, call dispatch_runnables to continue with other steps, and
-      # eventually call on_complete.
+      # The Worker must report a drained scope without asserting that an
+      # unobserved node result was a failure.
       receive do
         {:workflow_complete, ^workflow_id, _wf} ->
-          :ok
+          assert {:ok, %{status: :stopped, causes: [%{kind: :uncertain}]}} =
+                   Runic.Runner.admission_status(runner_name, workflow_id)
       after
         3_000 ->
           if Process.alive?(worker_pid) do
@@ -172,7 +172,10 @@ defmodule Workflow.FanOutJoinDispatchTest do
 
       assert_receive {:workflow_complete, ^workflow_id, completed_wf}, 5_000
 
-      refute Workflow.is_runnable?(completed_wf)
+      # A halt ends this admission scope. Ready work can remain in the reusable graph.
+      assert {:ok, %{status: :stopped, active_units: 0, causes: [%{kind: :failed}]}} =
+               Runic.Runner.admission_status(runner_name, workflow_id)
+
       assert Workflow.raw_productions(completed_wf, :process_turn) == []
     end
   end

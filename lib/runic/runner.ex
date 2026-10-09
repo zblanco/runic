@@ -156,6 +156,10 @@ defmodule Runic.Runner do
   while prior work is active and `{:error, :not_runnable}` when the workflow
   has no ready work.
 
+  After a final node failure or outer executor loss, returns
+  `{:error, :admission_stopped}`. Inspect `admission_status/2` before using
+  `continue/2` to open a new automatic admission scope.
+
   `:ok` acknowledges admission, not completion or persistence. An inline unit
   may finish during the call. A Promise is one unit and may contain several
   components. Manual mode is Worker-local configuration, not a durable pause
@@ -169,15 +173,46 @@ defmodule Runic.Runner do
   end
 
   @doc """
-  Changes a manually dispatched workflow to automatic dispatch.
+  Changes a manually dispatched workflow to automatic dispatch, or opens a new
+  admission scope after a failure.
 
   Ready work is dispatched immediately. The workflow stays in automatic mode
   for the rest of the Worker process.
+
+  Reopening a stopped scope returns `{:error, :busy}` while prior units drain.
+  Continuing an open scope retains its current active units. Reopening clears
+  admission causes, but does not clear a persistence error or pending events.
+
+  An uncertain unit remains ready. By calling `continue/2`, the caller accepts
+  that its external effects can run again. `stop/3` followed by `resume/3` also
+  starts a new scope; admission causes are not part of the persisted graph.
   """
   def continue(runner, workflow_id) do
     case lookup(runner, workflow_id) do
       nil -> {:error, :not_found}
       pid -> GenServer.call(pid, :continue)
+    end
+  end
+
+  @doc """
+  Returns the current Worker's admission state.
+
+  The result is `{:ok, %{status: :open | :stopped, active_units: count, causes: causes}}`.
+  Each cause has `kind` (`:failed` or `:uncertain`), `unit` (`{:runnable, id}` or
+  `{:promise, id}`), and `reason`. A failed cause is a returned node failure.
+  An uncertain cause means the outer executor ended without a result. It does
+  not prove whether work ran or produced external effects.
+
+  A stopped scope accepts results from active units but admits no new units.
+  `run/4` can add input while stopped. `continue/2` opens a new scope after all
+  active units drain. Causes are local to the Worker and are not replayed from
+  graph history. This state does not report persistence acknowledgement; use
+  `persistence_status/2` for that boundary.
+  """
+  def admission_status(runner, workflow_id) do
+    case lookup(runner, workflow_id) do
+      nil -> {:error, :not_found}
+      pid -> GenServer.call(pid, :admission_status)
     end
   end
 

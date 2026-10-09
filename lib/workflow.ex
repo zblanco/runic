@@ -3335,8 +3335,24 @@ defmodule Runic.Workflow do
   @doc """
   Executes a single reaction cycle using the three-phase model.
 
-  This function advances the workflow by one "generation" - executing all currently
-  runnable steps/rules. Use `react_until_satisfied/3` to run to completion.
+  This function advances the workflow by one "generation". It executes ready
+  steps/rules until a final failure stops admission. Use `react_until_satisfied/3`
+  to evaluate successive generations within the same admission scope.
+
+  Each call starts a new scope. A failed Runnable stops new work in that call.
+  `:skip` and a successful retry/fallback allow admission to continue. Async
+  execution retains results from tasks already admitted. Ready work remains in
+  the returned graph and can run in a later call. There is no permanent graph halt.
+
+  If an async task exits or reaches the outer `:timeout` without a result, its
+  outcome is uncertain. The call logs that loss, stops admission, and retains
+  the activation. A later call can repeat external effects. Use a policy
+  `:timeout_ms` for node-level timeout, retry, and fallback handling. This API
+  returns a graph, not a structured execution outcome.
+
+  Ready-work retention is subject to the existing structural downstream
+  suppression in `apply_runnable/2`. It does not isolate failure between inputs
+  or guarantee exact replay of a partly ready Join after failure.
 
   ## Basic Usage
 
@@ -3349,7 +3365,7 @@ defmodule Runic.Workflow do
 
   ## Options
 
-  - `:async` - When `true`, executes runnables in parallel using `Task.async_stream`.
+  - `:async` - When `true`, executes runnables in parallel using supervised tasks.
     Useful for I/O-bound workflows. Default: `false` (serial execution)
   - `:max_concurrency` - Maximum parallel tasks when `async: true`. Default: `System.schedulers_online()`
   - `:timeout` - Timeout for each task when `async: true`. Default: `:infinity`
@@ -3362,6 +3378,19 @@ defmodule Runic.Workflow do
   def react(workflow, opts \\ [])
 
   def react(%__MODULE__{} = workflow, opts) when is_list(opts) do
+    {workflow, _stopped?} = react_cycle(workflow, opts)
+    workflow
+  end
+
+  def react(%__MODULE__{} = wrk, %Fact{ancestry: nil} = fact) do
+    react(wrk, fact, [])
+  end
+
+  def react(%__MODULE__{} = wrk, raw_fact) when not is_list(raw_fact) do
+    react(wrk, Fact.new(value: raw_fact), [])
+  end
+
+  defp react_cycle(workflow, opts) do
     if is_runnable?(workflow) do
       {workflow, runnables} = prepare_for_dispatch(workflow)
 
@@ -3371,16 +3400,8 @@ defmodule Runic.Workflow do
         execute_runnables_serial(workflow, runnables, opts)
       end
     else
-      workflow
+      {workflow, false}
     end
-  end
-
-  def react(%__MODULE__{} = wrk, %Fact{ancestry: nil} = fact) do
-    react(wrk, fact, [])
-  end
-
-  def react(%__MODULE__{} = wrk, raw_fact) when not is_list(raw_fact) do
-    react(wrk, Fact.new(value: raw_fact), [])
   end
 
   @doc """
@@ -3413,16 +3434,11 @@ defmodule Runic.Workflow do
     policies = resolve_effective_policies(workflow, opts)
     driver_opts = build_driver_opts(opts)
 
-    runnables
-    |> Enum.map(fn runnable ->
-      if policies == [] do
-        Invokable.execute(runnable.node, runnable)
-      else
-        policy = SchedulerPolicy.resolve(runnable, policies)
-        PolicyDriver.execute(runnable, policy, driver_opts)
-      end
+    Enum.reduce_while(runnables, {workflow, false}, fn runnable, {wrk, false} ->
+      executed = execute_with_policy(runnable, policies, driver_opts)
+      result = {apply_runnable(wrk, executed), executed.status == :failed}
+      if executed.status == :failed, do: {:halt, result}, else: {:cont, result}
     end)
-    |> Enum.reduce(workflow, fn executed, wrk -> apply_runnable(wrk, executed) end)
   end
 
   defp execute_runnables_async(workflow, runnables, opts) do
@@ -3431,27 +3447,127 @@ defmodule Runic.Workflow do
     policies = resolve_effective_policies(workflow, opts)
     driver_opts = build_driver_opts(opts)
 
-    runnables
-    |> Task.async_stream(
-      fn runnable ->
-        if policies == [] do
-          Invokable.execute(runnable.node, runnable)
-        else
-          policy = SchedulerPolicy.resolve(runnable, policies)
-          PolicyDriver.execute(runnable, policy, driver_opts)
-        end
-      end,
-      max_concurrency: max_concurrency,
-      timeout: timeout
-    )
-    |> Enum.reduce(workflow, fn
-      {:ok, executed}, wrk ->
-        apply_runnable(wrk, executed)
+    unless is_integer(max_concurrency) and max_concurrency > 0 do
+      raise ArgumentError, "max_concurrency must be a positive integer"
+    end
 
-      {:exit, reason}, wrk ->
-        Logger.warning("Async execution failed: #{inspect(reason)}")
-        wrk
-    end)
+    unless timeout == :infinity or (is_integer(timeout) and timeout >= 0) do
+      raise ArgumentError, "timeout must be a non-negative integer or :infinity"
+    end
+
+    {:ok, supervisor} = Task.Supervisor.start_link()
+
+    config = %{
+      supervisor: supervisor,
+      max_concurrency: max_concurrency,
+      timeout: timeout,
+      execute: &execute_with_policy(&1, policies, driver_opts)
+    }
+
+    try do
+      async_cycle(workflow, runnables, %{}, false, config)
+    after
+      Supervisor.stop(supervisor, :normal, :infinity)
+    end
+  end
+
+  defp execute_with_policy(runnable, [], _opts), do: Invokable.execute(runnable.node, runnable)
+
+  defp execute_with_policy(runnable, policies, opts) do
+    PolicyDriver.execute(runnable, SchedulerPolicy.resolve(runnable, policies), opts)
+  end
+
+  defp async_cycle(workflow, pending, active, stopped?, config) do
+    # Consume available results before using a free slot. A stopped scope drains
+    # admitted tasks, but leaves all other activations ready for the next call.
+    case receive_async_result(active, 0) do
+      nil ->
+        cond do
+          not stopped? and pending != [] and map_size(active) < config.max_concurrency ->
+            [runnable | rest] = pending
+
+            task =
+              Task.Supervisor.async_nolink(config.supervisor, fn -> config.execute.(runnable) end)
+
+            deadline =
+              if config.timeout == :infinity,
+                do: :infinity,
+                else: System.monotonic_time(:millisecond) + config.timeout
+
+            async_cycle(
+              workflow,
+              rest,
+              Map.put(active, task.ref, {task, deadline}),
+              stopped?,
+              config
+            )
+
+          map_size(active) == 0 ->
+            {workflow, stopped?}
+
+          true ->
+            deadline = active |> Map.values() |> Enum.map(&elem(&1, 1)) |> Enum.min()
+
+            wait =
+              if deadline == :infinity,
+                do: :infinity,
+                else: max(deadline - System.monotonic_time(:millisecond), 0)
+
+            case receive_async_result(active, wait) do
+              nil ->
+                {ref, {task, _}} = Enum.find(active, fn {_, {_, at}} -> at == deadline end)
+
+                case Task.shutdown(task, :brutal_kill) do
+                  {:ok, %Runnable{} = executed} ->
+                    apply_async_result(
+                      {:result, ref, executed},
+                      workflow,
+                      pending,
+                      active,
+                      stopped?,
+                      config
+                    )
+
+                  _ ->
+                    Logger.warning("Async execution outcome is uncertain: task timeout")
+                    async_cycle(workflow, pending, Map.delete(active, ref), true, config)
+                end
+
+              result ->
+                apply_async_result(result, workflow, pending, active, stopped?, config)
+            end
+        end
+
+      result ->
+        apply_async_result(result, workflow, pending, active, stopped?, config)
+    end
+  end
+
+  defp receive_async_result(active, timeout) do
+    receive do
+      {ref, %Runnable{} = executed} when is_map_key(active, ref) -> {:result, ref, executed}
+      {:DOWN, ref, :process, _pid, reason} when is_map_key(active, ref) -> {:down, ref, reason}
+    after
+      timeout -> nil
+    end
+  end
+
+  defp apply_async_result({:result, ref, executed}, workflow, pending, active, stopped?, config) do
+    Process.demonitor(ref, [:flush])
+    workflow = apply_runnable(workflow, executed)
+
+    async_cycle(
+      workflow,
+      pending,
+      Map.delete(active, ref),
+      stopped? or executed.status == :failed,
+      config
+    )
+  end
+
+  defp apply_async_result({:down, ref, reason}, workflow, pending, active, _stopped?, config) do
+    Logger.warning("Async execution outcome is uncertain: #{inspect(reason)}")
+    async_cycle(workflow, pending, Map.delete(active, ref), true, config)
   end
 
   defp build_driver_opts(opts) do
@@ -3481,10 +3597,12 @@ defmodule Runic.Workflow do
   end
 
   @doc """
-  Executes the workflow until no more runnables remain.
+  Executes the workflow until no more runnables remain or a failure stops admission.
 
-  Iteratively calls `react/2` until all reachable nodes have been executed.
-  This is the recommended way to fully evaluate a workflow pipeline.
+  Evaluates successive reaction cycles within one call-scoped admission boundary.
+  A failure ends this call after active tasks drain. A later call starts a new
+  scope and can execute the ready work retained in the graph. See `react/2` for
+  async uncertainty and timeout behavior.
 
   ## Basic Usage
 
@@ -3544,7 +3662,7 @@ defmodule Runic.Workflow do
     wrk = maybe_apply_run_context(wrk, opts)
 
     wrk
-    |> react(fact, opts)
+    |> invoke(root(), fact)
     |> react_until_satisfied(nil, opts)
   end
 
@@ -3572,12 +3690,9 @@ defmodule Runic.Workflow do
   defp do_react_until_satisfied(%__MODULE__{} = workflow, true = _is_runnable?, opts) do
     checkpoint = Keyword.get(opts, :checkpoint)
 
-    workflow
-    |> react(opts)
-    |> then(fn wrk ->
-      if is_function(checkpoint, 1), do: checkpoint.(wrk)
-      do_react_until_satisfied(wrk, is_runnable?(wrk), opts)
-    end)
+    {workflow, stopped?} = react_cycle(workflow, opts)
+    if is_function(checkpoint, 1), do: checkpoint.(workflow)
+    do_react_until_satisfied(workflow, not stopped? and is_runnable?(workflow), opts)
   end
 
   defp do_react_until_satisfied(%__MODULE__{} = workflow, false = _is_runnable?, _opts),
@@ -4476,9 +4591,18 @@ defmodule Runic.Workflow do
        }) do
     Logger.warning("Runnable failed for node #{inspect(node)} with error: #{inspect(error)}")
 
-    workflow
-    |> mark_runnable_as_ran(node, fact)
-    |> skip_downstream_subgraph(node)
+    event = %ActivationConsumed{fact_hash: fact.hash, node_hash: node.hash, from_label: :runnable}
+
+    workflow =
+      workflow
+      |> apply_event(event)
+      |> skip_downstream_subgraph(node)
+
+    if workflow.emit_events do
+      %{workflow | uncommitted_events: [event | workflow.uncommitted_events]}
+    else
+      workflow
+    end
   end
 
   @doc """

@@ -161,7 +161,12 @@ defmodule Runic.Runner.RuntimeRecoveryTest do
       assert state.active_executors == %{}
       assert state.executor_state.handles == MapSet.new()
 
-      refute Workflow.is_runnable?(state.workflow)
+      # Executor loss has no node result. Release local resources, but retain
+      # the activation until the caller explicitly starts a new admission scope.
+      assert Workflow.is_runnable?(state.workflow)
+
+      assert {:ok, %{status: :stopped, causes: [%{kind: :uncertain}]}} =
+               Runner.admission_status(runner, :release_crash)
     end
 
     test "releases a policy override executor handle", %{runner: runner} do

@@ -78,10 +78,15 @@ defmodule Runic.Runner.Scheduler do
   @callback on_dispatch(dispatch_unit(), scheduler_state()) :: scheduler_state()
 
   @doc """
-  Called when a dispatch unit completes.
+  Called when a dispatch unit returns a result or its outer executor ends.
 
   Receives the completed dispatch unit, execution duration in milliseconds,
   and the current scheduler state. Returns updated scheduler state.
+
+  On outer executor loss, receives the original unit with `status: :pending`.
+  This closes local admission bookkeeping; it does not assert node execution or
+  success. Profiling code must not treat an unresolved unit as a successful sample.
+  A returned Promise has `status: :resolved` or `:failed` for a partial result.
 
   Optional — used by adaptive schedulers for profiling.
   """
