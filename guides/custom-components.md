@@ -144,16 +144,16 @@ ownership, persistence failures, and result-correlation rules still apply.
 
 The shared prepare path understands native Map/Reduce mapped paths and ordinary
 nodes directly feeding a FanIn associated with their ancestral FanOut. Custom
-composites using that topology no longer need an Action-specific
+composites using that topology no longer need a component-specific
 `MapReduceTracked` implementation. An intervening ordinary transformation and
 lightweight FactRef ancestors are supported. Uncollected branches do not produce
 unused tracking entries.
 
 This is participation in existing collection semantics, **not a new batch API**.
-Empty-batch behavior, invocation-scoped batch identity, arbitrary nested
-collectors, and Jido's first-item/shared-frame convention are not redesigned
-here. Preserve low-level `Invokable`, `Activator`, and `Coordinator` for gates,
-multiple outputs, stateful coordination, and unusual execution semantics.
+Empty-batch behavior, invocation-scoped batch identity, and arbitrary nested
+collectors are not redesigned here. Preserve low-level `Invokable`, `Activator`,
+and `Coordinator` for gates, multiple outputs, stateful coordination, and unusual
+execution semantics.
 
 ## Construction, replay, and runtime resources
 
@@ -175,27 +175,3 @@ lifecycle events, use `Workflow.from_events/2`. Replay folds accepted events
 without rerunning the callback or success hooks. A fresh execution of a rebuilt
 definition does, naturally, execute work again. No new persisted event schema is
 introduced by this behaviour.
-
-## Jido Action integration
-
-The optional files in
-[`examples/jido_action`](https://github.com/zblanco/runic/tree/main/examples/jido_action)
-demonstrate a portable Action adapter against `jido_action/release/v3` at
-`22f7c2a38fc9c07e3b117c5e4a53e1a0bdde32aa`. Add both files to a project that already
-depends on Jido Action and this Runic revision; Runic itself adds no Jido dependency.
-
-Run the optional pinned consumer check with
-`elixir examples/jido_action/check.exs`. It fetches Jido/dependencies into Mix's
-install cache and runs the example contract tests. It is intentionally separate
-from Runic's normal offline/unit test surface.
-
-The example delegates validation and result normalization to Jido's existing
-Action boundary, retains Action attempt telemetry, and explicitly appends effect
-requests to Jido metadata. It creates no Facts or activation/collection events.
-It deliberately uses internal V3 Jido modules as integration evidence, not as a
-promise of a stable third-party API.
-
-This does not migrate Jido's Flow compiler, local-value wrapper, AgentServer, or
-Turn commit. Effects are requests, not delivered directives. Those remain Jido
-concerns. The corresponding adoption proposal is
-[jido_action #293](https://github.com/agentjido/jido_action/issues/293).
