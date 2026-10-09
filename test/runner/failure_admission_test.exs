@@ -274,9 +274,34 @@ defmodule Runic.Runner.FailureAdmissionTest do
       )
     )
 
-    first = Runic.step(fn value -> value + 1 end, name: :first)
-    second = Runic.step(fn _ -> raise "stop" end, name: :second)
-    last = Runic.step(fn value -> value * 2 end, name: :last)
+    counts = :atomics.new(3, [])
+
+    first =
+      Runic.step(
+        fn value ->
+          :atomics.add(context(:counts), 1, 1)
+          value + 1
+        end,
+        name: :first
+      )
+
+    second =
+      Runic.step(
+        fn _ ->
+          :atomics.add(context(:counts), 2, 1)
+          raise "stop"
+        end,
+        name: :second
+      )
+
+    last =
+      Runic.step(
+        fn value ->
+          :atomics.add(context(:counts), 3, 1)
+          value * 2
+        end,
+        name: :last
+      )
 
     workflow =
       Runic.workflow(steps: [{first, [{second, [last]}]}])
@@ -290,7 +315,7 @@ defmodule Runic.Runner.FailureAdmissionTest do
       )
 
     FailingStore.fail(store, :append)
-    :ok = Runner.run(runner, :prefix, 1)
+    :ok = Runner.run(runner, :prefix, 1, run_context: %{_global: %{counts: counts}})
 
     assert_receive {:executor_result, ^worker, handle, {:promise_partial, _, _, _} = result},
                    1_000
@@ -314,13 +339,21 @@ defmodule Runic.Runner.FailureAdmissionTest do
     send(worker, {handle, result})
     assert {:ok, [2]} = Runner.get_results(runner, :prefix)
     assert {:ok, %{pending_events: ^pending}} = Runner.persistence_status(runner, :prefix)
+    assert for(index <- 1..3, do: :atomics.get(counts, index)) == [1, 1, 0]
     FailingStore.recover(store)
     assert :ok = Runner.checkpoint(runner, :prefix)
     assert :ok = Runner.stop(runner, :prefix)
-    assert {:ok, _} = Runner.resume(runner, :prefix, dispatch_mode: :manual)
+
+    assert {:ok, _} =
+             Runner.resume(runner, :prefix,
+               dispatch_mode: :manual,
+               run_context: %{_global: %{counts: counts}}
+             )
+
     assert {:ok, [2]} = Runner.get_results(runner, :prefix)
     assert {:error, :not_runnable} = Runner.step(runner, :prefix)
     assert {:ok, %{status: :open}} = Runner.admission_status(runner, :prefix)
+    assert for(index <- 1..3, do: :atomics.get(counts, index)) == [1, 1, 0]
   end
 
   defp failing_workflow(counter) do

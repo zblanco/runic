@@ -113,12 +113,12 @@ defmodule Runic.FailureAdmissionTest do
     monitor = Process.monitor(first)
     send(first, :fail)
     assert_receive {:DOWN, ^monitor, :process, ^first, :normal}, 1_000
-    refute_receive {:started, _}, 100
     send(second, :complete)
     result = Task.await(task)
     assert 2 in Workflow.raw_productions(result)
     assert Workflow.is_runnable?(result)
-    refute_receive {:started, _}, 50
+    # Returning confirms that the admitted tasks and their scope have closed.
+    refute_received {:started, _}
   end
 
   test "async admission follows each completion without waiting for the whole group" do
