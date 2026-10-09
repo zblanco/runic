@@ -189,6 +189,36 @@ defmodule Runic.FailureAdmissionTest do
     assert Workflow.raw_productions(result) == []
   end
 
+  test "async outer timeout confirms trapped work is dead before returning uncertain state" do
+    observer = self()
+
+    step =
+      Runic.step(
+        fn _ ->
+          Process.flag(:trap_exit, true)
+          send(observer, {:held_for_timeout, self()})
+          receive do: (:release -> :done)
+        end,
+        name: :held
+      )
+
+    workflow = Runic.workflow(steps: [step]) |> Workflow.enable_event_emission()
+
+    caller =
+      Task.async(fn -> Workflow.react_until_satisfied(workflow, 1, async: true, timeout: 100) end)
+
+    assert_receive {:held_for_timeout, work}, 1_000
+    ref = Process.monitor(work)
+    on_exit(fn -> if Process.alive?(work), do: Process.exit(work, :kill) end)
+
+    result = Task.await(caller)
+    refute Process.alive?(work)
+    assert_receive {:DOWN, ^ref, :process, ^work, _}, 1_000
+    assert Workflow.is_runnable?(result)
+    assert result.runnable_events == []
+    assert Workflow.raw_productions(result) == []
+  end
+
   defp blocking_workflow(owner) do
     steps =
       for name <- [:one, :two, :three] do

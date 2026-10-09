@@ -3368,7 +3368,7 @@ defmodule Runic.Workflow do
 
   ## Options
 
-  - `:async` - When `true`, executes runnables in parallel using supervised tasks.
+  - `:async` - When `true`, executes runnables in parallel in a caller-owned task scope.
     Useful for I/O-bound workflows. Default: `false` (serial execution)
   - `:max_concurrency` - Maximum parallel tasks when `async: true`. Default: `System.schedulers_online()`
   - `:timeout` - Timeout for each task when `async: true`. Default: `:infinity`
@@ -3458,26 +3458,16 @@ defmodule Runic.Workflow do
       raise ArgumentError, "timeout must be a non-negative integer or :infinity"
     end
 
-    {:ok, supervisor} = Task.Supervisor.start_link()
+    Runic.TaskScope.with_scope(fn scope ->
+      config = %{
+        scope: scope,
+        max_concurrency: max_concurrency,
+        timeout: timeout,
+        execute: &execute_with_policy(&1, policies, driver_opts)
+      }
 
-    config = %{
-      supervisor: supervisor,
-      max_concurrency: max_concurrency,
-      timeout: timeout,
-      execute: &execute_with_policy(&1, policies, driver_opts)
-    }
-
-    try do
       async_cycle(workflow, runnables, %{}, false, config)
-    after
-      Supervisor.stop(supervisor, :normal, :infinity)
-
-      receive do
-        {:EXIT, ^supervisor, :normal} -> :ok
-      after
-        0 -> :ok
-      end
-    end
+    end)
   end
 
   defp execute_with_policy(runnable, [], _opts), do: Invokable.execute(runnable.node, runnable)
@@ -3495,8 +3485,8 @@ defmodule Runic.Workflow do
           not stopped? and pending != [] and map_size(active) < config.max_concurrency ->
             [runnable | rest] = pending
 
-            task =
-              Task.Supervisor.async_nolink(config.supervisor, fn -> config.execute.(runnable) end)
+            {handle, pid} =
+              Runic.TaskScope.dispatch(config.scope, fn -> config.execute.(runnable) end)
 
             deadline =
               if config.timeout == :infinity,
@@ -3506,7 +3496,7 @@ defmodule Runic.Workflow do
             async_cycle(
               workflow,
               rest,
-              Map.put(active, task.ref, {task, deadline}),
+              Map.put(active, handle, {pid, deadline}),
               stopped?,
               config
             )
@@ -3524,22 +3514,18 @@ defmodule Runic.Workflow do
 
             case receive_async_result(active, wait) do
               nil ->
-                {ref, {task, _}} = Enum.find(active, fn {_, {_, at}} -> at == deadline end)
+                {ref, {_pid, _}} = Enum.find(active, fn {_, {_, at}} -> at == deadline end)
+                :ok = Runic.TaskScope.cancel(config.scope, ref)
 
-                case Task.shutdown(task, :brutal_kill) do
-                  {:ok, %Runnable{} = executed} ->
-                    apply_async_result(
-                      {:result, ref, executed},
-                      workflow,
-                      pending,
-                      active,
-                      stopped?,
-                      config
-                    )
-
-                  _ ->
+                # Scope replies precede cancellation acknowledgement. Preserve a
+                # result that completed at the deadline instead of discarding it.
+                case receive_async_result(%{ref => Map.fetch!(active, ref)}, 0) do
+                  nil ->
                     Logger.warning("Async execution outcome is uncertain: task timeout")
                     async_cycle(workflow, pending, Map.delete(active, ref), true, config)
+
+                  result ->
+                    apply_async_result(result, workflow, pending, active, stopped?, config)
                 end
 
               result ->
@@ -3569,7 +3555,6 @@ defmodule Runic.Workflow do
          stopped?,
          config
        ) do
-    Process.demonitor(ref, [:flush])
     workflow = apply_runnable(workflow, executed)
 
     async_cycle(
@@ -3582,7 +3567,6 @@ defmodule Runic.Workflow do
   end
 
   defp apply_async_result({:result, ref, _invalid}, workflow, pending, active, stopped?, config) do
-    Process.demonitor(ref, [:flush])
     apply_async_result({:down, ref, :invalid_result}, workflow, pending, active, stopped?, config)
   end
 

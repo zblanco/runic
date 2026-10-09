@@ -457,6 +457,112 @@ the Worker alive if saving fails. Retry the stop or checkpoint after recovery.
 Failure to append the initial build log returns a structured startup error rather
 than a pattern-match crash, before any workflow work is dispatched.
 
+### Task Ownership and Cancellation
+
+A managed Worker owns the native work that the default Task executor starts.
+Its task scope also covers Task executor overrides, timed PolicyDriver tasks,
+and the work processes of parallel Flow Promises. Work-process failures remain
+isolated from the Worker. Completed tasks release their tracking entries.
+A separate monitor stops the Worker after abnormal scope failure, including
+inline work that blocks the Worker's message loop and traps exits.
+Task startup waits in the requester, so a busy Task Supervisor does not block
+the scope's owner-death and cancellation handlers. A new task waits for scope
+registration before starting work and monitors its requester while waiting.
+Shutdown also stops an unresponsive private Task Supervisor. Shared Task
+Supervisors remain owned by the Runner and are not stopped by a task scope.
+
+Managed execution uses `owner: :background` by default. It can outlive the
+process that called `start_workflow/4` or `run/4`. For request-owned work, pass
+a local owner PID:
+
+```elixir
+{:ok, worker} = Runic.Runner.start_workflow(MyApp.Runner, :request, workflow,
+  owner: self()
+)
+:ok = Runic.Runner.run(MyApp.Runner, :request, input)
+
+# Explicit background work can outlive this caller.
+{:ok, background} = Runic.Runner.start_workflow(MyApp.Runner, :import, workflow,
+  owner: :background
+)
+```
+
+Owner death cancels an owned Worker and its native work without saving, even
+when work traps exits. Owned Workers are not restarted automatically. Resume
+with a live owner to select ownership again. Background Workers retain the
+existing transient restart behavior; a failed Worker attempt still releases
+its old native work.
+
+Use `cancel/2` to discard live execution without attempting persistence:
+
+```elixir
+:ok = Runic.Runner.cancel(MyApp.Runner, :request)
+```
+
+Cancellation covers the whole Worker, including all admitted inputs. `:ok`
+confirms quiescence: the Worker and its native task scope have stopped, no new
+work can be admitted to that Worker, and late results cannot be applied. A
+replacement Worker rejects old handles. Results accepted before cancellation
+remain accepted; cancellation does not reverse them.
+Cancellation still stops a known Worker when its scope registration is missing.
+An unavailable or failed ownership scope returns an error because native
+quiescence cannot be confirmed.
+If a replacement Worker is registered for the same ID during cancellation,
+the call returns `{:error, :worker_replaced}` instead of reporting success.
+The replacement stays alive; the caller can cancel it in a new call.
+Cancellation first requests a stop without persistence and gives the Worker
+250 milliseconds to finish graceful shutdown and executor cleanup. If it is
+still alive, supervisor termination stops it. A blocked callback can be
+interrupted, and an unresponsive Worker can stop without invoking custom
+cleanup. Native shutdown confirmation still waits for the task scope to close.
+
+`stop/3` first saves when `persist: true`. A failed save leaves the same Worker,
+task scope, pending data, and live work available for recovery. A successful
+stop confirms native task shutdown. Inline work must return before the Worker
+can handle a stop call. Cancellation uses supervisor termination and can stop
+an unresponsive inline Worker; work that traps exits may require the Worker's
+supervisor shutdown period before it is killed.
+
+Immediate `Workflow.react/3` and `react_until_satisfied/3` calls belong to their
+caller. Synchronous work runs in that process. Async work and timed work use
+caller-owned scopes and stop after caller death. Timed work reuses an enclosing
+managed scope when available, so cancelling an outer task also covers its
+native inner work. A queued child dispatch is rejected if its parent has died,
+including after timeout cancellation. Native async crashes are failed activations
+and cannot leave the same activation running in an endless loop.
+
+Native tasks keep the dispatching process's group leader, Elixir `$callers`
+chain, and Logger metadata. Nested timed and async work captures the current
+values at each task boundary, including when it reuses a managed scope. Parallel
+Flow stages restore these values after each runnable so one runnable cannot
+change the next runnable's I/O route or logging context. Other process-dictionary
+entries are not copied into tasks.
+
+A managed Worker initially uses its Runner supervisor's group leader. Calling
+`run/4` from another process does not change that I/O route. The `owner:` option
+selects cancellation ownership; it does not select an I/O device. Shared Task
+Supervisors keep their own group leaders. Group-leader membership routes I/O
+and is not used to select processes for cancellation. Runtime process context
+is not part of a persisted workflow and must be supplied again after resume.
+
+Custom executors must state their own cleanup and owner-death guarantees.
+Their optional cleanup callback remains contained if it raises or throws;
+that containment does not confirm cancellation of external work. The native
+ownership contract does not cover arbitrary detached processes, undo completed
+I/O, or provide durable cancellation when no cancellation state was saved.
+Resume from an older checkpoint can execute work again.
+
+Close resources opened by a work function before it returns. For a remote
+session that can survive process death, an adapter can use a separately
+supervised resource owner that monitors the borrower and releases the session
+after borrower death. That owner must survive cancellation of native work.
+Use bounded acquisition and release requests, and report release failure
+separately from the work's original error. Confirmed native shutdown does not
+confirm remote resource release.
+
+See [`examples/owned_execution.exs`](../examples/owned_execution.exs) for a small
+consumer example that uses only Runic. Run it with `mix run examples/owned_execution.exs`.
+
 **Retry and memory ownership:** Each scheduled or explicit checkpoint and final
 save makes one attempt; there is no background retry loop or built-in backoff.
 Later cycle checkpoints can retry retained data according to the chosen strategy.

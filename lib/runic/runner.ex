@@ -56,6 +56,7 @@ defmodule Runic.Runner do
 
   @snapshot_tag :runic_workflow_snapshot
   @snapshot_version 1
+  @cancel_grace_timeout 250
 
   # --- Public API ---
 
@@ -113,6 +114,10 @@ defmodule Runic.Runner do
   - `:dispatch_mode` - Controls when ready work is dispatched. Use
     `:automatic` (default) for normal execution or `:manual` to dispatch one
     scheduler unit at a time with `step/2`.
+  - `:owner` - `:background` (default) lets the workflow outlive its caller.
+    A local PID selects owned execution: owner death cancels the Worker and
+    its native work without persistence. Owned Workers are not restarted
+    automatically. Supply the owner again when resuming.
 
   Returns `{:ok, pid}` or `{:error, {:already_started, pid}}`.
   Initial event-stream persistence failures return
@@ -279,11 +284,82 @@ defmodule Runic.Runner do
   If persistence fails, returns `{:error, {:persistence_failed, reason}}` and
   leaves the Worker alive with its pending data for retry. `persist: false`
   explicitly discards the Worker's in-memory progress and stops without saving.
+  A successful stop waits for default-executor native work to stop. Inline
+  work must return before this call can be handled; use `cancel/2` to interrupt
+  an unresponsive Worker.
   """
   def stop(runner, workflow_id, opts \\ []) do
     case lookup(runner, workflow_id) do
       nil -> {:error, :not_found}
       pid -> GenServer.call(pid, {:stop, opts})
+    end
+  end
+
+  @doc """
+  Cancels a Worker without saving, and waits for its native work to stop.
+
+  Cancellation removes the Worker from its supervisor, including an inline
+  Worker that cannot handle calls. `:ok` confirms that the Worker and its task
+  scope have stopped. It does not acknowledge persistence or undo completed
+  external effects. Custom executors retain their own cleanup contract.
+  Cancellation first gives the Worker 250 milliseconds to stop without saving
+  and run executor cleanup. It then uses supervisor termination if the Worker
+  is still alive. Forced termination can interrupt or bypass custom cleanup.
+  If the scope registration is unavailable, the Worker is still stopped, but
+  cancellation returns an error because native quiescence cannot be confirmed.
+  If another Worker is registered for the same ID before confirmation,
+  returns `{:error, :worker_replaced}`. The replacement is left alive so the
+  caller can decide whether to cancel it in a new call.
+
+  Cancelling a Worker cancels all of its inputs. A concurrent result already
+  accepted by the Worker remains accepted; later results cannot be applied by
+  the cancelled Worker. A new or resumed Worker rejects the old handles.
+  """
+  def cancel(runner, workflow_id) do
+    case lookup(runner, workflow_id) do
+      nil ->
+        {:error, :not_found}
+
+      worker ->
+        scope =
+          case Registry.lookup(Module.concat(runner, Registry), {Runic.TaskScope, worker}) do
+            [{pid, _}] -> {pid, Process.monitor(pid)}
+            [] -> nil
+          end
+
+        cancel_gracefully(worker)
+
+        case DynamicSupervisor.terminate_child(Module.concat(runner, WorkerSupervisor), worker) do
+          result when result in [:ok, {:error, :not_found}] ->
+            confirm_cancel(runner, workflow_id, scope)
+
+          error ->
+            if scope, do: Process.demonitor(elem(scope, 1), [:flush])
+            error
+        end
+    end
+  end
+
+  defp cancel_gracefully(worker) do
+    # A responsive Worker closes native work, then runs all executor cleanup callbacks.
+    GenServer.call(worker, {:stop, [persist: false]}, @cancel_grace_timeout)
+  catch
+    :exit, _reason -> :ok
+  end
+
+  defp confirm_cancel(_runner, _workflow_id, nil),
+    do: {:error, :ownership_scope_unavailable}
+
+  defp confirm_cancel(runner, workflow_id, {scope, ref}) do
+    case Runic.TaskScope.await_closed(ref, scope) do
+      :ok ->
+        case lookup(runner, workflow_id) do
+          nil -> :ok
+          _replacement -> {:error, :worker_replaced}
+        end
+
+      error ->
+        error
     end
   end
 
@@ -345,7 +421,7 @@ defmodule Runic.Runner do
     registry = Module.concat(runner, Registry)
 
     case Registry.lookup(registry, {Runic.Runner.Worker, workflow_id}) do
-      [{pid, _value}] -> pid
+      [{pid, _value}] -> if Process.alive?(pid), do: pid
       [] -> nil
     end
   end
