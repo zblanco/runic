@@ -267,13 +267,11 @@ defmodule Runic.Workflow.PolicyDriver do
         Runnable.fail(runnable, {:timeout, 0})
 
       ms ->
-        # A temporary local scope contains abnormal Task exits without changing
-        # the caller's trap_exit flag or requiring an application supervisor.
-        {:ok, supervisor} = Task.Supervisor.start_link()
-
-        try do
-          task =
-            Task.Supervisor.async_nolink(supervisor, fn ->
+        # Reuse the execution scope so outer cancellation also stops timed work.
+        # Immediate calls allocate a temporary scope owned by their caller.
+        result =
+          Runic.TaskScope.run(
+            fn ->
               case check_deadline(opts) do
                 :ok ->
                   Invokable.execute(runnable.node, runnable)
@@ -281,21 +279,19 @@ defmodule Runic.Workflow.PolicyDriver do
                 {:deadline_exceeded, remaining} ->
                   Runnable.fail(runnable, {:deadline_exceeded, remaining})
               end
-            end)
+            end,
+            ms
+          )
 
-          case Task.yield(task, ms) do
-            {:ok, result} ->
-              result
+        case result do
+          {:ok, result} ->
+            result
 
-            {:exit, reason} ->
-              Runnable.fail(runnable, {:task_crashed, reason})
+          {:exit, reason} ->
+            Runnable.fail(runnable, {:task_crashed, reason})
 
-            nil ->
-              Task.shutdown(task, :brutal_kill)
-              Runnable.fail(runnable, {:timeout, ms})
-          end
-        after
-          Supervisor.stop(supervisor, :normal, :infinity)
+          nil ->
+            Runnable.fail(runnable, {:timeout, ms})
         end
     end
   end
