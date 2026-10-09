@@ -14,6 +14,9 @@ defmodule Runic.Runner.Worker do
   The executor controls _how_ runnables are dispatched to compute. By default,
   `Runic.Runner.Executor.Task` is used with an owned scope of supervised tasks.
   Pass `executor: MyExecutor` and `executor_opts: [...]` to use a custom executor.
+  `runnable_order: :stable` orders ready candidates by causal depth and activation
+  identity before caller hooks and scheduler grouping. The default retains the
+  existing unspecified order. Custom hooks and schedulers can select another order.
 
   The special value `executor: :inline` executes runnables synchronously in the
   Worker process — useful for sub-millisecond computations where task spawn
@@ -95,6 +98,7 @@ defmodule Runic.Runner.Worker do
     :scheduler,
     :scheduler_opts,
     :scheduler_state,
+    :runnable_order,
     dispatch_mode: :automatic,
     status: :idle,
     admission_causes: [],
@@ -240,6 +244,7 @@ defmodule Runic.Runner.Worker do
       scheduler: scheduler,
       scheduler_opts: scheduler_opts,
       scheduler_state: scheduler_state,
+      runnable_order: Keyword.get(opts, :runnable_order),
       dispatch_mode: dispatch_mode(opts),
       hooks: hooks,
       promise_opts: promise_opts
@@ -784,6 +789,11 @@ defmodule Runic.Runner.Worker do
         MapSet.member?(active_runnable_ids, r.id) or
           MapSet.member?(promise_covered_hashes, r.node.hash)
       end)
+
+    candidates =
+      if state.runnable_order == :stable,
+        do: Enum.sort_by(candidates, &Runnable.order_key/1),
+        else: candidates
 
     # Apply transform_runnables hook
     candidates = apply_transform_hook(state.hooks, candidates, workflow)

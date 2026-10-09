@@ -3400,6 +3400,8 @@ defmodule Runic.Workflow do
     Useful for I/O-bound workflows. Default: `false` (serial execution)
   - `:max_concurrency` - Maximum parallel tasks when `async: true`. Default: `System.schedulers_online()`
   - `:timeout` - Timeout for each task when `async: true`. Default: `:infinity`
+  - `:runnable_order` - `:stable` orders ready work by causal depth and activation
+    identity. Omit it to keep the existing unspecified enumeration order.
 
   ## Parallel Execution
 
@@ -3424,6 +3426,7 @@ defmodule Runic.Workflow do
   defp react_cycle(workflow, opts) do
     if is_runnable?(workflow) do
       {workflow, runnables} = prepare_for_dispatch(workflow)
+      runnables = order_runnables(runnables, Keyword.get(opts, :runnable_order))
 
       if Keyword.get(opts, :async, false) do
         execute_runnables_async(workflow, runnables, opts)
@@ -3472,6 +3475,9 @@ defmodule Runic.Workflow do
       if executed.status == :failed, do: {:halt, result}, else: {:cont, result}
     end)
   end
+
+  defp order_runnables(runnables, nil), do: runnables
+  defp order_runnables(runnables, :stable), do: Enum.sort_by(runnables, &Runnable.order_key/1)
 
   defp execute_runnables_async(workflow, runnables, opts) do
     max_concurrency = Keyword.get(opts, :max_concurrency, System.schedulers_online())

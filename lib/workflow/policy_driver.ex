@@ -217,6 +217,7 @@ defmodule Runic.Workflow.PolicyDriver do
       attempt_id: runnable.attempt_id,
       node_hash: runnable.node.hash,
       error: runnable.error,
+      order_key: Runnable.order_key(runnable),
       failed_at: System.monotonic_time(:millisecond),
       attempts: attempts,
       failure_action: failure_action
