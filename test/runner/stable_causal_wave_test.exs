@@ -100,6 +100,11 @@ defmodule Runic.Runner.StableCausalWaveTest do
         runnable_order: :stable,
         max_concurrency: 2,
         promise_opts: [min_chain_length: 2],
+        hooks: [
+          on_complete: fn runnable, _, _ ->
+            if runnable.node.name == :chain_child, do: send(owner, :chain_accepted)
+          end
+        ],
         on_complete: fn _, _ -> send(owner, :done) end
       )
 
@@ -108,6 +113,7 @@ defmodule Runic.Runner.StableCausalWaveTest do
 
     try do
       assert_receive :chain_child, 1000
+      assert_receive :chain_accepted, 1000
       assert {:ok, %{active_units: 1}} = Runner.admission_status(runner, :chain)
     after
       send(pid, :release)
