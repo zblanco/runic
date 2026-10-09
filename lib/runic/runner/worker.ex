@@ -14,9 +14,12 @@ defmodule Runic.Runner.Worker do
   The executor controls _how_ runnables are dispatched to compute. By default,
   `Runic.Runner.Executor.Task` is used with an owned scope of supervised tasks.
   Pass `executor: MyExecutor` and `executor_opts: [...]` to use a custom executor.
-  `runnable_order: :stable` orders ready candidates by causal depth and activation
-  identity before caller hooks and scheduler grouping. The default retains the
-  existing unspecified order. Custom hooks and schedulers can select another order.
+  `runnable_order: :stable` admits ready candidates at the lowest ready or active
+  causal depth, ordered by activation identity, before caller hooks and scheduler
+  grouping. Children wait for active work at earlier depths. The default retains
+  the existing unspecified order. Custom hooks and schedulers can select another
+  order. An admitted Promise keeps its internal execution semantics; descendants
+  inside that unit do not wait for sibling units.
 
   The special value `executor: :inline` executes runnables synchronously in the
   Worker process — useful for sub-millisecond computations where task spawn
@@ -792,7 +795,7 @@ defmodule Runic.Runner.Worker do
 
     candidates =
       if state.runnable_order == :stable,
-        do: Enum.sort_by(candidates, &Runnable.order_key/1),
+        do: stable_candidates(candidates, state.dispatched_units),
         else: candidates
 
     # Apply transform_runnables hook
@@ -813,6 +816,29 @@ defmodule Runic.Runner.Worker do
     else
       next
     end
+  end
+
+  defp stable_candidates([], _active), do: []
+
+  defp stable_candidates(candidates, active) do
+    ready_depth = candidates |> Enum.map(&elem(Runnable.order_key(&1), 0)) |> Enum.min()
+
+    depth =
+      Enum.reduce(active, ready_depth, fn {_handle, unit}, depth ->
+        min(depth, dispatch_depth(unit))
+      end)
+
+    candidates
+    |> Enum.filter(&(elem(Runnable.order_key(&1), 0) == depth))
+    |> Enum.sort_by(&Runnable.order_key/1)
+  end
+
+  defp dispatch_depth({:runnable, runnable}), do: elem(Runnable.order_key(runnable), 0)
+
+  defp dispatch_depth({:promise, promise}) do
+    promise.runnables
+    |> Enum.map(&elem(Runnable.order_key(&1), 0))
+    |> Enum.min(fn -> 0 end)
   end
 
   defp dispatch_via_scheduler(runnables, state, limit) do
