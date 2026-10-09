@@ -193,7 +193,10 @@ defmodule Runic.Runner.OwnershipTest do
            [scheduler: Runic.Runner.Scheduler.ChainBatching], 1}
         else
           {Runic.workflow(steps: [first, second]),
-           [scheduler: Runic.Runner.Scheduler.FlowBatch, scheduler_opts: [min_batch_size: 2]], 2}
+           [
+             scheduler: Runic.Runner.Scheduler.FlowBatch,
+             scheduler_opts: [min_batch_size: 2, flow_stages: 2]
+           ], 2}
         end
 
       assert {:ok, _worker} = Runner.start_workflow(ctx.runner, :wf, workflow, opts)
@@ -326,7 +329,7 @@ defmodule Runic.Runner.OwnershipTest do
     # Queue cancellation first, then let the still-live parent request its child.
     wait_for_call(scope, :cancel)
     send(parent, :nested)
-    wait_for_call(scope, :dispatch)
+    wait_for_call(scope, :supervisor)
     :ok = :sys.resume(scope)
 
     assert_receive {:DOWN, ^parent_ref, :process, ^parent, :killed}, 1_000
@@ -415,6 +418,7 @@ defmodule Runic.Runner.OwnershipTest do
     queued? =
       Enum.any?(messages, fn
         {:"$gen_call", _from, request} when is_tuple(request) -> elem(request, 0) == tag
+        {:"$gen_call", _from, ^tag} -> true
         _ -> false
       end)
 

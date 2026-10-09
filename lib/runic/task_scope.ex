@@ -68,17 +68,56 @@ defmodule Runic.TaskScope do
   end
 
   def dispatch(scope, work, supervisor \\ nil) do
-    # Capture at the execution boundary, before the scope becomes the task starter.
+    # Capture at the execution boundary, before starting the task.
     context = capture_context()
+    supervisor = supervisor || GenServer.call(scope, :supervisor, :infinity)
+    caller = self()
+    handle = make_ref()
 
-    work = fn ->
-      put_context(context)
-      work.()
-    end
+    # The requester can wait for a busy supervisor without blocking ownership cleanup.
+    result =
+      Task.Supervisor.start_child(
+        supervisor,
+        fn ->
+          scope_ref = Process.monitor(scope)
+          caller_ref = Process.monitor(caller)
 
-    case GenServer.call(scope, {:dispatch, self(), work, supervisor}, :infinity) do
-      {:ok, handle, pid} -> {handle, pid}
-      {:error, reason} -> exit({:task_dispatch_failed, reason})
+          receive do
+            {^scope, :start} ->
+              Process.demonitor(scope_ref, [:flush])
+              Process.demonitor(caller_ref, [:flush])
+              put_context(context)
+              result = within(scope, work)
+              send(scope, {:result, handle, result})
+
+            {:DOWN, ^scope_ref, :process, ^scope, _} ->
+              :ok
+
+            {:DOWN, ^caller_ref, :process, ^caller, _} ->
+              :ok
+          end
+        end,
+        shutdown: :brutal_kill
+      )
+
+    case result do
+      {:ok, pid} ->
+        admission =
+          try do
+            GenServer.call(scope, {:admit, pid, handle}, :infinity)
+          catch
+            :exit, reason ->
+              kill([pid])
+              exit(reason)
+          end
+
+        case admission do
+          :ok -> {handle, pid}
+          {:error, reason} -> exit({:task_dispatch_failed, reason})
+        end
+
+      {:error, reason} ->
+        exit({:task_dispatch_failed, reason})
     end
   end
 
@@ -167,6 +206,7 @@ defmodule Runic.TaskScope do
      %{
        owner: owner,
        owner_ref: Process.monitor(owner),
+       external_owner: external_owner,
        external_ref: if(is_pid(external_owner), do: Process.monitor(external_owner)),
        supervisor: nil,
        tasks: %{},
@@ -180,17 +220,20 @@ defmodule Runic.TaskScope do
     {:reply, state.supervisor, state}
   end
 
-  def handle_call({:dispatch, caller, work, supervisor}, _from, state) do
-    # Cancellation can consume the parent's DOWN before a queued dispatch arrives.
-    if Process.alive?(caller) do
-      dispatch_task(caller, work, supervisor, state)
+  def handle_call({:admit, pid, handle}, {caller, _tag}, state) do
+    # Register before opening the gate, including after a delayed supervisor reply.
+    if can_admit?(state, caller) do
+      state = register(state, pid, caller, handle, caller)
+      send(pid, {self(), :start})
+      {:reply, :ok, state}
     else
+      kill([pid])
       {:reply, {:error, :owner_down}, state}
     end
   end
 
   def handle_call({:track, pid, parent}, _from, state) do
-    if Process.alive?(parent) do
+    if can_admit?(state, parent) do
       state =
         if Enum.any?(state.tasks, fn {_ref, task} -> task.pid == pid end),
           do: state,
@@ -253,44 +296,16 @@ defmodule Runic.TaskScope do
     refs = Map.new(state.tasks, fn {ref, task} -> {ref, task.pid} end)
     await_down(Map.merge(refs, state.guards))
 
-    if is_pid(state.supervisor) and Process.alive?(state.supervisor),
-      do: Supervisor.stop(state.supervisor, :normal, :infinity)
+    if is_pid(state.supervisor) do
+      # The private supervisor is owned here; it must also stop when unresponsive.
+      Process.unlink(state.supervisor)
+      kill([state.supervisor])
+    end
   end
 
-  defp dispatch_task(caller, work, supervisor, state) do
-    scope = self()
-    handle = make_ref()
-    state = if supervisor, do: state, else: ensure_supervisor(state)
-
-    result =
-      Task.Supervisor.start_child(
-        supervisor || state.supervisor,
-        fn ->
-          scope_ref = Process.monitor(scope)
-
-          receive do
-            {^scope, :start} ->
-              Process.demonitor(scope_ref, [:flush])
-              result = within(scope, work)
-              send(scope, {:result, handle, result})
-
-            {:DOWN, ^scope_ref, :process, ^scope, _} ->
-              :ok
-          end
-        end,
-        shutdown: :brutal_kill
-      )
-
-    case result do
-      {:ok, pid} ->
-        # Register before opening the gate, so cancellation covers started work.
-        state = register(state, pid, caller, handle, caller)
-        send(pid, {scope, :start})
-        {:reply, {:ok, handle, pid}, state}
-
-      {:error, reason} ->
-        {:reply, {:error, reason}, state}
-    end
+  defp can_admit?(state, caller) do
+    Process.alive?(caller) and Process.alive?(state.owner) and
+      (state.external_owner == :background or Process.alive?(state.external_owner))
   end
 
   defp put_context(context) do

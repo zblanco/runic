@@ -465,6 +465,11 @@ and the work processes of parallel Flow Promises. Work-process failures remain
 isolated from the Worker. Completed tasks release their tracking entries.
 A separate monitor stops the Worker after abnormal scope failure, including
 inline work that blocks the Worker's message loop and traps exits.
+Task startup waits in the requester, so a busy Task Supervisor does not block
+the scope's owner-death and cancellation handlers. A new task waits for scope
+registration before starting work and monitors its requester while waiting.
+Shutdown also stops an unresponsive private Task Supervisor. Shared Task
+Supervisors remain owned by the Runner and are not stopped by a task scope.
 
 Managed execution uses `owner: :background` by default. It can outlive the
 process that called `start_workflow/4` or `run/4`. For request-owned work, pass
@@ -502,6 +507,9 @@ remain accepted; cancellation does not reverse them.
 Cancellation still stops a known Worker when its scope registration is missing.
 An unavailable or failed ownership scope returns an error because native
 quiescence cannot be confirmed.
+If a replacement Worker is registered for the same ID during cancellation,
+the call returns `{:error, :worker_replaced}` instead of reporting success.
+The replacement stays alive; the caller can cancel it in a new call.
 
 `stop/3` first saves when `persist: true`. A failed save leaves the same Worker,
 task scope, pending data, and live work available for recovery. A successful

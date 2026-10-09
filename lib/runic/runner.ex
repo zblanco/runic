@@ -265,6 +265,9 @@ defmodule Runic.Runner do
   external effects. Custom executors retain their own cleanup contract.
   If the scope registration is unavailable, the Worker is still stopped, but
   cancellation returns an error because native quiescence cannot be confirmed.
+  If another Worker is registered for the same ID before confirmation,
+  returns `{:error, :worker_replaced}`. The replacement is left alive so the
+  caller can decide whether to cancel it in a new call.
 
   Cancelling a Worker cancels all of its inputs. A concurrent result already
   accepted by the Worker remains accepted; later results cannot be applied by
@@ -276,34 +279,36 @@ defmodule Runic.Runner do
         {:error, :not_found}
 
       worker ->
-        case Registry.lookup(Module.concat(runner, Registry), {Runic.TaskScope, worker}) do
-          [{scope, _}] ->
-            ref = Process.monitor(scope)
+        scope =
+          case Registry.lookup(Module.concat(runner, Registry), {Runic.TaskScope, worker}) do
+            [{pid, _}] -> {pid, Process.monitor(pid)}
+            [] -> nil
+          end
 
-            result =
-              DynamicSupervisor.terminate_child(Module.concat(runner, WorkerSupervisor), worker)
+        case DynamicSupervisor.terminate_child(Module.concat(runner, WorkerSupervisor), worker) do
+          result when result in [:ok, {:error, :not_found}] ->
+            confirm_cancel(runner, workflow_id, scope)
 
-            case result do
-              result when result in [:ok, {:error, :not_found}] ->
-                Runic.TaskScope.await_closed(ref, scope)
-
-              error ->
-                Process.demonitor(ref, [:flush])
-                error
-            end
-
-          [] ->
-            case DynamicSupervisor.terminate_child(
-                   Module.concat(runner, WorkerSupervisor),
-                   worker
-                 ) do
-              result when result in [:ok, {:error, :not_found}] ->
-                {:error, :ownership_scope_unavailable}
-
-              error ->
-                error
-            end
+          error ->
+            if scope, do: Process.demonitor(elem(scope, 1), [:flush])
+            error
         end
+    end
+  end
+
+  defp confirm_cancel(_runner, _workflow_id, nil),
+    do: {:error, :ownership_scope_unavailable}
+
+  defp confirm_cancel(runner, workflow_id, {scope, ref}) do
+    case Runic.TaskScope.await_closed(ref, scope) do
+      :ok ->
+        case lookup(runner, workflow_id) do
+          nil -> :ok
+          _replacement -> {:error, :worker_replaced}
+        end
+
+      error ->
+        error
     end
   end
 
