@@ -2,10 +2,14 @@
 
 **Status:** Proposed near-term breaking upgrade
 **Date:** 2026-07-31
-**Updated:** 2026-08-02
+**Updated:** 2026-10-08
 **Target baseline:** Runic `0.1.0-alpha.8` at `75ed26f`
 **Companion plans:** [Distributed Durable Runtime Core](distributed-durable-runtime-core-plan.md), [Distributed Adapter Portfolio](distributed-adapter-portfolio-plan.md), [Runic PostgreSQL Library](runic-postgres-library-implementation-plan.md), [Runic Ra Journal and Native Profile](runic-raft-native-runtime-plan.md), [Runic CASPaxos Execution-Cell Journal and Registration Profile](runic-caspaxos-native-runtime-plan.md)
-**Implementation references:** Infinite Isekai, RunicAI, Compendium
+**Implementation references:** Infinite Isekai, RunicAI, Compendium, Jido Action `release/v3`
+
+> **2026-10-08 implementation update:** The [PR integration update](runic-pr-integration-and-durable-runtime-action-plan.md#post-integration-update--2026-10-08) records #25 and #29 merged at upstream `c23f28b`: acknowledged persistence, #23/#24/#26, adjusted #28 recovery, and revised independent #27 retry/task-safety mechanics. Typed SHA-256 identities and bounded preparation already exist. The planning checkout is older; C0–C7 remain proposals, not a current implementation inventory.
+
+> **Consumer-abstraction refinement:** [A Deeper Runic Runtime](runic-runtime-consumer-simplification-design.md) now uses Mike's revised Action `5e52df8` evidence: task ownership and a shared ordinary-node contract first, correlated observations next, then composite/batch and explicit local-value capabilities. It retains the ephemeral scope/session path and structured ExecutionBackend request; durable requests still require committed dispatch. Jido's Agent revision commit remains a separate authority. None of those new interfaces is implemented by #29.
 
 ## Executive decision
 
@@ -14,7 +18,7 @@ Put the managed execution system in the main Runic package under `Runic.Runtime`
 Runic is still alpha. The right near-term move is one intentional breaking contract upgrade:
 
 1. Keep `Runic.Workflow` as the topology-free, functional graph VM.
-2. Make `Runic.Runtime` the small public facade that manages durable executions of that VM.
+2. Make `Runic.Runtime` the small public facade that manages ephemeral and durable executions of that VM, without requiring a Journal for in-memory use.
 3. Make Runic's versioned, chronological construction and lifecycle event stream the canonical rebuild, persistence, replication, and audit protocol.
 4. Replace `RunnableDispatched` with `RunnableDispatchRequested`, a portable, pre-execution, journal-committed intent. The recorded request may cross a node or broker boundary; the live `%Runnable{}` remains an authority/worker-local execution projection.
 5. Replace `Runner.Store` with a deep `Runic.Runtime.Journal` behaviour whose smallest required operation is an atomic, conditional event transaction—not a collection of snapshot and append conveniences.
@@ -30,7 +34,7 @@ The existing behaviours were good scaffolding for proving local Runner compositi
 - `Runner.Store` requires full-log `save/load`, makes incremental events optional, and selects semantics through `function_exported?` checks.
 - `Runner.Executor` accepts a zero-arity closure and requires Task-shaped Erlang messages and reference handles.
 - `RunnableDispatched` is constructed inside execution and returned with the result, so it is persisted after the work it claims was dispatched; its name would be false for the new write-ahead meaning.
-- the Worker mutates first, appends later, and can clear uncommitted buffers after an ignored store error;
+- the Worker mutates first and appends later; #25 fixed clearing buffers on failed persistence, but did not establish conditional commit-before-dispatch authority;
 - lifecycle status, snapshots, projections, and retry behavior are spread across the Worker, PolicyDriver, Store adapters, and consumer callbacks;
 - `execution_mode: :durable` currently selects lifecycle event emission, not a complete durability guarantee.
 
@@ -78,7 +82,21 @@ Correctness-critical callback sets are advertised through capabilities and valid
 
 ### 2.4 Keep one semantic model across local and distributed execution
 
-Local Task execution, a Broadway worker, and a Ra-native worker all consume the same committed dispatch semantics and return the same attempt-result command. The fast path can retain an in-memory prepared Runnable cache, but it cannot invent a second lifecycle protocol.
+In durable profiles, local Task execution, a Broadway worker, and a Ra-native worker all consume the same committed dispatch semantics and return the same attempt-result command. The fast path can retain an in-memory prepared Runnable cache, but it cannot invent a second durable lifecycle protocol.
+
+An explicitly ephemeral session shares native transition, admission, worker, and result machinery without claiming persistence, replay recovery, or cluster fencing. Its local acceptance is against the current session revision, not a synthetic durable receipt. There is no fallback from failed durable acceptance to ephemeral execution.
+
+### 2.5 Hide ordinary execution machinery too
+
+The useful abstraction is not limited to durability. Provide an in-memory scope/session path that hides task ownership, cancellation cleanup, bounded admission, selected stepping, and stale-revision rejection. A paused local session need not retain a live coordinator; a basic call must not require a Journal or infrastructure adapter. Preserve direct functional Workflow APIs separately.
+
+Keep execution lifetime distinct from one operation's temporary worker scope. A finite caller-attached Jido call and a long-lived managed workflow can reuse machinery without sharing owner-death, terminality, or timeout policy. See [the consumer design](runic-runtime-consumer-simplification-design.md) for the evidence, minimal operation vocabulary, and integration/deletion gates. This is an in-package Runtime path, not an adjacent local executor behaviour.
+
+### 2.6 Hide ordinary component mechanics without narrowing the VM
+
+Share Step's native context/hook/Fact/event lifecycle through an opt-in ordinary-node contract. Consumers provide work and explicit result interpretation, not activation/collection event construction. A user tuple such as `{:error, reason}` remains valid data unless its adapter explicitly classifies it as failure. Preserve low-level `Invokable` for gates, multiple outputs and stateful coordination, and prove construction-event reconstruction for the high-level component path.
+
+Public composite ports and native component batches should hide endpoint resolution, all/any-parent wiring, item occurrence identity, empty-batch completion and shared-parent retention. Keep domain collection/effect semantics outside Runic. An explicit local-value capability may support process-local data without weakening canonical identity or silently admitting it to persistence/remote profiles. These are VM/value contract refinements, not new infrastructure behaviours; see Sections 3.6–3.8 of [the consumer plan](runic-runtime-consumer-simplification-design.md).
 
 ## 3. Evidence from implemented consumers
 
@@ -104,9 +122,11 @@ Contract pressure exposed by the implementation:
 
 ### 3.2 RunicAI: workspace SQLite plus a parallel application runtime
 
-RunicAI's [`RunnerStore`](../../runic_ai/lib/runic_ai/persistence/runner_store.ex) uses one workspace SQLite database for ordered Runic events, facts, snapshots, runnable projections, definitions, artifacts, and product read models. [`Replay`](../../runic_ai/lib/runic_ai/persistence/replay.ex) proves the event stream is the execution reconstruction contract.
+**Historical consumer evidence:** These observations come from the July/August review. The four module paths below are no longer present in the local RunicAI checkout inspected on 2026-10-08; rebaseline that consumer before scheduling its migration. They are retained as design evidence, not current source links or an implementation inventory.
 
-It also had to create its own [`Runtime.Backend`](../../runic_ai/lib/runic_ai/runtime/backend.ex), [`Runtime.Scheduler`](../../runic_ai/lib/runic_ai/runtime/scheduler.ex), session server, Runner support, polling loop, and separate prepare/execute/apply executor. This is direct evidence that the missing coordinator belongs in Runic rather than in every consumer.
+The reviewed `RunnerStore` (`lib/runic_ai/persistence/runner_store.ex`) used one workspace SQLite database for ordered Runic events, facts, snapshots, runnable projections, definitions, artifacts, and product read models. `Replay` (`lib/runic_ai/persistence/replay.ex`) used the event stream as the execution reconstruction contract.
+
+It also had its own `Runtime.Backend` (`lib/runic_ai/runtime/backend.ex`), `Runtime.Scheduler` (`lib/runic_ai/runtime/scheduler.ex`), session server, Runner support, polling loop, and separate prepare/execute/apply executor. This was another example of generic coordination being implemented in a consumer.
 
 Useful patterns:
 
@@ -160,6 +180,12 @@ All three consumers independently added:
 - implicit durability profiles.
 
 That repetition is the strongest argument for `Runic.Runtime` in the main package. The reusable semantics are not PostgreSQL, SQLite, Ecto, or a particular process tree; they are the event transaction, execution identity, dispatch lifecycle, replay, and public coordinator API.
+
+### 3.5 Jido Action and the separate Agent host
+
+The revised [consumer evidence table](runic-runtime-consumer-simplification-design.md#21-these-are-different-integration-generations) distinguishes Action `5e52df8`, its Runic fork `6b1c8c8`, upstream #29 and Jido AgentServer `8322de57`. Action now uses custom Invokable components and Runner for managed calls; historical Controller/Flow.Engine/Invocation-host modules are not current deletion targets. AgentServer still uses an older Action API and must be migrated separately.
+
+Ordinary node lifecycle, complete task ownership and public correlated outcomes offer immediate leverage. Agent/Plugin validation, signal/Turn admission, Agent revision persistence and post-commit directives stay in Jido. Workflow acceptance and Agent commit need explicit receipt/transaction/outbox coordination if durability spans both; a Runic checkpoint never substitutes for a domain commit.
 
 ## 4. One canonical chronological event protocol
 
@@ -259,6 +285,8 @@ This preserves a precise distinction:
 Use the same terms throughout implementation: a **command/proposal** requests change; `Workflow.decide` produces a semantic **transition** as ordered domain events; a Journal **transaction** conditionally commits that batch once; the Journal assigns authoritative **RecordedEvents**. A client `command_id` deduplicates semantic ingress, while `transaction_id` resolves one possibly ambiguous storage mutation.
 
 ## 5. Public `Runic.Runtime` facade
+
+The following is the managed durable service surface. Complement it with the lighter ephemeral session/scoped-operation surface in [the consumer design](runic-runtime-consumer-simplification-design.md#32-a-managed-session-that-hides-the-graph-driving-loop); ordinary local callers should not need administrative service handles, Journal configuration, or durable command IDs.
 
 Separate the supervised Runtime service from creation and lifecycle of an execution. `start_link/1` follows OTP conventions and does not leak a one-process-per-workflow topology:
 
@@ -438,7 +466,7 @@ defmodule Runic.Runtime.ExecutionBackend do
   @callback capabilities(state()) :: Runic.Runtime.Capabilities.t()
 
   @callback dispatch(
-              Runic.Runtime.RecordedEvent.t(),
+              Runic.Runtime.DispatchRequest.t(),
               Runic.Runtime.DispatchContext.t(),
               state()
             ) ::
@@ -448,7 +476,7 @@ defmodule Runic.Runtime.ExecutionBackend do
               | {:error, adapter_error(), state()}
 
   @callback dispatch_batch(
-              [{Runic.Runtime.RecordedEvent.t(), Runic.Runtime.DispatchContext.t()}],
+              [{Runic.Runtime.DispatchRequest.t(), Runic.Runtime.DispatchContext.t()}],
               state()
             ) :: {[Runic.Runtime.DispatchOutcome.t()], state()}
   @callback cancel(delivery_receipt(), state()) :: {:ok, state()} | {:error, adapter_error(), state()}
@@ -458,7 +486,9 @@ defmodule Runic.Runtime.ExecutionBackend do
 end
 ```
 
-The callback receives a committed `RunnableDispatchRequested` record. `DispatchContext` contains a typed completion sink established at backend initialization/routing, tracing data, and bounded delivery controls; it cannot grant Journal authority. A backend is responsible for outbound submission/delivery, not workflow truth or retry policy. Capability checks determine whether batch, cancel, or drain may be called.
+The callback receives a typed `DispatchRequest` containing attempt/work identity and explicit admission provenance: either an ephemeral local admission or the actual committed `RunnableDispatchRequested` record. Runtime must supply and validate the committed record for every durable request; the wrapper does not replace the record, grant authority, or provide a downgrade path. A local ephemeral request can carry a prepared projection without requiring an ETS Journal. Backend capabilities declare supported profiles and reject unsupported provenance. External durable-only adapters need not implement ephemeral execution. See [the design comparison](runic-runtime-consumer-simplification-design.md#4-refinement-to-the-proposed-backend-contract).
+
+`DispatchContext` contains a typed completion sink established at backend initialization/routing, tracing data, and bounded delivery controls; it cannot grant Journal authority. A backend is responsible for outbound submission/delivery, not workflow truth or retry policy. Capability checks determine whether batch, cancel, or drain may be called.
 
 Every backend reports completion through the same non-reentrant sink after `dispatch/3` returns. Inline and Task backends therefore enqueue an `%AttemptResult{}` to Runtime rather than calling a coordinator recursively inside `dispatch/3`. In v1 a broker message is acknowledged only after `Runic.Runtime.complete/3` reports committed or known duplicate. A future durable completion-ingress transport would need its own certified receipt/dedupe contract; it is not an unnamed escape hatch in this contract.
 
@@ -472,7 +502,7 @@ Built-in implementations:
 
 External implementations include direct distributed BEAM, an Oban enqueue adapter, connector-specific Kafka/RabbitMQ/SQS/Pub/Sub publishers, or a native Ra delivery path. Broadway supplies inbound demand, worker, and acknowledgement plumbing; because it is not itself an outbound publisher, `runic_broadway` composes one of those publisher implementations to satisfy `ExecutionBackend`.
 
-Provide `Runic.Runtime.Worker.execute/2` as the shared worker-side helper for validation, artifact/Runnable reconstruction, context resolution, one-attempt execution, payload externalization, and `AttemptResult` construction.
+Provide `Runic.Runtime.Worker.execute/2` as the shared worker-side helper for request validation, prepared-work use or artifact/Runnable reconstruction, context resolution, one-attempt execution, and `AttemptResult` construction. Portable/durable profiles additionally enforce their encoding and payload durability requirements. Resolved worker resources must not leak into portable returned state. Task cleanup, native result construction, and admission mechanics should not be reimplemented by ephemeral consumers.
 
 ### 6.3 `Runic.Runtime.PayloadStore`
 
@@ -585,7 +615,7 @@ This keeps the initial extension surface deep rather than producing many one-fun
 | optional `append/stream` callbacks | required Journal load/commit/resolve | Event sourcing becomes the single managed-runtime model |
 | `checkpoint/3` | snapshot/compaction policy | “Checkpoint” currently conflates append, snapshot, and lifecycle |
 | `save_fact/load_fact` | `PayloadStore` and `PayloadRef` | Explicit codec, integrity, namespace, and hydration semantics |
-| `Runic.Runner.Executor` | `Runic.Runtime.ExecutionBackend` | Structured committed dispatch event instead of closure/message coupling |
+| `Runic.Runner.Executor` | `Runic.Runtime.ExecutionBackend` | Structured request with explicit admission provenance; committed dispatch record required for durable profiles; no closure/message coupling |
 | `Runic.Runner.Scheduler` | `Runic.Runtime.Scheduler` | Typed plans and runtime-level capability context |
 | `execution_mode: :durable` | Runtime guarantee profile | Durability is execution-wide, not lifecycle logging on one node |
 | `RunnableDispatched` | `RunnableDispatchRequested` | A committed outbox intent must not claim delivery already happened |
@@ -633,12 +663,14 @@ This is the second SQLite implementation and construction-time graph-expansion/c
 
 ## 9. Near-term implementation sequence
 
+The revised [S0–S4 consumer track](runic-runtime-consumer-simplification-design.md#7-implementation-sequence-and-proof-of-simplification) begins with fork/upstream differential fixtures, then S1a task ownership and S1b ordinary-node lifecycle, followed by S2 correlated outcomes/shared admission. S3 gates composite batches and local values; S4 proves durable/Agent integration. S1/S2 can proceed alongside C0/C1 without C2's Journal. C3/C4 reuse that kernel, not a second durable graph-driving loop. Each slice must simplify both Jido and an unrelated Runic consumer.
+
 ### C0 — semantic ADR and executable reference model
 
 Deliver:
 
 - event-versus-command terminology;
-- `RecordedEvent`, `Transaction`, `Commit`, `AttemptResult`, `AuthorityRef`, `WorkScopeRef`, and stable identity types;
+- `RecordedEvent`, `Transaction`, `Commit`, `DispatchRequest`, `AttemptResult`, `AuthorityRef`, `WorkScopeRef`, and stable identity types;
 - guarantee profiles and capability validation;
 - pure in-memory event transaction/reference coordinator;
 - model tests for duplicate, conflict, stale epoch, and unknown outcome.
@@ -687,6 +719,7 @@ Gate: killing the coordinator at every input and event-commit boundary loses no 
 Deliver:
 
 - structured backend behaviour;
+- explicit ephemeral versus journal-committed request provenance and supported-profile validation;
 - Inline, Task, and upgraded GenStage implementations with the same asynchronous typed completion sink;
 - shared worker execute helper;
 - committed dispatch recovery and duplicate result validation;
@@ -750,7 +783,7 @@ Gate: adapters vary infrastructure without changing Runic event or coordinator s
 
 ### Execution backend
 
-- dispatch receives only a committed `RunnableDispatchRequested` event;
+- durable dispatch receives a structured request containing the committed `RunnableDispatchRequested` record; explicit ephemeral requests are accepted only by supporting profiles;
 - unknown publish can redeliver the same attempt safely;
 - worker crash before/after result;
 - duplicate, delayed, and reordered result ingress;
@@ -770,6 +803,17 @@ Gate: adapters vary infrastructure without changing Runic event or coordinator s
 - graph mutations replay in original chronology;
 - requested guarantee profile cannot downgrade;
 - long-idle timers survive passivation and restart.
+
+### Consumer-facing local contracts
+
+- owner death during startup/execution, trapping children and cancellation/result races retire owned work; managed execution can intentionally outlive its client;
+- observation timeout, settled cancellation, suspension and coordinator stop have distinct results;
+- ordinary callbacks share native hook/context/Fact/collection lifecycle; adapter-declared failure differs from a successful error-shaped value;
+- repeated equal inputs have separate invocation outcomes; mixed-lineage stateful outputs do not falsely claim single-call ownership;
+- finite completion differs from quiescence; failure summaries preserve actual event history and follow the same documented ordering under local/managed concurrency;
+- composite all/any-parent readiness, empty/repeated batches and item-zero failure need no consumer endpoint/sentinel/first-item workaround;
+- local value identity is scope-qualified, never silently portable, and rejected at unsupported boundaries with a field path;
+- Jido Turn revision/commit and deferred-effect delivery remain host decisions, tested separately from workflow completion.
 
 ### Portability
 

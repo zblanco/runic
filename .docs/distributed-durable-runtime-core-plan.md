@@ -2,10 +2,14 @@
 
 **Status:** Proposed implementation plan
 **Date:** 2026-07-31
-**Updated:** 2026-08-02
+**Updated:** 2026-10-08
 **Target baseline:** Runic `0.1.0-alpha.8` at `75ed26f`
 **Companion plans:** [Runtime Contract Upgrade](runic-runtime-contract-upgrade-plan.md), [Distributed Adapter Portfolio](distributed-adapter-portfolio-plan.md), [Runic PostgreSQL Library](runic-postgres-library-implementation-plan.md), [Runic Ra Journal and Native Profile](runic-raft-native-runtime-plan.md), [Runic CASPaxos Execution-Cell Journal and Registration Profile](runic-caspaxos-native-runtime-plan.md)
 **Consumer research:** `~/wrk/libbit/.docs/runic-clustered-durable-execution-architecture.md`
+
+> **2026-10-08 implementation update:** The [PR integration update](runic-pr-integration-and-durable-runtime-action-plan.md#post-integration-update--2026-10-08) records the merged #25/#29 foundation at upstream `c23f28b`. Acknowledged persistence, local recovery/admission/cleanup repairs and independent retry/task-safety mechanics are implemented; conditional Journal authority and `Runic.Runtime` are not. Treat Section 3 as historical, and do not mistake the older planning checkout for current upstream code.
+
+> **Consumer simplification:** [A Deeper Runic Runtime](runic-runtime-consumer-simplification-design.md) incorporates Mike's revised Action integration: complete task ownership and ordinary-node lifecycle support, then correlated outcomes, composite batches and explicit local-value gates. The shared ephemeral path needs no Journal or parallel executor behaviour. Durable requests still carry committed dispatch records; local-only values cannot silently enter that path. Jido's Agent commit/effect authority remains separate. This document's clustered guarantees are unchanged.
 
 ## Executive decision
 

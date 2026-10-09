@@ -2,12 +2,14 @@
 
 **Status:** Proposed package and delivery plan
 **Date:** 2026-07-31
-**Updated:** 2026-08-02
+**Updated:** 2026-10-08
 **Depends on:** [Distributed Durable Runtime Core Plan](distributed-durable-runtime-core-plan.md)
 **Contract migration:** [Runic Runtime Contract Upgrade Plan](runic-runtime-contract-upgrade-plan.md)
 **Native designs:** [Runic Ra Journal and Native Profile Plan](runic-raft-native-runtime-plan.md), [Runic CASPaxos Execution-Cell Journal and Registration Profile Plan](runic-caspaxos-native-runtime-plan.md)
 **Database design:** [Runic PostgreSQL Journal, Store, Projection, and Managed Workflow Library Plan](runic-postgres-library-implementation-plan.md)
 **Research context:** `~/wrk/libbit/.docs/runic-clustered-durable-execution-architecture.md`
+
+**Integration status (2026-10-08):** [PR Integration and Durable Runtime Action Plan](runic-pr-integration-and-durable-runtime-action-plan.md) records #25/#29 landed at upstream `c23f28b`. The revised [consumer-simplification plan](runic-runtime-consumer-simplification-design.md) rebaselines Jido Action's custom nodes/Runner integration and separates its Agent commit boundary from Runic completion. Task ownership, callback-node lifecycle and observations can improve core before new infrastructure packages. Local executor release is not broker acknowledgement; local-only values are not made portable by a durable adapter. The portfolio order and Journal/ExecutionBackend/PayloadStore boundaries remain unchanged.
 
 The Libbit reference is a consumer case study, not Runic's persistence model. Libbit's workspace-scoped workflow definitions and management context use SQLite repositories; PostgreSQL is reserved there for global cross-workspace/platform aggregation and global components. That reinforces the SQLite adapter's importance without making it the only Runic deployment profile.
 
@@ -168,14 +170,13 @@ Three current applications provide more useful evidence than a hypothetical gene
 | Consumer | Implemented shape | What to reuse | What the new contracts must fix |
 |---|---|---|---|
 | Infinite Isekai | Application-local PostgreSQL `Runner.Store`; ordered ETF events, fact table, Runner resume | PostgreSQL schema/transaction starting point, construction-event rebuild, real workload policies | Count-based sequence allocation, no CAS/fence/dedupe, lifecycle projection mixed into store, direct retryable PubSub effects |
-| RunicAI | Workspace-scoped Ecto SQLite `RunnerStore`; event/fact/snapshot/runnable tables; immutable definition/artifact pins | Dynamic-repo ergonomics, exact artifact pinning, child invocation identities, context-based resources | Current Store cannot express authority; application duplicated Runtime/backend/scheduler; resume filters/recompiles around VM-local artifacts |
+| RunicAI (historical July/August review; rebaseline before migration) | Workspace-scoped Ecto SQLite `RunnerStore`; event/fact/snapshot/runnable tables; immutable definition/artifact pins | Dynamic-repo ergonomics, exact artifact pinning, child invocation identities, context-based resources | Reviewed Store could not express authority; application duplicated Runtime/backend/scheduler; resume filtered/recompiled around VM-local artifacts |
 | Compendium | Application-local Ecto SQLite `Runner.Store`; runs/events/facts/snapshots/artifact refs | Simple embedded schema, event paging, construction-time graph expansion with deterministic branch/fan-in edges | “Latest run” indirection, raw snapshots, ephemeral terminal callback, product resources embedded in workflow input |
 
 Reference paths:
 
 - [Infinite Isekai PostgreSQL store](../../infinite_isekai/lib/infinite_isekai/workflows/postgres_store.ex)
-- [RunicAI SQLite Runner store](../../runic_ai/lib/runic_ai/persistence/runner_store.ex)
-- [RunicAI application Runtime backend](../../runic_ai/lib/runic_ai/runtime/backend.ex)
+- [Historical RunicAI SQLite Store and Runtime evidence](runic-runtime-contract-upgrade-plan.md#32-runicai-workspace-sqlite-plus-a-parallel-application-runtime) — the previously linked module paths are absent from the 2026-10-08 local checkout; rebaseline before migration.
 - [Compendium SQLite store](../../compendium/lib/compendium/runic/sqlite_store.ex)
 
 These implementations should become migration and conformance fixtures. They support separate `runic_sqlite` and `runic_postgres` packages because concurrency and dependency semantics differ, while also proving that application-local behaviour implementations must remain first-class. None supports keeping a separate runtime package or preserving the current Store contract.

@@ -247,6 +247,8 @@ Generated code is intentionally editable. Required field macros and behaviours l
 
 ## 7. Runic prerequisites before package implementation
 
+The [2026-10-08 PR Integration and Durable Runtime Action Plan](runic-pr-integration-and-durable-runtime-action-plan.md) updates the implementation baseline and sequences PRs #23–#28 against these prerequisites. Reuse the landed identity/preparation foundations and #25's persistence-failure fixtures, but do not equate a Store acknowledgement or executor handle release with the conditional Journal/result-acceptance contract required here.
+
 The current checkout has no implemented `Runic.Runtime` or `Runic.Runtime.Journal`; `Runic.Runner.Store` and the Task-shaped Executor are still present. A production `runic_postgres` must follow these gates rather than claiming durable coordination through the old callbacks.
 
 ### RP0 — identities, outcomes, and capabilities
