@@ -56,6 +56,7 @@ defmodule Runic.Runner do
 
   @snapshot_tag :runic_workflow_snapshot
   @snapshot_version 1
+  @cancel_grace_timeout 250
 
   # --- Public API ---
 
@@ -263,6 +264,9 @@ defmodule Runic.Runner do
   Worker that cannot handle calls. `:ok` confirms that the Worker and its task
   scope have stopped. It does not acknowledge persistence or undo completed
   external effects. Custom executors retain their own cleanup contract.
+  Cancellation first gives the Worker 250 milliseconds to stop without saving
+  and run executor cleanup. It then uses supervisor termination if the Worker
+  is still alive. Forced termination can interrupt or bypass custom cleanup.
   If the scope registration is unavailable, the Worker is still stopped, but
   cancellation returns an error because native quiescence cannot be confirmed.
   If another Worker is registered for the same ID before confirmation,
@@ -285,6 +289,8 @@ defmodule Runic.Runner do
             [] -> nil
           end
 
+        cancel_gracefully(worker)
+
         case DynamicSupervisor.terminate_child(Module.concat(runner, WorkerSupervisor), worker) do
           result when result in [:ok, {:error, :not_found}] ->
             confirm_cancel(runner, workflow_id, scope)
@@ -294,6 +300,13 @@ defmodule Runic.Runner do
             error
         end
     end
+  end
+
+  defp cancel_gracefully(worker) do
+    # A responsive Worker closes native work, then runs all executor cleanup callbacks.
+    GenServer.call(worker, {:stop, [persist: false]}, @cancel_grace_timeout)
+  catch
+    :exit, _reason -> :ok
   end
 
   defp confirm_cancel(_runner, _workflow_id, nil),

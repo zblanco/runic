@@ -121,6 +121,8 @@ defmodule Runic.Runner.OwnershipStartupTest do
         do: Process.register(supervisor, name)
     end)
 
+    :ok = :sys.suspend(original)
+    on_exit(fn -> if Process.alive?(original), do: :sys.resume(original) end)
     canceler = Task.async(fn -> Runner.cancel(ctx.runner, :wf) end)
     assert_receive {:termination_held, from, ^original}, 1_000
     ref = Process.monitor(original)

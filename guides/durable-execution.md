@@ -510,6 +510,11 @@ quiescence cannot be confirmed.
 If a replacement Worker is registered for the same ID during cancellation,
 the call returns `{:error, :worker_replaced}` instead of reporting success.
 The replacement stays alive; the caller can cancel it in a new call.
+Cancellation first requests a stop without persistence and gives the Worker
+250 milliseconds to finish graceful shutdown and executor cleanup. If it is
+still alive, supervisor termination stops it. A blocked callback can be
+interrupted, and an unresponsive Worker can stop without invoking custom
+cleanup. Native shutdown confirmation still waits for the task scope to close.
 
 `stop/3` first saves when `persist: true`. A failed save leaves the same Worker,
 task scope, pending data, and live work available for recovery. A successful

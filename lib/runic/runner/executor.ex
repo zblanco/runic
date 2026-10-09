@@ -73,10 +73,12 @@ defmodule Runic.Runner.Executor do
   @doc """
   Clean up executor resources.
 
-  Called when the Worker is stopping. Optional. The default Task executor
-  waits for its native work to stop. Custom executors must define their own
-  cleanup and owner-death guarantees; callback failure containment does not
-  provide cancellation confirmation for external work.
+  Called during graceful Worker stop, including responsive cancellation. Optional.
+  Cancellation allows a 250-millisecond grace period before forced termination;
+  forced termination or abrupt Worker death can bypass or interrupt this callback.
+  The default Task executor waits for its native work to stop. Custom executors
+  must define their own cleanup and owner-death guarantees; callback failure
+  containment does not provide cancellation confirmation for external work.
   """
   @callback cleanup(executor_state()) :: :ok
 
