@@ -2,6 +2,8 @@ defmodule Runic.Runner.SingleOutputTest do
   use ExUnit.Case, async: true
   @moduletag capture_log: true
 
+  require Runic
+
   alias Runic.Runner
   alias Runic.TestSupport.OrdinaryComponent, as: Custom
   alias Runic.Workflow
@@ -10,6 +12,47 @@ defmodule Runic.Runner.SingleOutputTest do
     runner = :"single_output_#{System.unique_integer([:positive])}"
     start_supervised!({Runner, name: runner})
     %{runner: runner}
+  end
+
+  for node_type <- [:step, :custom] do
+    test "managed #{node_type} hooks receive the input and produced Facts", %{runner: runner} do
+      owner = self()
+
+      node =
+        case unquote(node_type) do
+          :step -> Runic.step(fn value -> value + 1 end, name: :increment)
+          :custom -> Custom.new(:increment, :add, 1)
+        end
+
+      input = Runic.Workflow.Fact.new(value: 1, meta: %{domain: :input})
+
+      workflow =
+        Workflow.new()
+        |> Workflow.add(node)
+        |> Workflow.attach_before_hook(:increment, fn node, workflow, fact ->
+          send(owner, {:before, node, fact})
+          workflow
+        end)
+        |> Workflow.attach_after_hook(:increment, fn node, workflow, fact ->
+          send(owner, {:after, node, fact})
+          workflow
+        end)
+
+      {:ok, _} =
+        Runner.start_workflow(runner, :hooks, workflow,
+          on_complete: fn id, completed -> send(owner, {:completed, id, completed}) end
+        )
+
+      assert :ok = Runner.run(runner, :hooks, input)
+      assert_receive {:completed, :hooks, completed}, 5_000
+      [output] = Workflow.productions(completed, :increment)
+      assert output.value == 2
+      assert output.ancestry == {node.hash, input.hash}
+      assert_received {:before, ^node, ^input}
+      assert_received {:after, ^node, ^output}
+      refute_received {:before, _, _}
+      refute_received {:after, _, _}
+    end
   end
 
   test "immediate and managed execution share data, metadata, and retry semantics", %{

@@ -12,6 +12,8 @@ defmodule Runic.Workflow.HookRunner do
   2. **Legacy (arity-3)**: `fn step, workflow, fact -> workflow end`
      - Converted to apply_fn for backward compatibility
      - NOT executed during execute phase (requires workflow)
+     - Before hooks receive the input Fact; after hooks receive the produced Fact
+     - Nodes producing no Fact (such as predicates) retain the input Fact
 
   ## Return Types
 
@@ -22,7 +24,7 @@ defmodule Runic.Workflow.HookRunner do
   - `{:error, reason}` - Hook failed, will cause runnable to fail
   """
 
-  alias Runic.Workflow.{HookEvent, CausalContext}
+  alias Runic.Workflow.{HookEvent, CausalContext, Fact}
 
   @type apply_fn :: (Runic.Workflow.t() -> Runic.Workflow.t())
   @type hook_return :: :ok | {:apply, apply_fn()} | {:apply, [apply_fn()]} | {:error, term()}
@@ -47,6 +49,10 @@ defmodule Runic.Workflow.HookRunner do
   @doc """
   Runs after hooks with the execution result and collects any apply_fns.
 
+  Event/context hooks receive both the input Fact and result in `HookEvent`.
+  Three-argument hooks receive the result when it is a Fact, otherwise the
+  input Fact, and run only when their deferred function is applied.
+
   Returns `{:ok, apply_fns}` or `{:error, reason}`.
   """
   @spec run_after(CausalContext.t(), struct(), Runic.Workflow.Fact.t(), term()) ::
@@ -54,12 +60,19 @@ defmodule Runic.Workflow.HookRunner do
   def run_after(%CausalContext{} = ctx, node, input_fact, result) do
     hooks = CausalContext.after_hooks(ctx)
     event = HookEvent.after_exec(node, input_fact, result)
-    run_hooks(hooks, event, ctx, node, input_fact)
+
+    legacy_fact =
+      case result do
+        %Fact{} = output_fact -> output_fact
+        _ -> input_fact
+      end
+
+    run_hooks(hooks, event, ctx, node, legacy_fact)
   end
 
-  defp run_hooks(hooks, event, ctx, node, input_fact) do
+  defp run_hooks(hooks, event, ctx, node, fact) do
     Enum.reduce_while(hooks, {:ok, []}, fn hook, {:ok, apply_fns} ->
-      case run_single_hook(hook, event, ctx, node, input_fact) do
+      case run_single_hook(hook, event, ctx, node, fact) do
         {:ok, new_apply_fns} ->
           {:cont, {:ok, apply_fns ++ new_apply_fns}}
 
@@ -69,7 +82,7 @@ defmodule Runic.Workflow.HookRunner do
     end)
   end
 
-  defp run_single_hook(hook, event, ctx, _node, _input_fact) when is_function(hook, 2) do
+  defp run_single_hook(hook, event, ctx, _node, _fact) when is_function(hook, 2) do
     try do
       case hook.(event, ctx) do
         :ok ->
@@ -93,15 +106,15 @@ defmodule Runic.Workflow.HookRunner do
     end
   end
 
-  defp run_single_hook(hook, _event, _ctx, node, input_fact) when is_function(hook, 3) do
+  defp run_single_hook(hook, _event, _ctx, node, fact) when is_function(hook, 3) do
     apply_fn = fn workflow ->
-      hook.(node, workflow, input_fact)
+      hook.(node, workflow, fact)
     end
 
     {:ok, [apply_fn]}
   end
 
-  defp run_single_hook(_hook, _event, _ctx, _node, _input_fact) do
+  defp run_single_hook(_hook, _event, _ctx, _node, _fact) do
     {:error, :invalid_hook_arity}
   end
 end

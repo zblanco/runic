@@ -265,6 +265,62 @@ defmodule Runic.Workflow.SingleOutputTest do
     end
   end
 
+  for node_type <- [:step, :custom], execution <- [:invoke, :three_phase, :react] do
+    test "three-argument hooks receive input/output Facts for #{node_type} through #{execution}" do
+      owner = self()
+
+      node =
+        case unquote(node_type) do
+          :step -> Runic.step(fn value -> value + 1 end, name: :increment)
+          :custom -> Custom.new(:increment, :add, 1)
+        end
+
+      input = Fact.new(value: 1, meta: %{domain: :input})
+
+      workflow =
+        Workflow.new()
+        |> Workflow.add(node)
+        |> Workflow.attach_before_hook(:increment, fn node, workflow, fact ->
+          send(owner, {:before, node, fact})
+          workflow
+        end)
+        |> Workflow.attach_after_hook(:increment, fn node, workflow, fact ->
+          send(owner, {:after, node, fact})
+          Workflow.add(workflow, Custom.new(:from_output, :add, fact.value), to: :increment)
+        end)
+
+      completed =
+        case unquote(execution) do
+          :invoke ->
+            workflow = Workflow.plan_eagerly(workflow, input)
+            Invokable.invoke(node, workflow, input)
+
+          :three_phase ->
+            workflow = Workflow.plan_eagerly(workflow, input)
+            {workflow, [runnable]} = Workflow.prepare_for_dispatch(workflow)
+            executed = Invokable.execute(node, runnable)
+            assert executed.status == :completed
+            refute_received {:before, _, _}
+            refute_received {:after, _, _}
+            Workflow.apply_runnable(workflow, executed)
+
+          :react ->
+            Workflow.react_until_satisfied(workflow, input)
+        end
+
+      [output] = Workflow.productions(completed, :increment)
+      assert output.value == 2
+      assert output.ancestry == {node.hash, input.hash}
+      assert_received {:before, ^node, ^input}
+      assert_received {:after, ^node, ^output}
+      refute_received {:before, _, _}
+      refute_received {:after, _, _}
+
+      completed = Workflow.react_until_satisfied(completed)
+      assert Workflow.raw_productions(completed, :from_output) == [4]
+    end
+  end
+
   test "reserved metadata and malformed metadata fail before publication" do
     assert_raise ArgumentError, fn ->
       Result.value(1, metadata: %{runic: %{input_bindings: []}})

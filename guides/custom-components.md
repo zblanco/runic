@@ -124,6 +124,16 @@ rerun before hooks; success hooks run only after a successful callback and Fact
 construction. An after-hook failure can therefore retry already-executed work:
 neither hooks nor external I/O are exactly once.
 
+Event/context hooks receive `HookEvent.input_fact` and, for after hooks, the
+produced Fact in `HookEvent.result`. Three-argument hooks attached with
+`Workflow.attach_before_hook/3` receive the input Fact; those attached with
+`Workflow.attach_after_hook/3` receive the produced Fact, including its ancestry
+and metadata. These workflow-taking hooks are deferred until application, even
+through direct `Invokable.invoke/3`. Their workflow changes run in before/after
+order after the native completion events are folded. Errors in deferred
+workflow changes occur during application, outside the execution attempt's
+hook failure handling.
+
 `Result.value(value, metadata: map)` supplies the output's application metadata.
 There is **no implicit inheritance**. Select the application namespaces you need;
 do not indiscriminately merge runtime context or input coordination annotations.

@@ -1,6 +1,6 @@
 # Issue #32: shared ordinary component execution
 
-Status: implemented for draft review; no Jido dependency migration or runtime rollout.
+Status: implemented and ready for review; no Jido dependency migration or runtime rollout.
 Base: `43b3c325744bdf36a2453fcbf54b04aaf8eb7803` (includes #29 and #38).
 Tracks: [#32](https://github.com/zblanco/runic/issues/32), within [#30](https://github.com/zblanco/runic/issues/30).
 
@@ -75,6 +75,12 @@ Agent Turn commit or external effect acknowledgement.
   ordinary arity-two functions are still positional. No signature guessing.
 - Step's low-level legacy `Invokable.invoke/3` now delegates to the same phases,
   so before hooks and failures no longer bypass the ordinary lifecycle.
+- Three-argument before hooks retain the input Fact; after hooks receive the
+  produced Fact, with its actual identity, ancestry and metadata. The shared
+  `HookRunner` selects that Fact without changing event/context hooks' access
+  to both input and result. Predicates that produce no Fact retain the input
+  for their three-argument after hooks. Workflow-taking hooks remain deferred
+  until application.
 - Raises, throws and catchable exits become failed ordinary attempts. Hard kills
   still belong to the backend's owned task handling.
 - Retries run the callback and before hooks again; failed attempts discard
@@ -104,6 +110,48 @@ Runnables; successful native fallback completion clears the previous error and
 participates in collection tracking. Existing raw Step output meaning and
 identity, macro closure reconstruction and calling conventions are preserved.
 
+### Hook regression and API consolidation
+
+Review of `280e0cb` confirmed that the legacy-hook conversion captured the input
+Fact for after hooks. This was an existing three-phase limitation, but sharing
+Step's direct invocation lifecycle extended it to a formerly correct path.
+The correction belongs in `HookRunner`, which knows the input and execution
+result: select the produced Fact for the legacy after-hook adapter, or retain
+the input when a node produces no Fact. Selecting the result unconditionally
+would instead pass a boolean to legacy Condition hooks.
+
+Regression coverage checks the complete Fact arguments through direct invocation,
+explicit prepare/execute/apply, `react_until_satisfied`, and managed Runner
+execution, for both Step and custom SingleOutput components. It also uses the
+after-hook output to add and execute a component, verifies deferred execution,
+and preserves both boolean predicate outcomes and event/context hook fields.
+Before the fix, the focused suite reproduced nine failures; after it, all 37
+tests passed.
+
+The alpha stage is a useful time to remove duplicated execution semantics.
+Deprecation alone does not fix this regression, however, and the three-argument
+attachment functions still lack an event/context equivalent for dynamic hook
+attachment. This PR keeps their documented Fact arguments correct. A subsequent
+consolidation should:
+
+1. Route specialized nodes' remaining direct invocation implementations through
+   their prepare/execute/apply contracts, with parity tests for coordination,
+   hooks and failures. Ordinary Step/SingleOutput already share those phases.
+2. Expose event/context hooks through the public attachment helpers and document
+   execution-time observation/validation versus deferred workflow modification.
+   Prove that both direct and scheduled drivers handle that contract consistently.
+3. Migrate Runic examples and known consumers, then deprecate three-argument
+   hooks during the alpha transition and remove the conversion branch. Do not
+   preserve two execution implementations merely for backward compatibility.
+
+`Invokable.invoke/3` can remain a convenience composed from the phases if it
+serves callers. Deprecate it only if removing the protocol requirement hides
+real complexity after specialized implementations converge; the word "legacy"
+alone is not a reason to force callers to orchestrate three phases manually.
+Workflow-taking hook reducers remain local executable code, not durable or
+remote dispatch records. Their failure boundary is application rather than the
+execution-time hook failure path.
+
 The standalone Scale example demonstrates a non-Jido consumer. The optional
 Jido example uses real V3 Action validation, telemetry and error normalization
 without event constructors. It is a portable, ordinary Action slice, not a
@@ -120,11 +168,12 @@ fresh-context resume, and existing scheduler batching. The pre-change focused
 baseline passed 144 tests. New contract tests first failed because the new
 behaviour did not exist.
 
-Final validation on the implementation:
+Final validation after the hook correction:
 
-- Full suite: **55 doctests, 1,591 tests, zero failures, 13 skips**, seed `905355`.
-- New acceptance surface: **26 tests**, passing four consecutive runs with one
-  BEAM scheduler, seed `684308`.
+- Full suite: **55 doctests, 1,601 tests, zero failures, 13 skips**, seed `905355`,
+  `--max-cases 4`.
+- Focused hook/ordinary-node/Runner surface: **37 tests, zero failures**, seed
+  `905355`, `--max-cases 4`. The pre-fix run reproduced nine failures.
 - Reproducible optional Jido check: **8 tests, zero failures**, seed `905355`,
   real Action `22f7c2a` with a path override to this Runic tree. It covers Action
   configuration identity, validation/error conversion, effects, reconstruction,
@@ -133,8 +182,9 @@ Final validation on the implementation:
   compilation, and `git diff --check` pass.
 - `mix docs --warnings-as-errors` generates documentation but fails on **22
   pre-existing hidden event-struct reference warnings** (11 repeated for HTML
-  and EPUB). The sorted warning list is identical on unchanged upstream and
-  this branch. No new documentation warning was introduced.
+  and EPUB), all in the unchanged `lib/workflow/events.ex`. The original PR
+  validation compared the sorted warnings against upstream; the corrected tree
+  still reports these same 22 warnings and no warnings from changed documentation.
 
 The optional command is `elixir examples/jido_action/check.exs`; it pins Jido's
 revision and keeps that dependency out of Runic's default suite. This is not the
