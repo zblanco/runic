@@ -30,6 +30,7 @@ defmodule Runic.MixProject do
         "guides/cheatsheet.md",
         "guides/usage-rules.md",
         "guides/protocols.md",
+        "guides/custom-components.md",
         "guides/scheduling.md",
         "guides/durable-execution.md",
         "guides/execution-strategies.md",
@@ -55,6 +56,9 @@ defmodule Runic.MixProject do
           Runic.Workflow.Join
         ],
         "Scheduling & Execution": [
+          Runic.Workflow.SingleOutput,
+          Runic.Workflow.SingleOutput.Context,
+          Runic.Workflow.SingleOutput.Result,
           Runic.Workflow.SchedulerPolicy,
           Runic.Workflow.PolicyDriver,
           Runic.Workflow.RunnableDispatched,
@@ -153,7 +157,7 @@ defmodule Runic.MixProject do
     ]
   end
 
-  defp elixirc_paths(:test), do: ["lib", "test/support"]
+  defp elixirc_paths(:test), do: ["lib", "test/support", "examples/single_output"]
   defp elixirc_paths(_), do: ["lib"]
 
   defp aliases do

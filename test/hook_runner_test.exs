@@ -1,6 +1,7 @@
 defmodule Runic.Workflow.HookRunnerTest do
   use ExUnit.Case, async: true
 
+  alias Runic.Workflow
   alias Runic.Workflow.{HookRunner, HookEvent, CausalContext, Fact}
   alias Runic.Workflow.Step
 
@@ -52,15 +53,24 @@ defmodule Runic.Workflow.HookRunnerTest do
       assert {:error, {:hook_error, :some_error}} = HookRunner.run_before(ctx, step, fact)
     end
 
-    test "legacy hook (arity-3) is converted to apply_fn" do
-      legacy_hook = fn _step, workflow, _fact -> workflow end
+    test "legacy hook is deferred and receives the input Fact" do
+      owner = self()
+
+      legacy_hook = fn step, workflow, fact ->
+        send(owner, {:before, step, fact})
+        workflow
+      end
+
       ctx = CausalContext.new(hooks: {[legacy_hook], []})
       step = %Step{hash: 123, work: fn x -> x end}
-      fact = Fact.new(value: 42, ancestry: nil)
+      fact = Fact.new(value: 42, meta: %{domain: :input})
 
       {:ok, [apply_fn]} = HookRunner.run_before(ctx, step, fact)
 
-      assert is_function(apply_fn, 1)
+      refute_received {:before, _, _}
+      workflow = Workflow.new()
+      assert apply_fn.(workflow) == workflow
+      assert_received {:before, ^step, ^fact}
     end
 
     test "multiple hooks are executed in order and apply_fns collected" do
@@ -92,8 +102,8 @@ defmodule Runic.Workflow.HookRunnerTest do
     test "after hook receives result in event" do
       test_pid = self()
 
-      hook = fn %HookEvent{timing: :after, result: result}, _ctx ->
-        send(test_pid, {:result, result})
+      hook = fn %HookEvent{timing: :after, input_fact: input, result: result}, _ctx ->
+        send(test_pid, {:result, input, result})
         :ok
       end
 
@@ -104,7 +114,50 @@ defmodule Runic.Workflow.HookRunnerTest do
 
       {:ok, []} = HookRunner.run_after(ctx, step, input_fact, result_fact)
 
-      assert_received {:result, ^result_fact}
+      assert_received {:result, ^input_fact, ^result_fact}
+    end
+
+    test "legacy after hook is deferred and receives the produced Fact" do
+      owner = self()
+
+      hook = fn step, workflow, fact ->
+        send(owner, {:after, step, fact})
+        workflow
+      end
+
+      ctx = CausalContext.new(hooks: {[], [hook]})
+      step = %Step{hash: 123, work: fn x -> x * 2 end}
+      input = Fact.new(value: 42, meta: %{domain: :input})
+      output = Fact.new(value: 84, ancestry: {step.hash, input.hash}, meta: %{domain: :output})
+
+      {:ok, [apply_fn]} = HookRunner.run_after(ctx, step, input, output)
+
+      refute_received {:after, _, _}
+      workflow = Workflow.new()
+      assert apply_fn.(workflow) == workflow
+      assert_received {:after, ^step, ^output}
+    end
+
+    test "legacy after hook receives the input Fact when no Fact is produced" do
+      owner = self()
+
+      hook = fn node, workflow, fact ->
+        send(owner, {:after, node, fact})
+        workflow
+      end
+
+      ctx = CausalContext.new(hooks: {[], [hook]})
+      condition = Runic.Workflow.Condition.new(work: fn value -> value > 0 end)
+      input = Fact.new(value: 42, meta: %{domain: :input})
+
+      for satisfied <- [true, false] do
+        {:ok, [apply_fn]} = HookRunner.run_after(ctx, condition, input, satisfied)
+
+        refute_received {:after, _, _}
+        workflow = Workflow.new()
+        assert apply_fn.(workflow) == workflow
+        assert_received {:after, ^condition, ^input}
+      end
     end
   end
 end

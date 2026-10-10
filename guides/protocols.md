@@ -15,6 +15,12 @@ Understanding these protocols enables you to:
 
 ## Runic.Workflow.Invokable
 
+For an ordinary custom node producing one value or an explicit failure, prefer
+[`Runic.Workflow.SingleOutput`](custom-components.md). It supplies the native
+context, hook, Fact, event, and collection lifecycle through one callback.
+Use the low-level protocol below when implementing different execution or
+coordination semantics; application-specific work alone does not require it.
+
 The `Invokable` protocol is the runtime heart of Runic. It defines how each node type (Step, Condition, Rule, etc.) executes within the context of a workflow.
 
 ### Three-Phase Execution Model
