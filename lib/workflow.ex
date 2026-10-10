@@ -3805,6 +3805,8 @@ defmodule Runic.Workflow do
   and you want to continue preparing reactions in the workflow from output facts.
 
   Finds facts via `:produced` edges that don't have pending `:runnable` or `:matchable` edges.
+  Stops at the first failed match, leaving unstarted activations in the returned
+  workflow. A later planning or execution call can continue that work.
 
   ## Examples
 
@@ -3821,7 +3823,16 @@ defmodule Runic.Workflow do
       iex> Workflow.is_runnable?(workflow)
       true
   """
-  def plan_eagerly(%__MODULE__{graph: graph} = workflow) do
+  def plan_eagerly(%__MODULE__{} = workflow) do
+    {workflow, _failed} = plan_eagerly_with_result(workflow)
+    workflow
+  end
+
+  # Keep the outcome outside the reusable graph. Managed drivers must observe
+  # match failures before admitting any right-hand-side work.
+  @doc false
+  @spec plan_eagerly_with_result(t()) :: {t(), Runnable.t() | nil}
+  def plan_eagerly_with_result(%__MODULE__{graph: graph} = workflow) do
     # Find all produced facts that don't have pending activations
     # Also exclude facts that have :ran edges - those have already been processed
     new_productions =
@@ -3836,13 +3847,15 @@ defmodule Runic.Workflow do
     Enum.reduce(new_productions, workflow, fn output_fact, wrk ->
       plan(wrk, output_fact)
     end)
-    |> activate_through_possible_matches()
+    |> activate_matches_with_result()
   end
 
   @doc """
   Invokes all left hand side / match-phase runnables in the workflow for a given input fact until all are satisfied.
 
-  Upon calling plan_eagerly/2, the workflow will only have right hand side runnables left to execute that react or react_until_satisfied can execute.
+  On success, only right hand side runnables remain for react or
+  react_until_satisfied. A failed match stops this planning call and retains
+  unstarted matches. The graph itself has no persistent failure scope.
 
   ## Examples
 
@@ -3856,48 +3869,32 @@ defmodule Runic.Workflow do
       iex> workflow |> Workflow.react() |> Workflow.raw_productions()
       [:positive]
   """
-  def plan_eagerly(%__MODULE__{} = workflow, %Fact{ancestry: nil} = input_fact) do
+  def plan_eagerly(%__MODULE__{} = workflow, input) do
+    {workflow, _failed} = plan_eagerly_with_result(workflow, input)
     workflow
-    |> plan(input_fact)
-    |> activate_through_possible_matches()
   end
 
-  def plan_eagerly(%__MODULE__{} = workflow, %Fact{ancestry: {_, _}} = produced_fact) do
+  @doc false
+  @spec plan_eagerly_with_result(t(), Fact.t() | term()) :: {t(), Runnable.t() | nil}
+  def plan_eagerly_with_result(%__MODULE__{} = workflow, input) do
     workflow
-    |> plan(produced_fact)
-    |> activate_through_possible_matches()
+    |> plan(input)
+    |> activate_matches_with_result()
   end
 
-  def plan_eagerly(%__MODULE__{} = wrk, raw_fact) do
-    plan_eagerly(wrk, Fact.new(value: raw_fact))
-  end
+  defp activate_matches_with_result(workflow) do
+    case next_match_runnables(workflow) do
+      [] ->
+        {workflow, nil}
 
-  defp activate_through_possible_matches(wrk) do
-    activate_through_possible_matches(
-      wrk,
-      next_match_runnables(wrk),
-      any_match_phase_runnables?(wrk)
-    )
-  end
-
-  defp activate_through_possible_matches(
-         wrk,
-         next_match_runnables,
-         _any_match_phase_runnables? = true
-       ) do
-    Enum.reduce(next_match_runnables, wrk, fn {node, fact}, wrk ->
-      wrk
-      |> invoke(node, fact)
-      |> activate_through_possible_matches()
-    end)
-  end
-
-  defp activate_through_possible_matches(
-         wrk,
-         _match_runnables,
-         _any_match_phase_runnables? = false
-       ) do
-    wrk
+      [{node, fact} | _] ->
+        # Read a fresh frontier after applying each match. Recursing inside a
+        # reduce over an older frontier can execute an already-consumed match.
+        case invoke_with_result(workflow, node, fact) do
+          {workflow, %Runnable{status: :failed} = failed} -> {workflow, failed}
+          {workflow, _result} -> activate_matches_with_result(workflow)
+        end
+    end
   end
 
   @doc """
@@ -3929,16 +3926,21 @@ defmodule Runic.Workflow do
       # => true
   """
   def invoke(%__MODULE__{} = wrk, step, fact) do
+    {workflow, _result} = invoke_with_result(wrk, step, fact)
+    workflow
+  end
+
+  defp invoke_with_result(wrk, step, fact) do
     case Invokable.prepare(step, wrk, fact) do
       {:ok, runnable} ->
         executed = Invokable.execute(step, runnable)
-        apply_runnable(wrk, executed)
+        {apply_runnable(wrk, executed), executed}
 
       {:skip, reducer_fn} ->
-        reducer_fn.(wrk)
+        {reducer_fn.(wrk), nil}
 
       {:defer, reducer_fn} ->
-        reducer_fn.(wrk)
+        {reducer_fn.(wrk), nil}
     end
   end
 
@@ -4057,10 +4059,6 @@ defmodule Runic.Workflow do
         properties: edge.properties
       }
     end)
-  end
-
-  defp any_match_phase_runnables?(%__MODULE__{graph: graph}) do
-    not Enum.empty?(Multigraph.edges(graph, by: :matchable))
   end
 
   defp next_match_runnables(%__MODULE__{graph: graph}) do
@@ -4596,7 +4594,11 @@ defmodule Runic.Workflow do
        }) do
     Logger.warning("Runnable failed for node #{inspect(node)} with error: #{inspect(error)}")
 
-    event = %ActivationConsumed{fact_hash: fact.hash, node_hash: node.hash, from_label: :runnable}
+    event = %ActivationConsumed{
+      fact_hash: fact.hash,
+      node_hash: node.hash,
+      from_label: Private.connection_for_activatable(node)
+    }
 
     workflow =
       workflow

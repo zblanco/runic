@@ -769,6 +769,13 @@ executor ended without a result. Multiple causes remain visible while units
 drain. `step/2` returns `{:error, :admission_stopped}` in a stopped scope.
 `run/4` can add input but does not reopen admission. `continue/2` returns
 `{:error, :busy}` if a stopped scope still has active units.
+
+Failures during eager predicate planning also stop Worker admission and invoke
+the Worker's `on_failed` hook before dispatch. Planning consumes the failed
+activation and retains unstarted matches. Adding input to a stopped scope
+records its activations without executing predicate hooks; explicit continuation
+or recovery can process them. Already admitted units still drain normally.
+
 Do not query Worker APIs synchronously from callbacks or hooks. Have a hook
 notify an observer process, which can query after the callback returns.
 

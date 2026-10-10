@@ -271,10 +271,23 @@ defmodule Runic.Runner.Worker do
       state.workflow
       |> maybe_set_policies(policies, state.workflow.scheduler_policies)
       |> maybe_apply_run_context(opts)
-      |> Workflow.plan_eagerly(input)
+
+    {workflow, failed} =
+      if state.admission_causes == [] do
+        Workflow.plan_eagerly_with_result(workflow, input)
+      else
+        # Adding input is allowed in a stopped scope; executing its predicates
+        # is not. Leave those activations for explicit continuation/recovery.
+        {Workflow.plan(workflow, input), nil}
+      end
 
     status = if state.admission_causes == [], do: :running, else: state.status
-    state = %{state | workflow: workflow, status: status} |> mark_persistence_pending()
+
+    state =
+      %{state | workflow: workflow, status: status}
+      |> mark_persistence_pending()
+      |> record_planning_failure(failed)
+
     state = dispatch_runnables(state)
 
     state = maybe_transition_to_idle(state)
@@ -681,6 +694,14 @@ defmodule Runic.Runner.Worker do
   end
 
   defp record_failure(state, _runnable), do: state
+
+  defp record_planning_failure(state, nil), do: state
+
+  defp record_planning_failure(state, %Runnable{status: :failed} = failed) do
+    emit_runnable_result(failed, state.id, nil)
+    invoke_hook(state.hooks, :on_failed, [failed, failed.error, state])
+    record_failure(state, failed)
+  end
 
   defp handle_task_result(ref, executed, events, state, dispatch? \\ true) do
     state = release_executor(state, ref)
@@ -1276,7 +1297,11 @@ defmodule Runic.Runner.Worker do
         recover_work(state, workflow, pending_count)
 
       pending_count > 0 ->
-        recover_work(state, Workflow.plan_eagerly(workflow), pending_count)
+        {workflow, failed} = Workflow.plan_eagerly_with_result(workflow)
+
+        %{state | workflow: workflow}
+        |> record_planning_failure(failed)
+        |> recover_work(workflow, pending_count)
 
       true ->
         state
