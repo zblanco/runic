@@ -287,25 +287,32 @@ defmodule Runic.Runner.Worker do
   def handle_call({:start_execution, input, opts}, _from, state) do
     case execution_start_status(state) do
       :ok ->
-        try do
-          {execution, input_fact} = Execution.start(state.workflow, input, opts)
-
-          if Map.has_key?(state.executions, execution.id) do
-            {:reply, {:error, :execution_exists}, state}
-          else
-            state = store_current_execution_snapshot(state)
-
-            state = %{
-              state
-              | executions: Map.put(state.executions, execution.id, execution),
-                current_execution_id: execution.id
-            }
-
-            state = admit_input(state, input_fact, opts)
-            {:reply, {:ok, execution.id}, state}
+        execution_start =
+          try do
+            Execution.start(state.workflow, input, opts)
+          rescue
+            error in ArgumentError -> {:error, error}
           end
-        rescue
-          error in ArgumentError -> {:reply, {:error, error}, state}
+
+        case execution_start do
+          {:error, error} ->
+            {:reply, {:error, error}, state}
+
+          {execution, input_fact} ->
+            if Map.has_key?(state.executions, execution.id) do
+              {:reply, {:error, :execution_exists}, state}
+            else
+              state = store_current_execution_snapshot(state)
+
+              state = %{
+                state
+                | executions: Map.put(state.executions, execution.id, execution),
+                  current_execution_id: execution.id
+              }
+
+              state = admit_input(state, input_fact, opts)
+              {:reply, {:ok, execution.id}, state}
+            end
         end
 
       error ->

@@ -31,6 +31,9 @@ defmodule Runic.Runner.ExecutionObservationTest do
     assert Execution.outputs(execution) == [3, 6]
     assert execution.persistence.status == :saved
     assert execution.persistence.pending_events == 0
+
+    assert {:ok, %{quiescent?: true}} =
+             Runner.await_execution(runner, :success, execution_id, 0)
   end
 
   test "managed repeated inputs keep distinct stable observations", %{runner: runner} do
@@ -55,6 +58,43 @@ defmodule Runic.Runner.ExecutionObservationTest do
 
     assert :ok = Runner.forget_execution(runner, :repeated, first_id)
     assert {:error, :not_found} = Runner.execution(runner, :repeated, first_id)
+  end
+
+  for mode <- [:halt, :skip, :custom_skip] do
+    @tag terminal_handling: mode
+    test "managed #{mode} outcomes match immediate terminal handling", %{
+      runner: runner,
+      terminal_handling: mode
+    } do
+      workflow =
+        if mode == :custom_skip do
+          node = %Runic.Test.SkippedNode{
+            name: :custom_skip,
+            hash: Runic.Identity.derive(:component_definition, [:custom_skip])
+          }
+
+          Workflow.new() |> Workflow.add_step(node)
+        else
+          Runic.workflow(steps: [Runic.step(fn _ -> raise "failure" end, name: :failed)])
+          |> Workflow.set_scheduler_policies([{:default, %{on_failure: mode}}])
+        end
+
+      {_, immediate} = Workflow.execute(workflow, :input)
+      {:ok, _} = Runner.start_workflow(runner, :terminal_handling, workflow)
+      {:ok, id} = Runner.start_execution(runner, :terminal_handling, :input)
+      {:ok, managed} = Runner.await_execution(runner, :terminal_handling, id)
+      [immediate_outcome] = immediate.outcomes
+      [managed_outcome] = managed.outcomes
+      fields = [:kind, :node_name, :result, :failure_action]
+
+      assert Map.take(managed_outcome, fields) == Map.take(immediate_outcome, fields)
+      assert managed_outcome.kind == if(mode == :halt, do: :failed, else: :skipped)
+      assert managed_outcome.failure_action == if(mode == :halt, do: :halt, else: :skip)
+      assert is_nil(managed_outcome.error) == (mode == :custom_skip)
+      assert managed.admission == immediate.admission
+      assert managed.quiescent?
+      assert Execution.outputs(managed) == []
+    end
   end
 
   test "managed execution accepts a caller correlation identity once", %{runner: runner} do
@@ -110,6 +150,114 @@ defmodule Runic.Runner.ExecutionObservationTest do
     send(task, :release)
     assert {:ok, execution} = Runner.await_execution(runner, :manual, execution_id)
     assert Execution.outputs(execution) == [2]
+  end
+
+  test "invalid execution identities leave the Worker available", %{runner: runner} do
+    workflow = Runic.workflow(steps: [Runic.step(& &1, name: :echo)])
+    {:ok, worker} = Runner.start_workflow(runner, :invalid_identity, workflow, executor: :inline)
+
+    for id <- [:invalid, Runic.Identity.derive(:input_command, [:invalid])] do
+      assert {:error, %ArgumentError{}} =
+               Runner.start_execution(runner, :invalid_identity, :value, execution_id: id)
+
+      assert Runner.lookup(runner, :invalid_identity) == worker
+      assert {:ok, []} = Runner.get_results(runner, :invalid_identity)
+    end
+
+    assert {:ok, id} = Runner.start_execution(runner, :invalid_identity, :value)
+    assert {:ok, execution} = Runner.await_execution(runner, :invalid_identity, id)
+    assert Execution.outputs(execution) == [:value]
+  end
+
+  test "completion callback faults do not restore state from before admission", %{runner: runner} do
+    observer = self()
+    workflow = Runic.workflow(steps: [Runic.step(&(&1 + 1), name: :increment)])
+
+    {:ok, worker} =
+      Runner.start_workflow(runner, :callback_fault, workflow,
+        executor: :inline,
+        owner: self(),
+        on_complete: fn _, completed ->
+          send(observer, {:completed, Workflow.raw_productions(completed)})
+          raise ArgumentError, "completion callback failed"
+        end
+      )
+
+    monitor = Process.monitor(worker)
+    assert catch_exit(Runner.start_execution(runner, :callback_fault, 1))
+    assert_receive {:completed, [2]}
+    assert_receive {:DOWN, ^monitor, :process, ^worker, {%ArgumentError{}, _}}, 1_000
+    assert Runner.lookup(runner, :callback_fault) == nil
+
+    assert {:ok, _} = Runner.resume(runner, :callback_fault, owner: self())
+    assert {:ok, [2]} = Runner.get_results(runner, :callback_fault)
+    refute_receive {:completed, _}
+  end
+
+  for timeout <- [0, 20] do
+    test "a #{timeout} ms wait returns while the Worker is suspended", %{runner: runner} do
+      workflow = Runic.workflow(steps: [Runic.step(&(&1 + 1), name: :increment)])
+
+      {:ok, worker} =
+        Runner.start_workflow(runner, :wait_timeout, workflow, dispatch_mode: :manual)
+
+      {:ok, id} = Runner.start_execution(runner, :wait_timeout, 1)
+      :ok = :sys.suspend(worker)
+      on_exit(fn -> if Process.alive?(worker), do: :sys.resume(worker) end)
+
+      waiter =
+        Task.async(fn -> Runner.await_execution(runner, :wait_timeout, id, unquote(timeout)) end)
+
+      assert {:error, :timeout} = Task.await(waiter, 1_000)
+      assert Process.alive?(worker)
+      :ok = :sys.resume(worker)
+      assert :ok = Runner.step(runner, :wait_timeout)
+      assert {:ok, execution} = Runner.await_execution(runner, :wait_timeout, id)
+      assert Execution.outputs(execution) == [2]
+    end
+  end
+
+  test "an infinite wait has no default GenServer call deadline", %{runner: runner} do
+    workflow = Runic.workflow(steps: [Runic.step(& &1, name: :echo)])
+
+    {:ok, worker} =
+      Runner.start_workflow(runner, :infinite_wait, workflow, dispatch_mode: :manual)
+
+    {:ok, id} = Runner.start_execution(runner, :infinite_wait, :value)
+    :ok = :sys.suspend(worker)
+    on_exit(fn -> if Process.alive?(worker), do: :sys.resume(worker) end)
+    waiter = Task.async(fn -> Runner.await_execution(runner, :infinite_wait, id, :infinity) end)
+    ref = waiter.ref
+
+    refute_receive {^ref, _}, 5_100
+    assert Process.alive?(waiter.pid)
+    :ok = :sys.resume(worker)
+    assert :ok = Runner.step(runner, :infinite_wait)
+    assert {:ok, execution} = Task.await(waiter, 1_000)
+    assert Execution.outputs(execution) == [:value]
+  end
+
+  test "Worker death during a snapshot query returns not found", %{runner: runner} do
+    workflow = Runic.workflow(steps: [Runic.step(& &1, name: :echo)])
+
+    {:ok, worker} =
+      Runner.start_workflow(runner, :lost_worker, workflow,
+        dispatch_mode: :manual,
+        owner: self()
+      )
+
+    {:ok, id} = Runner.start_execution(runner, :lost_worker, :value)
+    :ok = :sys.suspend(worker)
+    on_exit(fn -> if Process.alive?(worker), do: :sys.resume(worker) end)
+    waiter = Task.async(fn -> Runner.await_execution(runner, :lost_worker, id, :infinity) end)
+
+    assert_eventually(fn ->
+      {:messages, messages} = Process.info(worker, :messages)
+      Enum.any?(messages, &match?({:"$gen_call", _, {:execution, ^id}}, &1))
+    end)
+
+    Process.exit(worker, :kill)
+    assert {:error, :not_found} = Task.await(waiter, 1_000)
   end
 
   test "actual completion order and stable selection order are both retained", %{runner: runner} do
