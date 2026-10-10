@@ -3362,6 +3362,10 @@ defmodule Runic.Workflow do
   The execution ID and input Fact occurrence ID distinguish repeated equal
   inputs. Pass an existing `:execution_id` to use the same correlation identity.
 
+  `input` is a portable payload value. To use the value from an existing Fact,
+  pass `fact.value`; this API creates its own input occurrence and does not
+  accept a Fact envelope as the occurrence.
+
   Outcomes keep actual acceptance or uncertainty order. Stable consumer order
   is available through `Runic.Workflow.Execution.ordered_outcomes/2`.
 
@@ -3600,8 +3604,11 @@ defmodule Runic.Workflow do
   end
 
   defp execute_with_policy(runnable, [], opts) do
-    if Keyword.get(opts, :emit_events, false) do
-      PolicyDriver.execute(runnable, %SchedulerPolicy{}, opts)
+    if Keyword.get(opts, :emit_events, false) or not is_nil(Keyword.get(opts, :deadline_at)) do
+      case PolicyDriver.execute(runnable, %SchedulerPolicy{}, opts) do
+        {%Runnable{}, _events} = result -> result
+        %Runnable{} = executed -> {executed, []}
+      end
     else
       {Invokable.execute(runnable.node, runnable), []}
     end
