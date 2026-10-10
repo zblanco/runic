@@ -247,9 +247,12 @@ defmodule Runic.Workflow do
   alias Runic.Workflow.RunnableDispatched
   alias Runic.Workflow.RunnableCompleted
   alias Runic.Workflow.RunnableFailed
+  alias Runic.Workflow.ExecutionUncertain
+  alias Runic.Workflow.Execution
   alias Runic.Workflow.Private
   alias Runic.Workflow.Events.FactProduced
   alias Runic.Workflow.Events.ActivationConsumed
+  alias Runic.Workflow.Events.ActivationSuppressed
   alias Runic.Workflow.Events.RunnableActivated
   alias Runic.Workflow.Events.ConditionSatisfied
   alias Runic.Workflow.Events.MapReduceTracked
@@ -1495,6 +1498,22 @@ defmodule Runic.Workflow do
     end
   end
 
+  def apply_event(%__MODULE__{} = wf, %ActivationSuppressed{} = e) do
+    node = Map.get(wf.graph.vertices, e.node_hash)
+    fact = Map.get(wf.graph.vertices, e.fact_hash)
+
+    if node && fact do
+      case Multigraph.update_labelled_edge(wf.graph, fact, node, e.from_label,
+             label: :upstream_failed
+           ) do
+        %Multigraph{} = updated -> %{wf | graph: updated}
+        {:error, :no_such_edge} -> wf
+      end
+    else
+      wf
+    end
+  end
+
   def apply_event(%__MODULE__{} = wf, %ConditionSatisfied{} = e) do
     fact = Map.get(wf.graph.vertices, e.fact_hash)
     cond_node = Map.get(wf.graph.vertices, e.condition_hash)
@@ -1912,6 +1931,9 @@ defmodule Runic.Workflow do
       %RunnableFailed{} = event, wrk ->
         %{wrk | runnable_events: wrk.runnable_events ++ [event]}
 
+      %ExecutionUncertain{} = event, wrk ->
+        %{wrk | runnable_events: wrk.runnable_events ++ [event]}
+
       %ComponentRemoved{name: name}, wrk ->
         remove_component(wrk, name)
     end)
@@ -1972,7 +1994,8 @@ defmodule Runic.Workflow do
           is_struct(event, ReactionOccurred) or
           is_struct(event, RunnableDispatched) or
           is_struct(event, RunnableCompleted) or
-          is_struct(event, RunnableFailed)
+          is_struct(event, RunnableFailed) or
+          is_struct(event, ExecutionUncertain)
       end)
 
     base =
@@ -3333,6 +3356,102 @@ defmodule Runic.Workflow do
   def matches(workflow), do: Private.matches(workflow)
 
   @doc """
+  Executes one input in an observable, call-scoped admission boundary.
+
+  Returns the updated reusable workflow and a `%Runic.Workflow.Execution{}`.
+  The execution ID and input Fact occurrence ID distinguish repeated equal
+  inputs. Pass an existing `:execution_id` to use the same correlation identity.
+
+  `input` is a portable payload value. To use the value from an existing Fact,
+  pass `fact.value`; this API creates its own input occurrence and does not
+  accept a Fact envelope as the occurrence.
+
+  Outcomes keep actual acceptance or uncertainty order. Stable consumer order
+  is available through `Runic.Workflow.Execution.ordered_outcomes/2`.
+
+  This immediate API has no Store acknowledgement, so its persistence status is
+  `:not_managed`. It does not add a permanent halt to the workflow. A stopped
+  execution can leave ready work in the returned workflow for a later call.
+
+  ## Options
+
+  Accepts the options of `react_until_satisfied/3`, plus:
+
+    * `:execution_id` - an optional `%Runic.Identity{domain: :execution}`
+    * `:runnable_order` - defaults to `:stable` for this observation API
+
+  ## Example
+
+      iex> require Runic
+      iex> alias Runic.Workflow
+      iex> workflow = Runic.workflow(steps: [Runic.step(&(&1 * 2), name: :double)])
+      iex> {_workflow, execution} = Workflow.execute(workflow, 3)
+      iex> execution.quiescent?
+      true
+      iex> Runic.Workflow.Execution.outputs(execution)
+      [6]
+  """
+  @spec execute(t(), term(), keyword()) :: {t(), Execution.t()}
+  def execute(%__MODULE__{} = workflow, input, opts \\ []) when is_list(opts) do
+    {execution, input_fact} = Execution.start(workflow, input, opts)
+    emit_events = workflow.emit_events
+    uncommitted_events = workflow.uncommitted_events
+
+    observed_workflow = maybe_apply_run_context(%{workflow | emit_events: true}, opts)
+
+    {observed_workflow, planning_failure} =
+      plan_eagerly_with_result(observed_workflow, input_fact)
+
+    execution =
+      if planning_failure,
+        do: Execution.record(execution, observed_workflow, planning_failure),
+        else: execution
+
+    run_opts =
+      opts
+      |> Keyword.delete(:execution_id)
+      |> Keyword.put_new(:runnable_order, :stable)
+      |> maybe_convert_deadline()
+
+    {observed_workflow, stopped?, execution} =
+      if planning_failure do
+        {observed_workflow, true, execution}
+      else
+        do_react_until_satisfied(
+          observed_workflow,
+          is_runnable?(observed_workflow),
+          run_opts,
+          execution
+        )
+      end
+
+    admission = if stopped?, do: :stopped, else: :open
+
+    execution =
+      Execution.observe(
+        execution,
+        observed_workflow,
+        [],
+        admission,
+        %{status: :not_managed, event_cursor: nil, pending_events: 0}
+      )
+
+    returned_workflow =
+      if emit_events do
+        observed_workflow
+      else
+        %{
+          observed_workflow
+          | emit_events: false,
+            runnable_events: workflow.runnable_events,
+            uncommitted_events: uncommitted_events
+        }
+      end
+
+    {returned_workflow, execution}
+  end
+
+  @doc """
   Executes a single reaction cycle using the three-phase model.
 
   This function advances the workflow by one "generation". It executes ready
@@ -3353,6 +3472,12 @@ defmodule Runic.Workflow do
   `:timeout_ms` for node-level timeout, retry, and fallback handling. This API
   returns a graph, not a structured execution outcome.
 
+  With event emission enabled, accepted attempts append dispatched, completed,
+  or failed lifecycle events to `runnable_events`. Executor loss records an
+  `ExecutionUncertain` observation with its prepared activation identities and
+  observed reason. Replay retains that observation without consuming the work
+  or claiming that an Action failed or an external effect did not occur.
+
   Ready-work retention is subject to the existing structural downstream
   suppression in `apply_runnable/2`. It does not isolate failure between inputs
   or guarantee exact replay of a partly ready Join after failure.
@@ -3372,6 +3497,8 @@ defmodule Runic.Workflow do
     Useful for I/O-bound workflows. Default: `false` (serial execution)
   - `:max_concurrency` - Maximum parallel tasks when `async: true`. Default: `System.schedulers_online()`
   - `:timeout` - Timeout for each task when `async: true`. Default: `:infinity`
+  - `:runnable_order` - `:stable` orders ready work by causal depth and activation
+    identity. Omit it to keep the existing unspecified enumeration order.
 
   ## Parallel Execution
 
@@ -3381,7 +3508,7 @@ defmodule Runic.Workflow do
   def react(workflow, opts \\ [])
 
   def react(%__MODULE__{} = workflow, opts) when is_list(opts) do
-    {workflow, _stopped?} = react_cycle(workflow, opts)
+    {workflow, _stopped?, _execution} = react_cycle(workflow, opts, nil)
     workflow
   end
 
@@ -3393,17 +3520,18 @@ defmodule Runic.Workflow do
     react(wrk, Fact.new(value: raw_fact), [])
   end
 
-  defp react_cycle(workflow, opts) do
+  defp react_cycle(workflow, opts, execution) do
     if is_runnable?(workflow) do
       {workflow, runnables} = prepare_for_dispatch(workflow)
+      runnables = order_runnables(runnables, Keyword.get(opts, :runnable_order))
 
       if Keyword.get(opts, :async, false) do
-        execute_runnables_async(workflow, runnables, opts)
+        execute_runnables_async(workflow, runnables, opts, execution)
       else
-        execute_runnables_serial(workflow, runnables, opts)
+        execute_runnables_serial(workflow, runnables, opts, execution)
       end
     else
-      {workflow, false}
+      {workflow, false, execution}
     end
   end
 
@@ -3433,22 +3561,26 @@ defmodule Runic.Workflow do
     react(wrk, Fact.new(value: raw_fact), opts)
   end
 
-  defp execute_runnables_serial(workflow, runnables, opts) do
+  defp execute_runnables_serial(workflow, runnables, opts, execution) do
     policies = resolve_effective_policies(workflow, opts)
-    driver_opts = build_driver_opts(opts)
+    driver_opts = Keyword.put(build_driver_opts(opts), :emit_events, workflow.emit_events)
 
-    Enum.reduce_while(runnables, {workflow, false}, fn runnable, {wrk, false} ->
-      executed = execute_with_policy(runnable, policies, driver_opts)
-      result = {apply_runnable(wrk, executed), executed.status == :failed}
+    Enum.reduce_while(runnables, {workflow, false, execution}, fn runnable, {wrk, false, scope} ->
+      {executed, events} = execute_with_policy(runnable, policies, driver_opts)
+      wrk = wrk |> append_runnable_events(events) |> apply_runnable(executed)
+      result = {wrk, executed.status == :failed, Execution.record(scope, wrk, executed)}
       if executed.status == :failed, do: {:halt, result}, else: {:cont, result}
     end)
   end
 
-  defp execute_runnables_async(workflow, runnables, opts) do
+  defp order_runnables(runnables, nil), do: runnables
+  defp order_runnables(runnables, :stable), do: Enum.sort_by(runnables, &Runnable.order_key/1)
+
+  defp execute_runnables_async(workflow, runnables, opts, execution) do
     max_concurrency = Keyword.get(opts, :max_concurrency, System.schedulers_online())
     timeout = Keyword.get(opts, :timeout, :infinity)
     policies = resolve_effective_policies(workflow, opts)
-    driver_opts = build_driver_opts(opts)
+    driver_opts = Keyword.put(build_driver_opts(opts), :emit_events, workflow.emit_events)
 
     unless is_integer(max_concurrency) and max_concurrency > 0 do
       raise ArgumentError, "max_concurrency must be a positive integer"
@@ -3463,6 +3595,7 @@ defmodule Runic.Workflow do
         scope: scope,
         max_concurrency: max_concurrency,
         timeout: timeout,
+        execution: execution,
         execute: &execute_with_policy(&1, policies, driver_opts)
       }
 
@@ -3470,10 +3603,22 @@ defmodule Runic.Workflow do
     end)
   end
 
-  defp execute_with_policy(runnable, [], _opts), do: Invokable.execute(runnable.node, runnable)
+  defp execute_with_policy(runnable, [], opts) do
+    if Keyword.get(opts, :emit_events, false) or not is_nil(Keyword.get(opts, :deadline_at)) do
+      case PolicyDriver.execute(runnable, %SchedulerPolicy{}, opts) do
+        {%Runnable{}, _events} = result -> result
+        %Runnable{} = executed -> {executed, []}
+      end
+    else
+      {Invokable.execute(runnable.node, runnable), []}
+    end
+  end
 
   defp execute_with_policy(runnable, policies, opts) do
-    PolicyDriver.execute(runnable, SchedulerPolicy.resolve(runnable, policies), opts)
+    case PolicyDriver.execute(runnable, SchedulerPolicy.resolve(runnable, policies), opts) do
+      {%Runnable{}, _events} = result -> result
+      %Runnable{} = executed -> {executed, []}
+    end
   end
 
   defp async_cycle(workflow, pending, active, stopped?, config) do
@@ -3484,9 +3629,10 @@ defmodule Runic.Workflow do
         cond do
           not stopped? and pending != [] and map_size(active) < config.max_concurrency ->
             [runnable | rest] = pending
+            execute = config.execute
 
             {handle, pid} =
-              Runic.TaskScope.dispatch(config.scope, fn -> config.execute.(runnable) end)
+              Runic.TaskScope.dispatch(config.scope, fn -> execute.(runnable) end)
 
             deadline =
               if config.timeout == :infinity,
@@ -3496,13 +3642,13 @@ defmodule Runic.Workflow do
             async_cycle(
               workflow,
               rest,
-              Map.put(active, handle, {pid, deadline}),
+              Map.put(active, handle, {pid, deadline, runnable}),
               stopped?,
               config
             )
 
           map_size(active) == 0 ->
-            {workflow, stopped?}
+            {workflow, stopped?, config.execution}
 
           true ->
             deadline = active |> Map.values() |> Enum.map(&elem(&1, 1)) |> Enum.min()
@@ -3514,15 +3660,23 @@ defmodule Runic.Workflow do
 
             case receive_async_result(active, wait) do
               nil ->
-                {ref, {_pid, _}} = Enum.find(active, fn {_, {_, at}} -> at == deadline end)
+                {ref, {_pid, _, _runnable}} =
+                  Enum.find(active, fn {_, {_, at, _}} -> at == deadline end)
+
                 :ok = Runic.TaskScope.cancel(config.scope, ref)
 
                 # Scope replies precede cancellation acknowledgement. Preserve a
                 # result that completed at the deadline instead of discarding it.
                 case receive_async_result(%{ref => Map.fetch!(active, ref)}, 0) do
                   nil ->
-                    Logger.warning("Async execution outcome is uncertain: task timeout")
-                    async_cycle(workflow, pending, Map.delete(active, ref), true, config)
+                    apply_async_result(
+                      {:down, ref, {:timeout, config.timeout}},
+                      workflow,
+                      pending,
+                      active,
+                      stopped?,
+                      config
+                    )
 
                   result ->
                     apply_async_result(result, workflow, pending, active, stopped?, config)
@@ -3548,6 +3702,25 @@ defmodule Runic.Workflow do
   end
 
   defp apply_async_result(
+         {:result, ref, {%Runnable{} = executed, events}},
+         workflow,
+         pending,
+         active,
+         stopped?,
+         config
+       )
+       when is_list(events) do
+    apply_async_result(
+      {:result, ref, executed},
+      append_runnable_events(workflow, events),
+      pending,
+      active,
+      stopped?,
+      config
+    )
+  end
+
+  defp apply_async_result(
          {:result, ref, %Runnable{} = executed},
          workflow,
          pending,
@@ -3556,6 +3729,7 @@ defmodule Runic.Workflow do
          config
        ) do
     workflow = apply_runnable(workflow, executed)
+    config = %{config | execution: Execution.record(config.execution, workflow, executed)}
 
     async_cycle(
       workflow,
@@ -3572,8 +3746,21 @@ defmodule Runic.Workflow do
 
   defp apply_async_result({:down, ref, reason}, workflow, pending, active, _stopped?, config) do
     Logger.warning("Async execution outcome is uncertain: #{inspect(reason)}")
+    {_pid, _deadline, runnable} = Map.fetch!(active, ref)
+    workflow = record_execution_loss(workflow, runnable, reason)
+
+    execution =
+      Execution.record_uncertain(config.execution, workflow, {:runnable, runnable}, reason)
+
+    config = %{config | execution: execution}
     async_cycle(workflow, pending, Map.delete(active, ref), true, config)
   end
+
+  defp record_execution_loss(%__MODULE__{emit_events: true} = workflow, runnable, reason) do
+    append_runnable_events(workflow, [ExecutionUncertain.new({:runnable, runnable}, reason)])
+  end
+
+  defp record_execution_loss(workflow, _runnable, _reason), do: workflow
 
   defp build_driver_opts(opts) do
     case Keyword.get(opts, :deadline_at) do
@@ -3659,7 +3846,11 @@ defmodule Runic.Workflow do
   def react_until_satisfied(%__MODULE__{} = workflow, nil, opts) do
     opts = maybe_convert_deadline(opts)
     workflow = maybe_apply_run_context(workflow, opts)
-    do_react_until_satisfied(workflow, is_runnable?(workflow), opts)
+
+    {workflow, _stopped?, _execution} =
+      do_react_until_satisfied(workflow, is_runnable?(workflow), opts, nil)
+
+    workflow
   end
 
   def react_until_satisfied(%__MODULE__{} = wrk, %Fact{ancestry: nil} = fact, opts) do
@@ -3692,16 +3883,24 @@ defmodule Runic.Workflow do
     end
   end
 
-  defp do_react_until_satisfied(%__MODULE__{} = workflow, true = _is_runnable?, opts) do
+  defp do_react_until_satisfied(%__MODULE__{} = workflow, true = _is_runnable?, opts, execution) do
     checkpoint = Keyword.get(opts, :checkpoint)
 
-    {workflow, stopped?} = react_cycle(workflow, opts)
+    {workflow, stopped?, execution} = react_cycle(workflow, opts, execution)
     if is_function(checkpoint, 1), do: checkpoint.(workflow)
-    do_react_until_satisfied(workflow, not stopped? and is_runnable?(workflow), opts)
+
+    if stopped?,
+      do: {workflow, true, execution},
+      else: do_react_until_satisfied(workflow, is_runnable?(workflow), opts, execution)
   end
 
-  defp do_react_until_satisfied(%__MODULE__{} = workflow, false = _is_runnable?, _opts),
-    do: workflow
+  defp do_react_until_satisfied(
+         %__MODULE__{} = workflow,
+         false = _is_runnable?,
+         _opts,
+         execution
+       ),
+       do: {workflow, false, execution}
 
   @doc """
   Removes all `%Fact{}` vertices and generation integers from the workflow graph.
@@ -4198,6 +4397,7 @@ defmodule Runic.Workflow do
 
   Walks the ancestry chain until it finds a fact with `ancestry: nil` (root input).
   Returns the hash of that root fact, or the fact's own hash if it is a root.
+  Supports both `Fact` and `FactRef` ancestors without loading their values.
 
   ## Examples
 
@@ -4207,14 +4407,18 @@ defmodule Runic.Workflow do
       iex> root_ancestor_hash(workflow, deeply_nested_fact)
       123456  # hash of the original root input
   """
-  @spec root_ancestor_hash(t(), Fact.t()) :: integer() | nil
-  def root_ancestor_hash(%__MODULE__{}, %Fact{ancestry: nil, hash: hash}), do: hash
+  @spec root_ancestor_hash(t(), Fact.t() | FactRef.t()) :: Fact.hash() | nil
+  def root_ancestor_hash(%__MODULE__{}, %{ancestry: nil, hash: hash} = fact)
+      when is_struct(fact, Fact) or is_struct(fact, FactRef),
+      do: hash
 
-  def root_ancestor_hash(%__MODULE__{graph: graph} = workflow, %Fact{
-        ancestry: {_producer_hash, parent_fact_hash}
-      }) do
+  def root_ancestor_hash(
+        %__MODULE__{graph: graph} = workflow,
+        %{ancestry: {_producer_hash, parent_fact_hash}} = fact
+      )
+      when is_struct(fact, Fact) or is_struct(fact, FactRef) do
     case Map.get(graph.vertices, parent_fact_hash) do
-      %Fact{} = parent_fact ->
+      parent_fact when is_struct(parent_fact, Fact) or is_struct(parent_fact, FactRef) ->
         root_ancestor_hash(workflow, parent_fact)
 
       nil ->
@@ -4510,13 +4714,15 @@ defmodule Runic.Workflow do
       )
       when is_list(events) and events != [] do
     wf = Enum.reduce(events, workflow, fn event, wf -> apply_event(wf, event) end)
-    wf = skip_downstream_subgraph(wf, node)
 
-    if wf.emit_events do
-      %{wf | uncommitted_events: Enum.reverse(events) ++ wf.uncommitted_events}
-    else
-      wf
-    end
+    wf =
+      if wf.emit_events do
+        %{wf | uncommitted_events: Enum.reverse(events) ++ wf.uncommitted_events}
+      else
+        wf
+      end
+
+    skip_downstream_subgraph(wf, node)
   end
 
   def apply_runnable(%__MODULE__{} = workflow, %Runnable{status: :failed} = runnable) do
@@ -4594,22 +4800,22 @@ defmodule Runic.Workflow do
        }) do
     Logger.warning("Runnable failed for node #{inspect(node)} with error: #{inspect(error)}")
 
-    event = %ActivationConsumed{
+    activation_consumed = %ActivationConsumed{
       fact_hash: fact.hash,
       node_hash: node.hash,
       from_label: Private.connection_for_activatable(node)
     }
 
-    workflow =
-      workflow
-      |> apply_event(event)
-      |> skip_downstream_subgraph(node)
+    workflow = apply_event(workflow, activation_consumed)
 
-    if workflow.emit_events do
-      %{workflow | uncommitted_events: [event | workflow.uncommitted_events]}
-    else
-      workflow
-    end
+    workflow =
+      if workflow.emit_events do
+        %{workflow | uncommitted_events: [activation_consumed | workflow.uncommitted_events]}
+      else
+        workflow
+      end
+
+    skip_downstream_subgraph(workflow, node, fact)
   end
 
   @doc """
@@ -4619,28 +4825,60 @@ defmodule Runic.Workflow do
   dependents, then relabels any pending `:runnable` or `:joined` edges pointing
   to those nodes as `:upstream_failed`. This prevents the workflow from getting
   stuck waiting for work that can never complete due to a missing upstream fact.
+
+  When event emission is enabled, each changed edge emits an
+  `ActivationSuppressed` event for replay.
   """
   @spec skip_downstream_subgraph(t(), struct()) :: t()
   def skip_downstream_subgraph(%__MODULE__{graph: graph} = workflow, failed_node) do
+    do_skip_downstream_subgraph(workflow, graph, failed_node, fn _edge -> true end)
+  end
+
+  defp skip_downstream_subgraph(
+         %__MODULE__{graph: graph} = workflow,
+         failed_node,
+         failed_fact
+       )
+       when is_struct(failed_fact, Fact) or is_struct(failed_fact, FactRef) do
+    failed_root_hash = root_ancestor_hash(workflow, failed_fact)
+
+    do_skip_downstream_subgraph(workflow, graph, failed_node, fn edge ->
+      same_root_ancestor?(workflow, edge.v1, failed_root_hash)
+    end)
+  end
+
+  defp do_skip_downstream_subgraph(workflow, graph, failed_node, suppress_edge?) do
     downstream_nodes = reachable_via_flow(graph, failed_node) -- [failed_node]
 
-    graph =
-      Enum.reduce(downstream_nodes, graph, fn node, g ->
-        g
-        |> Multigraph.in_edges(node)
-        |> Enum.filter(&(&1.label in [:runnable, :joined]))
-        |> Enum.reduce(g, fn edge, g_acc ->
-          case Multigraph.update_labelled_edge(g_acc, edge.v1, edge.v2, edge.label,
-                 label: :upstream_failed
-               ) do
-            %Multigraph{} = updated -> updated
-            {:error, :no_such_edge} -> g_acc
-          end
-        end)
-      end)
+    Enum.reduce(downstream_nodes, workflow, fn node, wf ->
+      wf.graph
+      |> Multigraph.in_edges(node)
+      |> Enum.filter(&(&1.label in [:runnable, :joined] and suppress_edge?.(&1)))
+      |> Enum.reduce(wf, fn edge, wrk ->
+        event = %ActivationSuppressed{
+          fact_hash: edge.v1.hash,
+          node_hash: edge.v2.hash,
+          from_label: edge.label
+        }
 
-    %{workflow | graph: graph}
+        wrk = apply_event(wrk, event)
+
+        if wrk.emit_events do
+          %{wrk | uncommitted_events: [event | wrk.uncommitted_events]}
+        else
+          wrk
+        end
+      end)
+    end)
   end
+
+  defp same_root_ancestor?(workflow, fact, failed_root_hash)
+       when not is_nil(failed_root_hash) and
+              (is_struct(fact, Fact) or is_struct(fact, FactRef)) do
+    root_ancestor_hash(workflow, fact) == failed_root_hash
+  end
+
+  defp same_root_ancestor?(_workflow, _fact, _failed_root_hash), do: false
 
   defp reachable_via_flow(graph, start_node) do
     do_reachable_via_flow(graph, [start_node], MapSet.new(), [])

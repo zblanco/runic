@@ -147,7 +147,7 @@ defmodule Runic.Runner.FailureAdmissionTest do
 
     assert {:ok, wf} = Runner.get_workflow(runner, :uncertain)
     assert Workflow.is_runnable?(wf)
-    assert wf.runnable_events == []
+    refute Enum.any?(wf.runnable_events, &is_struct(&1, Workflow.RunnableFailed))
     assert Workflow.raw_productions(wf) == []
   end
 
@@ -212,7 +212,7 @@ defmodule Runic.Runner.FailureAdmissionTest do
 
     assert {:ok, wf} = Runner.get_workflow(runner, :promise_loss)
     assert Workflow.is_runnable?(wf)
-    assert wf.runnable_events == []
+    refute Enum.any?(wf.runnable_events, &is_struct(&1, Workflow.RunnableFailed))
     assert Workflow.raw_productions(wf) == []
   end
 

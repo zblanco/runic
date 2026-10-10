@@ -57,6 +57,7 @@ defmodule Runic.Runner do
   @snapshot_tag :runic_workflow_snapshot
   @snapshot_version 1
   @cancel_grace_timeout 250
+  @execution_poll_interval 10
 
   # --- Public API ---
 
@@ -152,6 +153,165 @@ defmodule Runic.Runner do
       nil -> {:error, :not_found}
       pid -> GenServer.cast(pid, {:run, input, opts})
     end
+  end
+
+  @doc """
+  Starts one observable execution scope with one input occurrence.
+
+  Returns `{:ok, execution_id}` after the input is admitted to the Worker. The
+  call does not wait for computation or persistence. Use `execution/3` to
+  observe progress or `await_execution/4` to wait for scope quiescence.
+  Input and execution-ID validation run before the reply. Inline work, Store
+  writes, and completion callbacks run after the reply and can delay later
+  Worker queries.
+
+  Supply an `%Runic.Identity{domain: :execution}` in `:execution_id` when a
+  caller owns the correlation identity. Equal repeated inputs receive
+  different generated execution and input occurrence identities. Dispatch
+  order stays under the Worker's `:runnable_order` configuration.
+
+  Only one observed scope can make progress in a Worker at a time. The call
+  returns `{:error, :busy}` while the current observed scope is active or ready.
+  It returns `{:error, :admission_stopped}` until the caller makes an explicit
+  recovery decision with the existing admission API.
+  """
+  @spec start_execution(Supervisor.supervisor(), term(), term(), keyword()) ::
+          {:ok, Runic.Identity.t()} | {:error, term()}
+  def start_execution(runner, workflow_id, input, opts \\ []) do
+    case lookup(runner, workflow_id) do
+      nil ->
+        {:error, :not_found}
+
+      pid ->
+        GenServer.call(pid, {:start_execution, input, opts})
+    end
+  end
+
+  @doc """
+  Returns the current observation for an execution scope.
+
+  Active and ready units are scoped to the execution input ancestry. Outcomes
+  preserve actual Worker acceptance order. The current scope reports live
+  Worker-wide Store acknowledgement, which can remain pending after computation
+  is quiescent. A retained observation keeps the persistence snapshot captured
+  when another scope or admission starts. Use `persistence_status/2` for current
+  acknowledgement after later work or recovery.
+  """
+  @spec execution(Supervisor.supervisor(), term(), Runic.Identity.t()) ::
+          {:ok, Runic.Workflow.Execution.t()} | {:error, :not_found}
+  def execution(runner, workflow_id, execution_id) do
+    case lookup(runner, workflow_id) do
+      nil -> {:error, :not_found}
+      pid -> GenServer.call(pid, {:execution, execution_id})
+    end
+  end
+
+  @doc """
+  Removes a quiescent process-local execution observation from a Worker.
+
+  This does not change the workflow, event stream, or Store. It returns
+  `{:error, :busy}` while the execution can still make progress.
+  """
+  @spec forget_execution(Supervisor.supervisor(), term(), Runic.Identity.t()) ::
+          :ok | {:error, :not_found | :busy}
+  def forget_execution(runner, workflow_id, execution_id) do
+    case lookup(runner, workflow_id) do
+      nil -> {:error, :not_found}
+      pid -> GenServer.call(pid, {:forget_execution, execution_id})
+    end
+  end
+
+  @doc """
+  Waits until an execution scope is quiescent.
+
+  Returns `{:ok, execution}` when no admitted work remains and the scope either
+  has no ready work or has stopped admission. Ready work remains visible on a
+  stopped execution. Returns `{:error, :timeout}` when the deadline expires.
+
+  This wait observes computation state. A quiescent execution can still report
+  pending or failed persistence. `timeout` is in milliseconds or `:infinity`.
+  A zero timeout makes one snapshot query with a 10-millisecond allowance and
+  does not poll. Worker disappearance returns `{:error, :not_found}`.
+  """
+  @spec await_execution(Supervisor.supervisor(), term(), Runic.Identity.t(), timeout()) ::
+          {:ok, Runic.Workflow.Execution.t()} | {:error, :not_found | :timeout}
+  def await_execution(runner, workflow_id, execution_id, timeout \\ 5_000)
+
+  def await_execution(runner, workflow_id, execution_id, 0) do
+    case await_execution_snapshot(runner, workflow_id, execution_id, @execution_poll_interval) do
+      {:ok, %{quiescent?: false}} -> {:error, :timeout}
+      result -> result
+    end
+  end
+
+  def await_execution(runner, workflow_id, execution_id, timeout)
+      when timeout == :infinity or (is_integer(timeout) and timeout > 0) do
+    deadline =
+      if timeout == :infinity,
+        do: :infinity,
+        else: System.monotonic_time(:millisecond) + timeout
+
+    do_await_execution(runner, workflow_id, execution_id, deadline)
+  end
+
+  def await_execution(_runner, _workflow_id, _execution_id, timeout) do
+    raise ArgumentError,
+          "timeout must be a non-negative integer or :infinity, got: #{inspect(timeout)}"
+  end
+
+  defp do_await_execution(runner, workflow_id, execution_id, deadline) do
+    timeout = remaining_execution_timeout(deadline)
+
+    case await_execution_snapshot(runner, workflow_id, execution_id, timeout) do
+      {:ok, %{quiescent?: true} = execution} ->
+        {:ok, execution}
+
+      {:ok, _execution} ->
+        case remaining_wait(deadline) do
+          0 ->
+            {:error, :timeout}
+
+          wait ->
+            receive do
+            after
+              wait -> do_await_execution(runner, workflow_id, execution_id, deadline)
+            end
+        end
+
+      error ->
+        error
+    end
+  end
+
+  defp await_execution_snapshot(runner, workflow_id, execution_id, timeout) do
+    case lookup(runner, workflow_id) do
+      nil ->
+        {:error, :not_found}
+
+      pid ->
+        try do
+          GenServer.call(pid, {:execution, execution_id}, timeout)
+        catch
+          :exit, {:timeout, {GenServer, :call, _}} ->
+            {:error, :timeout}
+
+          :exit, {_reason, {GenServer, :call, _}} = reason ->
+            if Process.alive?(pid),
+              do: :erlang.raise(:exit, reason, __STACKTRACE__),
+              else: {:error, :not_found}
+        end
+    end
+  end
+
+  defp remaining_execution_timeout(:infinity), do: :infinity
+
+  defp remaining_execution_timeout(deadline),
+    do: max(deadline - System.monotonic_time(:millisecond), 0)
+
+  defp remaining_wait(:infinity), do: @execution_poll_interval
+
+  defp remaining_wait(deadline) do
+    min(remaining_execution_timeout(deadline), @execution_poll_interval)
   end
 
   @doc """

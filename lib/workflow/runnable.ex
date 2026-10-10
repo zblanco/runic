@@ -110,6 +110,13 @@ defmodule Runic.Workflow.Runnable do
     Identity.derive(:activation, [:local, fact.hash, node.hash])
   end
 
+  @doc "Stable admission key: causal depth followed by activation identity."
+  @spec order_key(t()) :: {non_neg_integer(), term()}
+  def order_key(%__MODULE__{context: context, id: id}) do
+    depth = if is_map(context), do: Map.get(context, :ancestry_depth) || 0, else: 0
+    {depth, id}
+  end
+
   @doc false
   @spec for_attempt(t(), non_neg_integer()) :: t()
   def for_attempt(%__MODULE__{activation_id: %Identity{} = activation_id} = runnable, attempt) do

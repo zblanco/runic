@@ -7,6 +7,7 @@ defmodule Runic.Workflow.RunnableCompleted do
   - `duration_ms` — wall-clock execution time in milliseconds (monotonic)
   - `attempt` — zero-based attempt index (0 = first try, 1 = first retry, etc.)
   - `result_fact` — the `%Fact{}` produced by the step
+  - `order_key` — stable causal admission order for consumer selection
   """
 
   @type t :: %__MODULE__{
@@ -14,6 +15,7 @@ defmodule Runic.Workflow.RunnableCompleted do
           activation_id: Runic.Identity.t() | nil,
           attempt_id: Runic.Identity.t() | nil,
           node_hash: term(),
+          order_key: term(),
           result_fact: Runic.Workflow.Fact.t(),
           completed_at: integer(),
           attempt: non_neg_integer(),
@@ -25,6 +27,7 @@ defmodule Runic.Workflow.RunnableCompleted do
     :activation_id,
     :attempt_id,
     :node_hash,
+    :order_key,
     :result_fact,
     :completed_at,
     :attempt,

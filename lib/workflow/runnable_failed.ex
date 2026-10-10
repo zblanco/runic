@@ -7,6 +7,7 @@ defmodule Runic.Workflow.RunnableFailed do
   - `attempts` — total number of execution attempts (initial + retries)
   - `failure_action` — the `on_failure` action taken: `:halt` or `:skip`
   - `error` — the error term from the last failed attempt
+  - `order_key` — stable causal admission key, independent of completion order
   """
 
   @type t :: %__MODULE__{
@@ -14,6 +15,7 @@ defmodule Runic.Workflow.RunnableFailed do
           activation_id: Runic.Identity.t() | nil,
           attempt_id: Runic.Identity.t() | nil,
           node_hash: term(),
+          order_key: term(),
           error: term(),
           failed_at: integer(),
           attempts: non_neg_integer(),
@@ -25,6 +27,7 @@ defmodule Runic.Workflow.RunnableFailed do
     :activation_id,
     :attempt_id,
     :node_hash,
+    :order_key,
     :error,
     :failed_at,
     :attempts,
