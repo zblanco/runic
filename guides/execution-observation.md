@@ -20,6 +20,10 @@ The function returns the updated workflow and an execution observation. It
 does not add a halt field to the workflow. A later call can use the workflow
 again.
 
+The input must be a portable payload value. For an existing Fact, pass
+`fact.value`. The execution creates a new Fact occurrence; it does not use the
+old Fact envelope or its metadata.
+
 Immediate execution has no Runner Store. Its persistence status is
 `:not_managed`.
 
@@ -69,6 +73,12 @@ work stops admission, the new scope reports `admission: :stopped`. Its outcomes
 still contain only results for the new input. Thus an empty failure list alone
 does not mean that admission stayed open.
 
+Skipped activations retain the existing global downstream suppression rule.
+A skip from an older input can suppress ready downstream work for the new
+input. The new scope can then be quiescent with open admission and no failures.
+These fields describe observed progress. Applications must also check their
+expected results when retained inputs can skip work.
+
 Manual `Runic.Runner.step/2` still confirms the admission of one scheduler
 unit. It does not confirm completion, quiescence, or persistence.
 
@@ -91,7 +101,7 @@ attempts have different attempt IDs.
 observed outcomes. Concurrent completion can change this order. This order is
 the audit order for the scope.
 
-Use stable order when a consumer must select the same logical activation:
+Use stable order to select the same logical activation within one execution:
 
 ```elixir
 stable =
@@ -102,7 +112,16 @@ failures =
 ```
 
 Stable order uses causal depth and activation identity. It does not rewrite
-the observed order.
+the observed order. A new execution has new occurrence identities, so sibling
+order can differ between executions with equal inputs.
+
+`Execution.outputs/2` returns accepted completed Runnable results. It unwraps
+a direct Fact result to its value and preserves other result shapes. Thus,
+conditions can return booleans, Join and mapped FanIn activations can return
+`:waiting`, and FanOut can return a list of Facts. Coordinator-derived joined
+or reduced Facts remain in the workflow graph. Use graph production queries,
+such as `Workflow.raw_productions/1` or `Runner.get_results/2`, when those values
+are required; those queries are not limited to one execution scope.
 
 Outcome kinds are:
 

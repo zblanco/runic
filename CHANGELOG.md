@@ -24,6 +24,9 @@ explicitly. A merge to `main` is not a published Hex release.
   projections, including Step/Condition contracts. Rebuild preserves recorded
   authored closures. Runtime context is excluded from artifact identity.
 - Cytoscape exports full tagged identity strings in its JSON `hash` fields.
+- Event streams can now contain `ActivationSuppressed` and `ExecutionUncertain`.
+  Older revisions that do not recognize these events cannot replay these
+  streams. Keep the matching runtime when retaining or restoring this history.
 
 ### Added
 

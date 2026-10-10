@@ -836,8 +836,11 @@ executor resources. Replay retains accepted node effects, including consumed
 failed activations, but starts a new admission scope.
 
 Downstream failure suppression is scoped to the failed root input and emits
-replayable suppression events. General Join invocation identity remains a
-separate design area.
+replayable suppression events. Skipped activations retain global downstream
+suppression, including those from `on_failure: :skip`. A skip can suppress ready
+work from another input. The public `skip_downstream_subgraph/2` helper also keeps
+this global behavior. General Join invocation identity remains a separate
+design area.
 
 For a public execution ID, input occurrence identity, outcomes, wait behavior,
 and combined computation and persistence state, see

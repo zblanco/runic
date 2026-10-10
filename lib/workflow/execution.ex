@@ -194,7 +194,14 @@ defmodule Runic.Workflow.Execution do
     end
   end
 
-  @doc "Returns successful computed values in observed or stable order."
+  @doc """
+  Returns accepted completed Runnable results in observed or stable order.
+
+  A direct `Fact` result is unwrapped to its value. Other result shapes remain
+  unchanged, including condition booleans, coordination markers, and lists of
+  Facts. Facts produced by a coordinator during application are graph
+  productions; this function does not add them to the accepted results.
+  """
   @spec outputs(t(), keyword()) :: [term()]
   def outputs(%__MODULE__{} = execution, opts \\ []) do
     execution
@@ -206,7 +213,7 @@ defmodule Runic.Workflow.Execution do
     end)
   end
 
-  @doc "Returns failed and uncertain outcomes in observed or stable order."
+  @doc "Returns failed, skipped, and uncertain outcomes in observed or stable order."
   @spec failures(t(), keyword()) :: [Outcome.t()]
   def failures(%__MODULE__{} = execution, opts \\ []) do
     execution
