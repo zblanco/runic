@@ -250,6 +250,7 @@ defmodule Runic.Workflow do
   alias Runic.Workflow.Private
   alias Runic.Workflow.Events.FactProduced
   alias Runic.Workflow.Events.ActivationConsumed
+  alias Runic.Workflow.Events.ActivationSuppressed
   alias Runic.Workflow.Events.RunnableActivated
   alias Runic.Workflow.Events.ConditionSatisfied
   alias Runic.Workflow.Events.MapReduceTracked
@@ -1490,6 +1491,22 @@ defmodule Runic.Workflow do
 
     if node && fact do
       mark_runnable_as_ran(wf, node, fact)
+    else
+      wf
+    end
+  end
+
+  def apply_event(%__MODULE__{} = wf, %ActivationSuppressed{} = e) do
+    node = Map.get(wf.graph.vertices, e.node_hash)
+    fact = Map.get(wf.graph.vertices, e.fact_hash)
+
+    if node && fact do
+      case Multigraph.update_labelled_edge(wf.graph, fact, node, e.from_label,
+             label: :upstream_failed
+           ) do
+        %Multigraph{} = updated -> %{wf | graph: updated}
+        {:error, :no_such_edge} -> wf
+      end
     else
       wf
     end
@@ -4198,6 +4215,7 @@ defmodule Runic.Workflow do
 
   Walks the ancestry chain until it finds a fact with `ancestry: nil` (root input).
   Returns the hash of that root fact, or the fact's own hash if it is a root.
+  Supports both `Fact` and `FactRef` ancestors without loading their values.
 
   ## Examples
 
@@ -4207,14 +4225,18 @@ defmodule Runic.Workflow do
       iex> root_ancestor_hash(workflow, deeply_nested_fact)
       123456  # hash of the original root input
   """
-  @spec root_ancestor_hash(t(), Fact.t()) :: integer() | nil
-  def root_ancestor_hash(%__MODULE__{}, %Fact{ancestry: nil, hash: hash}), do: hash
+  @spec root_ancestor_hash(t(), Fact.t() | FactRef.t()) :: Fact.hash() | nil
+  def root_ancestor_hash(%__MODULE__{}, %{ancestry: nil, hash: hash} = fact)
+      when is_struct(fact, Fact) or is_struct(fact, FactRef),
+      do: hash
 
-  def root_ancestor_hash(%__MODULE__{graph: graph} = workflow, %Fact{
-        ancestry: {_producer_hash, parent_fact_hash}
-      }) do
+  def root_ancestor_hash(
+        %__MODULE__{graph: graph} = workflow,
+        %{ancestry: {_producer_hash, parent_fact_hash}} = fact
+      )
+      when is_struct(fact, Fact) or is_struct(fact, FactRef) do
     case Map.get(graph.vertices, parent_fact_hash) do
-      %Fact{} = parent_fact ->
+      parent_fact when is_struct(parent_fact, Fact) or is_struct(parent_fact, FactRef) ->
         root_ancestor_hash(workflow, parent_fact)
 
       nil ->
@@ -4503,20 +4525,22 @@ defmodule Runic.Workflow do
   end
 
   # Skipped runnable: fold events (marks activation as consumed),
-  # then skip all downstream nodes to prevent stalled workflows.
+  # then suppress downstream work for the same input.
   def apply_runnable(
         %__MODULE__{} = workflow,
-        %Runnable{status: :skipped, events: events, node: node} = _runnable
+        %Runnable{status: :skipped, events: events, node: node, input_fact: fact}
       )
       when is_list(events) and events != [] do
     wf = Enum.reduce(events, workflow, fn event, wf -> apply_event(wf, event) end)
-    wf = skip_downstream_subgraph(wf, node)
 
-    if wf.emit_events do
-      %{wf | uncommitted_events: Enum.reverse(events) ++ wf.uncommitted_events}
-    else
-      wf
-    end
+    wf =
+      if wf.emit_events do
+        %{wf | uncommitted_events: Enum.reverse(events) ++ wf.uncommitted_events}
+      else
+        wf
+      end
+
+    suppress_downstream_for_input(wf, node, fact)
   end
 
   def apply_runnable(%__MODULE__{} = workflow, %Runnable{status: :failed} = runnable) do
@@ -4594,22 +4618,22 @@ defmodule Runic.Workflow do
        }) do
     Logger.warning("Runnable failed for node #{inspect(node)} with error: #{inspect(error)}")
 
-    event = %ActivationConsumed{
+    activation_consumed = %ActivationConsumed{
       fact_hash: fact.hash,
       node_hash: node.hash,
       from_label: Private.connection_for_activatable(node)
     }
 
-    workflow =
-      workflow
-      |> apply_event(event)
-      |> skip_downstream_subgraph(node)
+    workflow = apply_event(workflow, activation_consumed)
 
-    if workflow.emit_events do
-      %{workflow | uncommitted_events: [event | workflow.uncommitted_events]}
-    else
-      workflow
-    end
+    workflow =
+      if workflow.emit_events do
+        %{workflow | uncommitted_events: [activation_consumed | workflow.uncommitted_events]}
+      else
+        workflow
+      end
+
+    suppress_downstream_for_input(workflow, node, fact)
   end
 
   @doc """
@@ -4619,27 +4643,77 @@ defmodule Runic.Workflow do
   dependents, then relabels any pending `:runnable` or `:joined` edges pointing
   to those nodes as `:upstream_failed`. This prevents the workflow from getting
   stuck waiting for work that can never complete due to a missing upstream fact.
+
+  When event emission is enabled, each changed edge emits an
+  `ActivationSuppressed` event for replay.
   """
   @spec skip_downstream_subgraph(t(), struct()) :: t()
   def skip_downstream_subgraph(%__MODULE__{graph: graph} = workflow, failed_node) do
+    do_skip_downstream_subgraph(workflow, graph, failed_node, fn _edge -> true end)
+  end
+
+  defp suppress_downstream_for_input(
+         %__MODULE__{graph: graph} = workflow,
+         failed_node,
+         failed_fact
+       )
+       when is_struct(failed_fact, Fact) or is_struct(failed_fact, FactRef) do
+    failed_root_hash = local_root_ancestor_hash(workflow, failed_fact)
+
+    do_skip_downstream_subgraph(workflow, graph, failed_node, fn edge ->
+      same_local_root?(workflow, edge.v1, failed_root_hash)
+    end)
+  end
+
+  defp do_skip_downstream_subgraph(workflow, graph, failed_node, suppress_edge?) do
     downstream_nodes = reachable_via_flow(graph, failed_node) -- [failed_node]
 
-    graph =
-      Enum.reduce(downstream_nodes, graph, fn node, g ->
-        g
-        |> Multigraph.in_edges(node)
-        |> Enum.filter(&(&1.label in [:runnable, :joined]))
-        |> Enum.reduce(g, fn edge, g_acc ->
-          case Multigraph.update_labelled_edge(g_acc, edge.v1, edge.v2, edge.label,
-                 label: :upstream_failed
-               ) do
-            %Multigraph{} = updated -> updated
-            {:error, :no_such_edge} -> g_acc
-          end
-        end)
-      end)
+    Enum.reduce(downstream_nodes, workflow, fn node, wf ->
+      wf.graph
+      |> Multigraph.in_edges(node)
+      |> Enum.filter(&(&1.label in [:runnable, :joined] and suppress_edge?.(&1)))
+      |> Enum.reduce(wf, fn edge, wrk ->
+        event = %ActivationSuppressed{
+          fact_hash: edge.v1.hash,
+          node_hash: edge.v2.hash,
+          from_label: edge.label
+        }
 
-    %{workflow | graph: graph}
+        wrk = apply_event(wrk, event)
+
+        if wrk.emit_events do
+          %{wrk | uncommitted_events: [event | wrk.uncommitted_events]}
+        else
+          wrk
+        end
+      end)
+    end)
+  end
+
+  defp same_local_root?(workflow, fact, failed_root_hash)
+       when not is_nil(failed_root_hash) and
+              (is_struct(fact, Fact) or is_struct(fact, FactRef)) do
+    local_root_ancestor_hash(workflow, fact) == failed_root_hash
+  end
+
+  defp same_local_root?(_workflow, _fact, _failed_root_hash), do: false
+
+  # A fact passed from another workflow can retain ancestry outside this graph.
+  # Use its own hash as the local input boundary, so separate handoff facts do
+  # not share a suppression scope merely because they have an external parent.
+  defp local_root_ancestor_hash(_workflow, %{ancestry: nil, hash: hash}), do: hash
+
+  defp local_root_ancestor_hash(
+         %__MODULE__{graph: graph} = workflow,
+         %{ancestry: {_producer_hash, parent_fact_hash}, hash: hash}
+       ) do
+    case Map.get(graph.vertices, parent_fact_hash) do
+      parent_fact when is_struct(parent_fact, Fact) or is_struct(parent_fact, FactRef) ->
+        local_root_ancestor_hash(workflow, parent_fact)
+
+      nil ->
+        hash
+    end
   end
 
   defp reachable_via_flow(graph, start_node) do

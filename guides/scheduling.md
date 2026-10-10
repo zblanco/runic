@@ -835,12 +835,22 @@ those errors or events. A failed persistent stop retains the live Worker and
 executor resources. Replay retains accepted node effects, including consumed
 failed activations, but starts a new admission scope.
 
-The existing core downstream suppression still uses graph structure. It can
-suppress ready downstream work from another input, and its `:upstream_failed`
-edge changes are not all represented in the event stream. This change does not
-provide failure isolation between concurrent inputs or exact replay of a
-partly ready Join after failure. Retention of ready work is subject to that
-existing behavior. Use separate workflows when input failure isolation is required.
+Applying a failed or skipped runnable consumes its activation. It suppresses
+currently pending `:runnable` and `:joined` edges at downstream nodes only when
+their source facts share the same local root input. For a handoff, ancestry
+traversal stops at the last fact present in the receiving graph if its parent
+is absent. Both `Fact` and `FactRef` use this rule without loading values.
+
+When event emission is enabled, each `ActivationSuppressed` event records one
+edge change to `:upstream_failed`. Replay restores those recorded changes.
+Direct calls to `Workflow.skip_downstream_subgraph/2` retain global structural
+scope across inputs.
+
+This does not provide general failure isolation. Map items that share one root
+can suppress one another. A sibling result that arrives after a failure can
+still be joined with facts from another input. General Join invocation identity
+remains separate design work in [#33](https://github.com/zblanco/runic/issues/33).
+Use separate workflows when input failure isolation is required.
 
 ## Key API Reference
 
