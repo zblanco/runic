@@ -7,6 +7,10 @@ defmodule Runic.Workflow.Execution.Outcome do
   used for stable consumer selection. `id` is stable for the execution,
   activation, attempt, and outcome kind.
 
+  `observed_at` is the acceptance time in the caller or Worker. For failed or
+  skipped outcomes, `failure_action` records terminal handling (`:halt` or
+  `:skip`). A skipped outcome can have no error when a custom node skips work.
+
   An `:uncertain` outcome means that an admitted outer executor unit ended
   without a result. It does not assert that the work failed or that external
   effects did not occur.
@@ -15,7 +19,7 @@ defmodule Runic.Workflow.Execution.Outcome do
   alias Runic.Identity
   alias Runic.Runner.Promise
 
-  alias Runic.Workflow.{ExecutionUncertain, Runnable, RunnableCompleted, RunnableFailed}
+  alias Runic.Workflow.Runnable
 
   @type kind :: :completed | :failed | :skipped | :uncertain
 
@@ -67,6 +71,7 @@ defmodule Runic.Workflow.Execution.Outcome do
       node_name: Map.get(runnable.node, :name, runnable.node.hash),
       result: runnable.result,
       error: runnable.error,
+      failure_action: failure_action(runnable.status),
       order_key: Runnable.order_key(runnable)
     )
   end
@@ -94,59 +99,6 @@ defmodule Runic.Workflow.Execution.Outcome do
     )
   end
 
-  @doc false
-  def from_event(execution_id, %RunnableCompleted{} = event, dispatched, sequence) do
-    build(execution_id, :completed, sequence,
-      activation_id: event.activation_id,
-      attempt_id: event.attempt_id,
-      runnable_ids: [event.runnable_id],
-      node_hash: event.node_hash,
-      node_name: dispatched && dispatched.node_name,
-      result: event.result_fact,
-      order_key:
-        Map.get(event, :order_key) || (dispatched && Map.get(dispatched, :order_key)) ||
-          {0, event.activation_id},
-      observed_at: event.completed_at
-    )
-  end
-
-  def from_event(execution_id, %RunnableFailed{} = event, dispatched, sequence) do
-    kind = if event.failure_action == :skip, do: :skipped, else: :failed
-
-    build(execution_id, kind, sequence,
-      activation_id: event.activation_id,
-      attempt_id: event.attempt_id,
-      runnable_ids: [event.runnable_id],
-      node_hash: event.node_hash,
-      node_name: dispatched && dispatched.node_name,
-      error: event.error,
-      failure_action: event.failure_action,
-      order_key:
-        Map.get(event, :order_key) || (dispatched && Map.get(dispatched, :order_key)) ||
-          {0, event.activation_id},
-      observed_at: event.failed_at
-    )
-  end
-
-  def from_event(execution_id, %ExecutionUncertain{} = event, sequence) do
-    first =
-      event
-      |> Map.get(:members)
-      |> List.wrap()
-      |> Enum.min_by(& &1.order_key, fn -> %{} end)
-
-    build(execution_id, :uncertain, sequence,
-      activation_id: Map.get(first, :activation_id),
-      attempt_id: nil,
-      runnable_ids: event.runnable_ids,
-      node_hash: Map.get(first, :node_hash),
-      node_name: Map.get(first, :node_name),
-      error: event.reason,
-      order_key: Map.get(event, :order_key) || {0, Map.get(first, :activation_id)},
-      observed_at: event.observed_at
-    )
-  end
-
   defp build(execution_id, kind, sequence, attrs) do
     activation_id = Keyword.get(attrs, :activation_id)
     attempt_id = Keyword.get(attrs, :attempt_id)
@@ -169,10 +121,14 @@ defmodule Runic.Workflow.Execution.Outcome do
         kind: kind,
         sequence: sequence,
         runnable_ids: runnable_ids,
-        observed_at: Keyword.get(attrs, :observed_at, System.monotonic_time(:millisecond))
+        observed_at: System.monotonic_time(:millisecond)
       ] ++ attrs
     )
   end
+
+  defp failure_action(:failed), do: :halt
+  defp failure_action(:skipped), do: :skip
+  defp failure_action(_status), do: nil
 
   defp runnable_kind(:completed), do: :completed
   defp runnable_kind(:failed), do: :failed

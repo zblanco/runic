@@ -3390,11 +3390,10 @@ defmodule Runic.Workflow do
   @spec execute(t(), term(), keyword()) :: {t(), Execution.t()}
   def execute(%__MODULE__{} = workflow, input, opts \\ []) when is_list(opts) do
     {execution, input_fact} = Execution.start(workflow, input, opts)
-    runnable_event_count = length(workflow.runnable_events)
     emit_events = workflow.emit_events
     uncommitted_events = workflow.uncommitted_events
 
-    observed_workflow = %{workflow | emit_events: true}
+    observed_workflow = maybe_apply_run_context(%{workflow | emit_events: true}, opts)
 
     {observed_workflow, planning_failure} =
       plan_eagerly_with_result(observed_workflow, input_fact)
@@ -3404,22 +3403,25 @@ defmodule Runic.Workflow do
         do: Execution.record(execution, observed_workflow, planning_failure),
         else: execution
 
-    run_opts = opts |> Keyword.delete(:execution_id) |> Keyword.put_new(:runnable_order, :stable)
+    run_opts =
+      opts
+      |> Keyword.delete(:execution_id)
+      |> Keyword.put_new(:runnable_order, :stable)
+      |> maybe_convert_deadline()
 
-    observed_workflow =
+    {observed_workflow, stopped?, execution} =
       if planning_failure do
-        observed_workflow
+        {observed_workflow, true, execution}
       else
-        react_until_satisfied(observed_workflow, nil, run_opts)
+        do_react_until_satisfied(
+          observed_workflow,
+          is_runnable?(observed_workflow),
+          run_opts,
+          execution
+        )
       end
 
-    lifecycle_events = Enum.drop(observed_workflow.runnable_events, runnable_event_count)
-    execution = Execution.record_events(execution, observed_workflow, lifecycle_events)
-
-    admission =
-      if Enum.any?(execution.outcomes, &(&1.kind in [:failed, :uncertain])),
-        do: :stopped,
-        else: :open
+    admission = if stopped?, do: :stopped, else: :open
 
     execution =
       Execution.observe(
@@ -3502,7 +3504,7 @@ defmodule Runic.Workflow do
   def react(workflow, opts \\ [])
 
   def react(%__MODULE__{} = workflow, opts) when is_list(opts) do
-    {workflow, _stopped?} = react_cycle(workflow, opts)
+    {workflow, _stopped?, _execution} = react_cycle(workflow, opts, nil)
     workflow
   end
 
@@ -3514,18 +3516,18 @@ defmodule Runic.Workflow do
     react(wrk, Fact.new(value: raw_fact), [])
   end
 
-  defp react_cycle(workflow, opts) do
+  defp react_cycle(workflow, opts, execution) do
     if is_runnable?(workflow) do
       {workflow, runnables} = prepare_for_dispatch(workflow)
       runnables = order_runnables(runnables, Keyword.get(opts, :runnable_order))
 
       if Keyword.get(opts, :async, false) do
-        execute_runnables_async(workflow, runnables, opts)
+        execute_runnables_async(workflow, runnables, opts, execution)
       else
-        execute_runnables_serial(workflow, runnables, opts)
+        execute_runnables_serial(workflow, runnables, opts, execution)
       end
     else
-      {workflow, false}
+      {workflow, false, execution}
     end
   end
 
@@ -3555,14 +3557,14 @@ defmodule Runic.Workflow do
     react(wrk, Fact.new(value: raw_fact), opts)
   end
 
-  defp execute_runnables_serial(workflow, runnables, opts) do
+  defp execute_runnables_serial(workflow, runnables, opts, execution) do
     policies = resolve_effective_policies(workflow, opts)
     driver_opts = Keyword.put(build_driver_opts(opts), :emit_events, workflow.emit_events)
 
-    Enum.reduce_while(runnables, {workflow, false}, fn runnable, {wrk, false} ->
+    Enum.reduce_while(runnables, {workflow, false, execution}, fn runnable, {wrk, false, scope} ->
       {executed, events} = execute_with_policy(runnable, policies, driver_opts)
       wrk = wrk |> append_runnable_events(events) |> apply_runnable(executed)
-      result = {wrk, executed.status == :failed}
+      result = {wrk, executed.status == :failed, Execution.record(scope, wrk, executed)}
       if executed.status == :failed, do: {:halt, result}, else: {:cont, result}
     end)
   end
@@ -3570,7 +3572,7 @@ defmodule Runic.Workflow do
   defp order_runnables(runnables, nil), do: runnables
   defp order_runnables(runnables, :stable), do: Enum.sort_by(runnables, &Runnable.order_key/1)
 
-  defp execute_runnables_async(workflow, runnables, opts) do
+  defp execute_runnables_async(workflow, runnables, opts, execution) do
     max_concurrency = Keyword.get(opts, :max_concurrency, System.schedulers_online())
     timeout = Keyword.get(opts, :timeout, :infinity)
     policies = resolve_effective_policies(workflow, opts)
@@ -3589,6 +3591,7 @@ defmodule Runic.Workflow do
         scope: scope,
         max_concurrency: max_concurrency,
         timeout: timeout,
+        execution: execution,
         execute: &execute_with_policy(&1, policies, driver_opts)
       }
 
@@ -3619,9 +3622,10 @@ defmodule Runic.Workflow do
         cond do
           not stopped? and pending != [] and map_size(active) < config.max_concurrency ->
             [runnable | rest] = pending
+            execute = config.execute
 
             {handle, pid} =
-              Runic.TaskScope.dispatch(config.scope, fn -> config.execute.(runnable) end)
+              Runic.TaskScope.dispatch(config.scope, fn -> execute.(runnable) end)
 
             deadline =
               if config.timeout == :infinity,
@@ -3637,7 +3641,7 @@ defmodule Runic.Workflow do
             )
 
           map_size(active) == 0 ->
-            {workflow, stopped?}
+            {workflow, stopped?, config.execution}
 
           true ->
             deadline = active |> Map.values() |> Enum.map(&elem(&1, 1)) |> Enum.min()
@@ -3649,7 +3653,7 @@ defmodule Runic.Workflow do
 
             case receive_async_result(active, wait) do
               nil ->
-                {ref, {_pid, _, runnable}} =
+                {ref, {_pid, _, _runnable}} =
                   Enum.find(active, fn {_, {_, at, _}} -> at == deadline end)
 
                 :ok = Runic.TaskScope.cancel(config.scope, ref)
@@ -3658,12 +3662,14 @@ defmodule Runic.Workflow do
                 # result that completed at the deadline instead of discarding it.
                 case receive_async_result(%{ref => Map.fetch!(active, ref)}, 0) do
                   nil ->
-                    Logger.warning("Async execution outcome is uncertain: task timeout")
-
-                    workflow =
-                      record_execution_loss(workflow, runnable, {:timeout, config.timeout})
-
-                    async_cycle(workflow, pending, Map.delete(active, ref), true, config)
+                    apply_async_result(
+                      {:down, ref, {:timeout, config.timeout}},
+                      workflow,
+                      pending,
+                      active,
+                      stopped?,
+                      config
+                    )
 
                   result ->
                     apply_async_result(result, workflow, pending, active, stopped?, config)
@@ -3716,6 +3722,7 @@ defmodule Runic.Workflow do
          config
        ) do
     workflow = apply_runnable(workflow, executed)
+    config = %{config | execution: Execution.record(config.execution, workflow, executed)}
 
     async_cycle(
       workflow,
@@ -3734,6 +3741,11 @@ defmodule Runic.Workflow do
     Logger.warning("Async execution outcome is uncertain: #{inspect(reason)}")
     {_pid, _deadline, runnable} = Map.fetch!(active, ref)
     workflow = record_execution_loss(workflow, runnable, reason)
+
+    execution =
+      Execution.record_uncertain(config.execution, workflow, {:runnable, runnable}, reason)
+
+    config = %{config | execution: execution}
     async_cycle(workflow, pending, Map.delete(active, ref), true, config)
   end
 
@@ -3827,7 +3839,11 @@ defmodule Runic.Workflow do
   def react_until_satisfied(%__MODULE__{} = workflow, nil, opts) do
     opts = maybe_convert_deadline(opts)
     workflow = maybe_apply_run_context(workflow, opts)
-    do_react_until_satisfied(workflow, is_runnable?(workflow), opts)
+
+    {workflow, _stopped?, _execution} =
+      do_react_until_satisfied(workflow, is_runnable?(workflow), opts, nil)
+
+    workflow
   end
 
   def react_until_satisfied(%__MODULE__{} = wrk, %Fact{ancestry: nil} = fact, opts) do
@@ -3860,16 +3876,24 @@ defmodule Runic.Workflow do
     end
   end
 
-  defp do_react_until_satisfied(%__MODULE__{} = workflow, true = _is_runnable?, opts) do
+  defp do_react_until_satisfied(%__MODULE__{} = workflow, true = _is_runnable?, opts, execution) do
     checkpoint = Keyword.get(opts, :checkpoint)
 
-    {workflow, stopped?} = react_cycle(workflow, opts)
+    {workflow, stopped?, execution} = react_cycle(workflow, opts, execution)
     if is_function(checkpoint, 1), do: checkpoint.(workflow)
-    do_react_until_satisfied(workflow, not stopped? and is_runnable?(workflow), opts)
+
+    if stopped?,
+      do: {workflow, true, execution},
+      else: do_react_until_satisfied(workflow, is_runnable?(workflow), opts, execution)
   end
 
-  defp do_react_until_satisfied(%__MODULE__{} = workflow, false = _is_runnable?, _opts),
-    do: workflow
+  defp do_react_until_satisfied(
+         %__MODULE__{} = workflow,
+         false = _is_runnable?,
+         _opts,
+         execution
+       ),
+       do: {workflow, false, execution}
 
   @doc """
   Removes all `%Fact{}` vertices and generation integers from the workflow graph.

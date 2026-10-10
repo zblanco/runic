@@ -13,19 +13,15 @@ defmodule Runic.Workflow.Execution do
   `persistence` reports the existing Runner Worker persistence boundary. It is
   not an exactly-once external-effect acknowledgement. Immediate execution uses
   `:not_managed` because it has no Runner Store acknowledgement.
+  Retained earlier scopes keep their final snapshot, including persistence.
+  Use `Runic.Runner.persistence_status/2` for the current Worker acknowledgement
+  after another scope starts or stopped admission resumes.
   """
 
   alias Runic.Identity
   alias Runic.Workflow
 
-  alias Runic.Workflow.{
-    ExecutionUncertain,
-    Fact,
-    Runnable,
-    RunnableCompleted,
-    RunnableDispatched,
-    RunnableFailed
-  }
+  alias Runic.Workflow.{Fact, Runnable}
 
   alias Runic.Workflow.Execution.Outcome
 
@@ -108,7 +104,9 @@ defmodule Runic.Workflow.Execution do
   end
 
   @doc false
-  @spec record(t(), Workflow.t(), Runnable.t()) :: t()
+  @spec record(t() | nil, Workflow.t(), Runnable.t()) :: t() | nil
+  def record(nil, _workflow, _runnable), do: nil
+
   def record(%__MODULE__{} = execution, %Workflow{} = workflow, %Runnable{} = runnable) do
     if same_root?(workflow, runnable.input_fact, execution.input_fact_id) do
       outcome = Outcome.from_runnable(execution.id, runnable, length(execution.outcomes) + 1)
@@ -119,7 +117,9 @@ defmodule Runic.Workflow.Execution do
   end
 
   @doc false
-  @spec record_uncertain(t(), Workflow.t(), term(), term()) :: t()
+  @spec record_uncertain(t() | nil, Workflow.t(), term(), term()) :: t() | nil
+  def record_uncertain(nil, _workflow, _unit, _reason), do: nil
+
   def record_uncertain(%__MODULE__{} = execution, %Workflow{} = workflow, unit, reason) do
     if Enum.any?(
          unit_runnables(unit),
@@ -130,61 +130,6 @@ defmodule Runic.Workflow.Execution do
     else
       execution
     end
-  end
-
-  @doc false
-  @spec record_events(t(), Workflow.t(), [struct()]) :: t()
-  def record_events(%__MODULE__{} = execution, %Workflow{} = workflow, events) do
-    {execution, _dispatched} =
-      Enum.reduce(events, {execution, %{}}, fn
-        %RunnableDispatched{} = event, {scope, dispatched} ->
-          {scope, Map.put(dispatched, event.attempt_id, event)}
-
-        %RunnableCompleted{} = event, {scope, dispatched} ->
-          case Map.get(dispatched, event.attempt_id) do
-            %RunnableDispatched{} = dispatch ->
-              if same_root?(workflow, dispatch.input_fact, scope.input_fact_id) do
-                outcome =
-                  Outcome.from_event(scope.id, event, dispatch, length(scope.outcomes) + 1)
-
-                {%{scope | outcomes: scope.outcomes ++ [outcome]}, dispatched}
-              else
-                {scope, dispatched}
-              end
-
-            nil ->
-              {scope, dispatched}
-          end
-
-        %RunnableFailed{} = event, {scope, dispatched} ->
-          case Map.get(dispatched, event.attempt_id) do
-            %RunnableDispatched{} = dispatch ->
-              if same_root?(workflow, dispatch.input_fact, scope.input_fact_id) do
-                outcome =
-                  Outcome.from_event(scope.id, event, dispatch, length(scope.outcomes) + 1)
-
-                {%{scope | outcomes: scope.outcomes ++ [outcome]}, dispatched}
-              else
-                {scope, dispatched}
-              end
-
-            nil ->
-              {scope, dispatched}
-          end
-
-        %ExecutionUncertain{} = event, {scope, dispatched} ->
-          if uncertain_in_scope?(workflow, event, scope.input_fact_id) do
-            outcome = Outcome.from_event(scope.id, event, length(scope.outcomes) + 1)
-            {%{scope | outcomes: scope.outcomes ++ [outcome]}, dispatched}
-          else
-            {scope, dispatched}
-          end
-
-        _event, acc ->
-          acc
-      end)
-
-    execution
   end
 
   @doc false
@@ -289,18 +234,6 @@ defmodule Runic.Workflow.Execution do
 
   defp same_root?(workflow, fact, root_id) do
     Workflow.root_ancestor_hash(workflow, fact) == root_id
-  end
-
-  defp uncertain_in_scope?(workflow, event, root_id) do
-    event
-    |> Map.get(:members)
-    |> List.wrap()
-    |> Enum.any?(fn member ->
-      case Map.get(workflow.graph.vertices, Map.get(member, :input_fact_id)) do
-        %Fact{} = fact -> same_root?(workflow, fact, root_id)
-        _other -> false
-      end
-    end)
   end
 
   defp ready_descriptor(workflow, node, fact) do
