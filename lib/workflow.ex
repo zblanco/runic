@@ -4082,6 +4082,7 @@ defmodule Runic.Workflow do
 
   Walks the ancestry chain until it finds a fact with `ancestry: nil` (root input).
   Returns the hash of that root fact, or the fact's own hash if it is a root.
+  Supports both `Fact` and `FactRef` ancestors without loading their values.
 
   ## Examples
 
@@ -4091,14 +4092,18 @@ defmodule Runic.Workflow do
       iex> root_ancestor_hash(workflow, deeply_nested_fact)
       123456  # hash of the original root input
   """
-  @spec root_ancestor_hash(t(), Fact.t()) :: integer() | nil
-  def root_ancestor_hash(%__MODULE__{}, %Fact{ancestry: nil, hash: hash}), do: hash
+  @spec root_ancestor_hash(t(), Fact.t() | FactRef.t()) :: Fact.hash() | nil
+  def root_ancestor_hash(%__MODULE__{}, %{ancestry: nil, hash: hash} = fact)
+      when is_struct(fact, Fact) or is_struct(fact, FactRef),
+      do: hash
 
-  def root_ancestor_hash(%__MODULE__{graph: graph} = workflow, %Fact{
-        ancestry: {_producer_hash, parent_fact_hash}
-      }) do
+  def root_ancestor_hash(
+        %__MODULE__{graph: graph} = workflow,
+        %{ancestry: {_producer_hash, parent_fact_hash}} = fact
+      )
+      when is_struct(fact, Fact) or is_struct(fact, FactRef) do
     case Map.get(graph.vertices, parent_fact_hash) do
-      %Fact{} = parent_fact ->
+      parent_fact when is_struct(parent_fact, Fact) or is_struct(parent_fact, FactRef) ->
         root_ancestor_hash(workflow, parent_fact)
 
       nil ->
