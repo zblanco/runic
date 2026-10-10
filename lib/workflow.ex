@@ -4478,9 +4478,22 @@ defmodule Runic.Workflow do
        }) do
     Logger.warning("Runnable failed for node #{inspect(node)} with error: #{inspect(error)}")
 
-    workflow
-    |> mark_runnable_as_ran(node, fact)
-    |> skip_downstream_subgraph(node)
+    activation_consumed = %ActivationConsumed{
+      fact_hash: fact.hash,
+      node_hash: node.hash,
+      from_label: Private.connection_for_activatable(node)
+    }
+
+    workflow =
+      workflow
+      |> apply_event(activation_consumed)
+      |> skip_downstream_subgraph(node, fact)
+
+    if workflow.emit_events do
+      %{workflow | uncommitted_events: [activation_consumed | workflow.uncommitted_events]}
+    else
+      workflow
+    end
   end
 
   @doc """
@@ -4493,13 +4506,29 @@ defmodule Runic.Workflow do
   """
   @spec skip_downstream_subgraph(t(), struct()) :: t()
   def skip_downstream_subgraph(%__MODULE__{graph: graph} = workflow, failed_node) do
+    do_skip_downstream_subgraph(workflow, graph, failed_node, fn _edge -> true end)
+  end
+
+  defp skip_downstream_subgraph(
+         %__MODULE__{graph: graph} = workflow,
+         failed_node,
+         %Fact{} = failed_fact
+       ) do
+    failed_root_hash = root_ancestor_hash(workflow, failed_fact)
+
+    do_skip_downstream_subgraph(workflow, graph, failed_node, fn edge ->
+      same_root_ancestor?(workflow, edge.v1, failed_root_hash)
+    end)
+  end
+
+  defp do_skip_downstream_subgraph(workflow, graph, failed_node, suppress_edge?) do
     downstream_nodes = reachable_via_flow(graph, failed_node) -- [failed_node]
 
     graph =
       Enum.reduce(downstream_nodes, graph, fn node, g ->
         g
         |> Multigraph.in_edges(node)
-        |> Enum.filter(&(&1.label in [:runnable, :joined]))
+        |> Enum.filter(&(&1.label in [:runnable, :joined] and suppress_edge?.(&1)))
         |> Enum.reduce(g, fn edge, g_acc ->
           case Multigraph.update_labelled_edge(g_acc, edge.v1, edge.v2, edge.label,
                  label: :upstream_failed
@@ -4512,6 +4541,13 @@ defmodule Runic.Workflow do
 
     %{workflow | graph: graph}
   end
+
+  defp same_root_ancestor?(workflow, %Fact{} = fact, failed_root_hash)
+       when not is_nil(failed_root_hash) do
+    root_ancestor_hash(workflow, fact) == failed_root_hash
+  end
+
+  defp same_root_ancestor?(_workflow, _fact, _failed_root_hash), do: false
 
   defp reachable_via_flow(graph, start_node) do
     do_reachable_via_flow(graph, [start_node], MapSet.new(), [])
