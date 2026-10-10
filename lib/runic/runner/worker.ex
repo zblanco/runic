@@ -291,7 +291,7 @@ defmodule Runic.Runner.Worker do
           try do
             Execution.start(state.workflow, input, opts)
           rescue
-            error in ArgumentError -> {:error, error}
+            error in [ArgumentError, Runic.Identity.CanonicalError] -> {:error, error}
           end
 
         case execution_start do
@@ -310,8 +310,8 @@ defmodule Runic.Runner.Worker do
                   current_execution_id: execution.id
               }
 
-              state = admit_input(state, input_fact, opts)
-              {:reply, {:ok, execution.id}, state}
+              {:reply, {:ok, execution.id}, state,
+               {:continue, {:admit_execution, input_fact, opts}}}
             end
         end
 
@@ -478,6 +478,11 @@ defmodule Runic.Runner.Worker do
       {:error, reason, state} ->
         {:reply, {:error, reason}, store_current_execution_snapshot(state)}
     end
+  end
+
+  @impl GenServer
+  def handle_continue({:admit_execution, input_fact, opts}, state) do
+    {:noreply, admit_input(state, input_fact, opts)}
   end
 
   defp admit_input(state, input, opts) do

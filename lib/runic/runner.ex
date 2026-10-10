@@ -161,6 +161,9 @@ defmodule Runic.Runner do
   Returns `{:ok, execution_id}` after the input is admitted to the Worker. The
   call does not wait for computation or persistence. Use `execution/3` to
   observe progress or `await_execution/4` to wait for scope quiescence.
+  Input and execution-ID validation run before the reply. Inline work, Store
+  writes, and completion callbacks run after the reply and can delay later
+  Worker queries.
 
   Supply an `%Runic.Identity{domain: :execution}` in `:execution_id` when a
   caller owns the correlation identity. Equal repeated inputs receive

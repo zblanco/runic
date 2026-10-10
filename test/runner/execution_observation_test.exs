@@ -169,6 +169,123 @@ defmodule Runic.Runner.ExecutionObservationTest do
     assert Execution.outputs(execution) == [:value]
   end
 
+  test "invalid payloads preserve the Worker and retained executions", %{runner: runner} do
+    workflow = Runic.workflow(steps: [Runic.step(& &1, name: :echo)])
+    {:ok, worker} = Runner.start_workflow(runner, :invalid_payload, workflow, executor: :inline)
+    {:ok, first_id} = Runner.start_execution(runner, :invalid_payload, :first)
+    {:ok, _} = Runner.await_execution(runner, :invalid_payload, first_id)
+    {:ok, second_id} = Runner.start_execution(runner, :invalid_payload, :second)
+    {:ok, _} = Runner.await_execution(runner, :invalid_payload, second_id)
+    {:ok, retained} = Runner.execution(runner, :invalid_payload, first_id)
+    deep_input = Enum.reduce(1..65, :value, fn _, value -> [value] end)
+
+    for input <- [
+          %{reply_to: self()},
+          make_ref(),
+          fn -> :value end,
+          deep_input,
+          %Runic.Workflow.Fact{value: :value}
+        ] do
+      assert {:error, %Runic.Identity.CanonicalError{}} =
+               Runner.start_execution(runner, :invalid_payload, input)
+
+      assert Runner.lookup(runner, :invalid_payload) == worker
+      assert {:ok, ^retained} = Runner.execution(runner, :invalid_payload, first_id)
+      assert {:ok, current} = Runner.execution(runner, :invalid_payload, second_id)
+      assert Execution.outputs(current) == [:second]
+    end
+
+    assert {:ok, id} = Runner.start_execution(runner, :invalid_payload, :third)
+    assert {:ok, execution} = Runner.await_execution(runner, :invalid_payload, id)
+    assert Execution.outputs(execution) == [:third]
+  end
+
+  for mode <- [:default, :override] do
+    @tag inline_mode: mode
+    test "start returns its generated ID before #{mode} inline work ends", %{
+      runner: runner,
+      inline_mode: mode
+    } do
+      observer = self()
+
+      workflow =
+        Runic.workflow(
+          steps: [
+            Runic.step(
+              fn value ->
+                send(observer, {:inline_started, self()})
+                receive do: (:release -> value + 1)
+              end,
+              name: :blocked
+            )
+          ]
+        )
+
+      {workflow, opts} =
+        if mode == :default,
+          do: {workflow, [executor: :inline]},
+          else:
+            {Workflow.set_scheduler_policies(workflow, [{:blocked, %{executor: :inline}}]), []}
+
+      {:ok, worker} = Runner.start_workflow(runner, :inline_admission, workflow, opts)
+      caller = Task.async(fn -> Runner.start_execution(runner, :inline_admission, 1) end)
+      assert_receive {:inline_started, ^worker}, 1_000
+
+      try do
+        assert {:ok, id} = Task.await(caller, 1_000)
+        assert %Runic.Identity{domain: :execution} = id
+        assert {:error, :timeout} = Runner.await_execution(runner, :inline_admission, id, 20)
+        send(worker, :release)
+        assert {:ok, execution} = Runner.await_execution(runner, :inline_admission, id)
+        assert Execution.outputs(execution) == [2]
+      after
+        send(worker, :release)
+      end
+    end
+  end
+
+  test "start returns before a blocked Store write and completion callback" do
+    runner = :"admission_persistence_#{System.unique_integer([:positive])}"
+    store = start_supervised!(FailingStore)
+
+    start_supervised!(%{
+      id: {Runner, runner},
+      start:
+        {Runner, :start_link, [[name: runner, store: FailingStore, store_opts: [agent: store]]]}
+    })
+
+    observer = self()
+    workflow = Runic.workflow(steps: [Runic.step(&(&1 + 1), name: :increment)])
+
+    {:ok, worker} =
+      Runner.start_workflow(runner, :blocked_store, workflow,
+        executor: :inline,
+        on_complete: fn _, _ -> send(observer, :completed) end
+      )
+
+    :ok = :sys.suspend(store)
+    on_exit(fn -> if Process.alive?(store), do: :sys.resume(store) end)
+    caller = Task.async(fn -> Runner.start_execution(runner, :blocked_store, 1) end)
+
+    try do
+      assert {:ok, id} = Task.await(caller, 1_000)
+
+      assert_eventually(fn ->
+        {:messages, messages} = Process.info(store, :messages)
+        Enum.any?(messages, &match?({:"$gen_call", {^worker, _}, _}, &1))
+      end)
+
+      refute_received :completed
+      :ok = :sys.resume(store)
+      assert_receive :completed, 1_000
+      assert {:ok, execution} = Runner.await_execution(runner, :blocked_store, id)
+      assert execution.persistence.status == :saved
+      assert Execution.outputs(execution) == [2]
+    after
+      if Process.alive?(store), do: :sys.resume(store)
+    end
+  end
+
   test "completion callback faults do not restore state from before admission", %{runner: runner} do
     observer = self()
     workflow = Runic.workflow(steps: [Runic.step(&(&1 + 1), name: :increment)])
@@ -184,10 +301,11 @@ defmodule Runic.Runner.ExecutionObservationTest do
       )
 
     monitor = Process.monitor(worker)
-    assert catch_exit(Runner.start_execution(runner, :callback_fault, 1))
+    assert {:ok, id} = Runner.start_execution(runner, :callback_fault, 1)
     assert_receive {:completed, [2]}
     assert_receive {:DOWN, ^monitor, :process, ^worker, {%ArgumentError{}, _}}, 1_000
     assert Runner.lookup(runner, :callback_fault) == nil
+    assert {:error, :not_found} = Runner.execution(runner, :callback_fault, id)
 
     assert {:ok, _} = Runner.resume(runner, :callback_fault, owner: self())
     assert {:ok, [2]} = Runner.get_results(runner, :callback_fault)
