@@ -25,6 +25,16 @@ defmodule Runic.Runner.Promise do
   caught and returned as failed runnables in the result list. Succeeded
   runnables are committed normally.
 
+  A Promise is one admitted scheduler unit. An already admitted parallel
+  Promise completes all its members even if another unit stops Worker admission.
+  A returned failure prevents the Worker from admitting later scheduler units.
+
+  Results are sent to the Worker in one final or partial reply. The Worker
+  does not receive live progress within the Promise. Outer executor loss before
+  that reply leaves the unit uncertain; it does not create node failure events.
+  Results accepted in an earlier reply remain subject to the normal Store
+  acknowledgement boundary. Local executor release is not durable acceptance.
+
   ## Observability
 
   Promise telemetry events are emitted in addition to per-runnable events:

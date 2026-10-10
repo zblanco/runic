@@ -209,20 +209,34 @@ defmodule Runic.Runner.PromiseTest do
 
   describe "promise partial failure" do
     test "failure at step N: steps before N applied, step N marked failed", %{runner: runner} do
-      counter = :counters.new(1, [:atomics])
+      counts = :atomics.new(3, [])
 
-      step_a = Runic.step(fn x -> x + 1 end, name: :a)
+      step_a =
+        Runic.step(
+          fn x ->
+            :atomics.add(counts, 1, 1)
+            x + 1
+          end,
+          name: :a
+        )
 
       step_b =
         Runic.step(
           fn _x ->
-            :counters.add(counter, 1, 1)
+            :atomics.add(counts, 2, 1)
             raise "intentional failure"
           end,
           name: :b
         )
 
-      step_c = Runic.step(fn x -> x - 1 end, name: :c)
+      step_c =
+        Runic.step(
+          fn x ->
+            :atomics.add(counts, 3, 1)
+            x - 1
+          end,
+          name: :c
+        )
 
       workflow = Runic.workflow(steps: [{step_a, [{step_b, [step_c]}]}])
 
@@ -238,8 +252,7 @@ defmodule Runic.Runner.PromiseTest do
       # step_a produced 6, step_b failed, step_c never ran
       # The result of step_a (6) should be in productions
       assert 6 in results
-      # step_c's result (11) should NOT be in productions
-      refute 11 in results
+      assert for(index <- 1..3, do: :atomics.get(counts, index)) == [1, 1, 0]
     end
   end
 

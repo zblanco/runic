@@ -204,13 +204,20 @@ defmodule Runic.Runner.ExecutionContextTest do
 
       assert :ok = Runner.run(ctx.runner, :parallel, 10)
 
-      contexts =
+      # Stage messages are sent before the Promise reply and Worker completion.
+      # Inspect them after that barrier instead of timing each stage separately.
+      assert_receive {^token, :idle}, 5_000
+      refute_received {^token, :failed, _}
+
+      stages =
         for _ <- 1..3 do
-          assert_receive {^token, :stage, _index, work_context}, 1_000
-          work_context
+          assert_received {^token, :stage, index, work_context}
+          {index, work_context}
         end
 
-      assert_receive {^token, :idle}, 1_000
+      assert Enum.sort(Enum.map(stages, &elem(&1, 0))) == [1, 2, 3]
+      refute_received {^token, :stage, _, _}
+      contexts = Enum.map(stages, &elem(&1, 1))
 
       for work_context <- contexts do
         assert_context(work_context, ctx.first_io, observer, token)

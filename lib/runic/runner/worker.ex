@@ -57,6 +57,13 @@ defmodule Runic.Runner.Worker do
   and remain visible through `Runic.Runner.persistence_status/2`. Retry is driven
   by the checkpoint strategy or explicit calls; applications must bound admission
   and pending-buffer growth during an extended Store outage.
+
+  Completion callbacks also run when a stopped admission scope has drained.
+  The graph can still contain ready work. Callers can use
+  `Runic.Runner.admission_status/2` to distinguish open admission from a stopped
+  scope. Hooks that receive Worker state can inspect `admission_causes` directly.
+  Do not call Worker query APIs synchronously from a callback or hook. Notify an
+  observer process and let it query after the callback returns.
   """
 
   use GenServer
@@ -90,7 +97,9 @@ defmodule Runic.Runner.Worker do
     :scheduler_state,
     dispatch_mode: :automatic,
     status: :idle,
+    admission_causes: [],
     active_tasks: %{},
+    dispatched_units: %{},
     active_executors: %{},
     active_promises: %{},
     dispatch_times: %{},
@@ -262,9 +271,23 @@ defmodule Runic.Runner.Worker do
       state.workflow
       |> maybe_set_policies(policies, state.workflow.scheduler_policies)
       |> maybe_apply_run_context(opts)
-      |> Workflow.plan_eagerly(input)
 
-    state = %{state | workflow: workflow, status: :running} |> mark_persistence_pending()
+    {workflow, failed} =
+      if state.admission_causes == [] do
+        Workflow.plan_eagerly_with_result(workflow, input)
+      else
+        # Adding input is allowed in a stopped scope; executing its predicates
+        # is not. Leave those activations for explicit continuation/recovery.
+        {Workflow.plan(workflow, input), nil}
+      end
+
+    status = if state.admission_causes == [], do: :running, else: state.status
+
+    state =
+      %{state | workflow: workflow, status: status}
+      |> mark_persistence_pending()
+      |> record_planning_failure(failed)
+
     state = dispatch_runnables(state)
 
     state = maybe_transition_to_idle(state)
@@ -302,6 +325,20 @@ defmodule Runic.Runner.Worker do
       }}, state}
   end
 
+  def handle_call(:admission_status, _from, state) do
+    {:reply,
+     {:ok,
+      %{
+        status: if(state.admission_causes == [], do: :open, else: :stopped),
+        active_units: map_size(state.active_tasks),
+        causes: Enum.reverse(state.admission_causes)
+      }}, state}
+  end
+
+  def handle_call(:step, _from, %__MODULE__{admission_causes: [_ | _]} = state) do
+    {:reply, {:error, :admission_stopped}, state}
+  end
+
   def handle_call(:step, _from, %__MODULE__{dispatch_mode: :automatic} = state) do
     {:reply, {:error, :automatic_dispatch}, state}
   end
@@ -321,8 +358,18 @@ defmodule Runic.Runner.Worker do
     end
   end
 
+  def handle_call(
+        :continue,
+        _from,
+        %__MODULE__{admission_causes: [_ | _], active_tasks: tasks} = state
+      )
+      when map_size(tasks) > 0 do
+    {:reply, {:error, :busy}, state}
+  end
+
   def handle_call(:continue, _from, %__MODULE__{} = state) do
-    state = %{state | dispatch_mode: :automatic}
+    status = if Workflow.is_runnable?(state.workflow), do: :running, else: state.status
+    state = %{state | dispatch_mode: :automatic, admission_causes: [], status: status}
     state = dispatch_runnables(state)
     state = maybe_transition_to_idle(state)
     {:reply, :ok, state}
@@ -376,22 +423,30 @@ defmodule Runic.Runner.Worker do
 
   # Task crashed
   def handle_info({:DOWN, ref, :process, _pid, reason}, state) when is_reference(ref) do
+    unit = Map.get(state.dispatched_units, ref)
+    dispatch_time = Map.get(state.dispatch_times, ref)
     state = release_executor(state, ref)
+
+    state =
+      if unit do
+        duration = System.monotonic_time(:millisecond) - dispatch_time
+        notify_scheduler_complete(state, unit, duration)
+      else
+        state
+      end
 
     case Map.pop(state.active_tasks, ref) do
       {nil, _} ->
         {:noreply, state}
 
       {{:promise, promise_id}, active_tasks} ->
-        if reason != :normal do
-          Logger.warning(
-            "Runner promise task crashed for workflow #{inspect(state.id)}, " <>
-              "promise #{inspect(promise_id)}: #{inspect(reason)}"
-          )
-        end
+        Logger.warning(
+          "Runner Promise ended without a result for workflow #{inspect(state.id)}, " <>
+            "promise #{inspect(promise_id)}: #{inspect(reason)}"
+        )
 
-        {dispatch_time, dispatch_times} = Map.pop(state.dispatch_times, ref)
-        {promise, active_promises} = Map.pop(state.active_promises, promise_id)
+        {_dispatch_time, dispatch_times} = Map.pop(state.dispatch_times, ref)
+        {_promise, active_promises} = Map.pop(state.active_promises, promise_id)
 
         state = %{
           state
@@ -400,15 +455,7 @@ defmodule Runic.Runner.Worker do
             active_promises: active_promises
         }
 
-        # Mark all runnables in the promise as crashed
-        state =
-          if promise do
-            Enum.reduce(promise.runnables, state, fn r, acc ->
-              mark_crashed_runnable(acc, r.id, reason, dispatch_time)
-            end)
-          else
-            state
-          end
+        state = stop_admission(state, :uncertain, {:promise, promise_id}, reason)
 
         state = maybe_checkpoint(state)
         state = dispatch_runnables(state)
@@ -417,17 +464,15 @@ defmodule Runic.Runner.Worker do
         {:noreply, state}
 
       {runnable_id, active_tasks} ->
-        if reason != :normal do
-          Logger.warning(
-            "Runner task crashed for workflow #{inspect(state.id)}, " <>
-              "runnable #{inspect(runnable_id)}: #{inspect(reason)}"
-          )
-        end
+        Logger.warning(
+          "Runner task ended without a result for workflow #{inspect(state.id)}, " <>
+            "runnable #{inspect(runnable_id)}: #{inspect(reason)}"
+        )
 
-        {dispatch_time, dispatch_times} = Map.pop(state.dispatch_times, ref)
+        {_dispatch_time, dispatch_times} = Map.pop(state.dispatch_times, ref)
         state = %{state | active_tasks: active_tasks, dispatch_times: dispatch_times}
 
-        state = mark_crashed_runnable(state, runnable_id, reason, dispatch_time)
+        state = stop_admission(state, :uncertain, {:runnable, runnable_id}, reason)
         state = maybe_checkpoint(state)
         state = dispatch_runnables(state)
         state = maybe_transition_to_idle(state)
@@ -470,7 +515,10 @@ defmodule Runic.Runner.Worker do
     })
 
     state =
-      if promise, do: notify_scheduler_complete(state, {:promise, promise}, duration), else: state
+      if promise,
+        do:
+          notify_scheduler_complete(state, {:promise, %{promise | status: :resolved}}, duration),
+        else: state
 
     state = maybe_checkpoint(state)
     state = dispatch_runnables(state)
@@ -515,7 +563,9 @@ defmodule Runic.Runner.Worker do
     })
 
     state =
-      if promise, do: notify_scheduler_complete(state, {:promise, promise}, duration), else: state
+      if promise,
+        do: notify_scheduler_complete(state, {:promise, %{promise | status: :failed}}, duration),
+        else: state
 
     state = maybe_checkpoint(state)
     state = dispatch_runnables(state)
@@ -634,29 +684,26 @@ defmodule Runic.Runner.Worker do
     Runic.TaskScope.close(state.task_scope)
   end
 
-  defp mark_crashed_runnable(state, runnable_id, reason, dispatch_time) do
-    # Find the runnable in the workflow graph so we can mark it as failed.
-    # Without this, the :runnable edge stays in the graph and is_runnable?
-    # returns true forever — causing a deadlock.
-    case find_runnable_by_id(state.workflow, runnable_id) do
-      nil ->
-        state
-
-      runnable ->
-        failed = Runnable.fail(runnable, {:task_crashed, reason})
-        invoke_hook(state.hooks, :on_failed, [runnable, reason, state])
-        emit_runnable_result(failed, state.id, dispatch_time)
-        workflow = Workflow.apply_runnable(state.workflow, failed)
-        %{state | workflow: workflow}
-    end
+  defp stop_admission(state, kind, unit, reason) do
+    cause = %{kind: kind, unit: unit, reason: reason}
+    %{state | admission_causes: [cause | state.admission_causes]}
   end
 
-  defp find_runnable_by_id(workflow, runnable_id) do
-    Workflow.prepared_runnables(workflow)
-    |> Enum.find(fn r -> r.id == runnable_id end)
+  defp record_failure(state, %Runnable{status: :failed} = runnable) do
+    stop_admission(state, :failed, {:runnable, runnable.id}, runnable.error)
   end
 
-  defp handle_task_result(ref, executed, events, state) do
+  defp record_failure(state, _runnable), do: state
+
+  defp record_planning_failure(state, nil), do: state
+
+  defp record_planning_failure(state, %Runnable{status: :failed} = failed) do
+    emit_runnable_result(failed, state.id, nil)
+    invoke_hook(state.hooks, :on_failed, [failed, failed.error, state])
+    record_failure(state, failed)
+  end
+
+  defp handle_task_result(ref, executed, events, state, dispatch? \\ true) do
     state = release_executor(state, ref)
     {_runnable_id, active_tasks} = Map.pop(state.active_tasks, ref)
     {dispatch_time, dispatch_times} = Map.pop(state.dispatch_times, ref)
@@ -687,13 +734,19 @@ defmodule Runic.Runner.Worker do
     state =
       %{state | active_tasks: active_tasks, dispatch_times: dispatch_times}
       |> collect_pending_events(workflow, events)
+      |> record_failure(executed)
 
     state = notify_scheduler_complete(state, {:runnable, executed}, duration)
     state = maybe_checkpoint(state)
-    state = dispatch_runnables(state)
-    maybe_transition_to_idle(state)
+
+    if dispatch? do
+      state |> dispatch_runnables() |> maybe_transition_to_idle()
+    else
+      state
+    end
   end
 
+  defp dispatch_runnables(%__MODULE__{admission_causes: [_ | _]} = state), do: state
   defp dispatch_runnables(%__MODULE__{dispatch_mode: :manual} = state), do: state
   defp dispatch_runnables(%__MODULE__{} = state), do: do_dispatch_runnables(state, :all)
   defp dispatch_one(%__MODULE__{} = state), do: do_dispatch_runnables(state, 1)
@@ -731,7 +784,17 @@ defmodule Runic.Runner.Worker do
     candidates =
       Enum.map(candidates, &maybe_resolve_input_fact(&1, state.resolver))
 
-    dispatch_via_scheduler(candidates, state, limit)
+    next = dispatch_via_scheduler(candidates, state, limit)
+
+    # Inline completions do not re-enter a stale scheduler proposal. After this
+    # proposal is consumed, prepare a new one if it can make further progress.
+    if limit == :all and map_size(next.active_tasks) < next.max_concurrency and
+         next.workflow != workflow and
+         next.admission_causes == [] and Workflow.is_runnable?(next.workflow) do
+      dispatch_runnables(next)
+    else
+      next
+    end
   end
 
   defp dispatch_via_scheduler(runnables, state, limit) do
@@ -747,7 +810,7 @@ defmodule Runic.Runner.Worker do
     Enum.reduce_while(units, state, fn unit, acc ->
       available = acc.max_concurrency - map_size(acc.active_tasks)
 
-      if available <= 0 do
+      if available <= 0 or acc.admission_causes != [] do
         {:halt, acc}
       else
         acc = notify_scheduler_dispatch(acc, unit)
@@ -817,10 +880,10 @@ defmodule Runic.Runner.Worker do
 
         case result do
           {%Runnable{} = executed, events} when is_list(events) ->
-            handle_task_result(ref, executed, events, state)
+            handle_task_result(ref, executed, events, state, false)
 
           %Runnable{} = executed ->
-            handle_task_result(ref, executed, [], state)
+            handle_task_result(ref, executed, [], state, false)
         end
 
       executor_mod ->
@@ -831,6 +894,7 @@ defmodule Runic.Runner.Worker do
         %{
           state
           | active_tasks: Map.put(state.active_tasks, handle, runnable.id),
+            dispatched_units: Map.put(state.dispatched_units, handle, {:runnable, runnable}),
             active_executors: Map.put(state.active_executors, handle, executor_origin),
             dispatch_times: Map.put(state.dispatch_times, handle, now)
         }
@@ -903,6 +967,7 @@ defmodule Runic.Runner.Worker do
         %{
           state
           | active_tasks: Map.put(state.active_tasks, handle, {:promise, promise.id}),
+            dispatched_units: Map.put(state.dispatched_units, handle, {:promise, promise}),
             active_executors: Map.put(state.active_executors, handle, :default),
             active_promises: Map.put(state.active_promises, promise.id, promise),
             dispatch_times: Map.put(state.dispatch_times, handle, now)
@@ -1020,11 +1085,12 @@ defmodule Runic.Runner.Worker do
     })
 
     state =
-      if promise, do: notify_scheduler_complete(state, {:promise, promise}, duration), else: state
+      if promise,
+        do:
+          notify_scheduler_complete(state, {:promise, %{promise | status: :resolved}}, duration),
+        else: state
 
-    state = maybe_checkpoint(state)
-    state = dispatch_runnables(state)
-    maybe_transition_to_idle(state)
+    maybe_checkpoint(state)
   end
 
   defp handle_promise_partial_inline(ref, promise_id, completed, failed, state) do
@@ -1052,11 +1118,11 @@ defmodule Runic.Runner.Worker do
     })
 
     state =
-      if promise, do: notify_scheduler_complete(state, {:promise, promise}, duration), else: state
+      if promise,
+        do: notify_scheduler_complete(state, {:promise, %{promise | status: :failed}}, duration),
+        else: state
 
-    state = maybe_checkpoint(state)
-    state = dispatch_runnables(state)
-    maybe_transition_to_idle(state)
+    maybe_checkpoint(state)
   end
 
   defp apply_promise_results(state, executed_list) do
@@ -1090,7 +1156,7 @@ defmodule Runic.Runner.Worker do
           workflow
         end
 
-      collect_pending_events(acc, workflow, events)
+      acc |> collect_pending_events(workflow, events) |> record_failure(executed_runnable)
     end)
   end
 
@@ -1138,6 +1204,8 @@ defmodule Runic.Runner.Worker do
   end
 
   defp release_executor(state, handle) do
+    state = %{state | dispatched_units: Map.delete(state.dispatched_units, handle)}
+
     case Map.pop(state.active_executors, handle) do
       {nil, active_executors} ->
         %{state | active_executors: active_executors}
@@ -1194,7 +1262,7 @@ defmodule Runic.Runner.Worker do
 
   defp maybe_transition_to_idle(%__MODULE__{active_tasks: tasks, workflow: wf} = state)
        when map_size(tasks) == 0 do
-    if not Workflow.is_runnable?(wf) do
+    if state.admission_causes != [] or not Workflow.is_runnable?(wf) do
       state =
         if state.status == :running do
           state = state |> persist(:save) |> persistence_state()
@@ -1229,7 +1297,11 @@ defmodule Runic.Runner.Worker do
         recover_work(state, workflow, pending_count)
 
       pending_count > 0 ->
-        recover_work(state, Workflow.plan_eagerly(workflow), pending_count)
+        {workflow, failed} = Workflow.plan_eagerly_with_result(workflow)
+
+        %{state | workflow: workflow}
+        |> record_planning_failure(failed)
+        |> recover_work(workflow, pending_count)
 
       true ->
         state

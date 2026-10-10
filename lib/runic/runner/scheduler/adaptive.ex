@@ -176,6 +176,12 @@ defmodule Runic.Runner.Scheduler.Adaptive do
   end
 
   @impl true
+  def on_complete({:runnable, %{status: :pending}}, _duration_ms, state), do: state
+
+  def on_complete({:promise, %{status: status}}, _duration_ms, state)
+      when status != :resolved,
+      do: state
+
   def on_complete(dispatch_unit, duration_ms, state) do
     case dispatch_unit do
       {:runnable, runnable} ->
