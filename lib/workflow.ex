@@ -3335,8 +3335,27 @@ defmodule Runic.Workflow do
   @doc """
   Executes a single reaction cycle using the three-phase model.
 
-  This function advances the workflow by one "generation" - executing all currently
-  runnable steps/rules. Use `react_until_satisfied/3` to run to completion.
+  This function advances the workflow by one "generation". It executes ready
+  steps/rules until a final failure stops admission. Use `react_until_satisfied/3`
+  to evaluate successive generations within the same admission scope.
+
+  Each call starts a new scope. A failed Runnable stops new work in that call.
+  `:skip` and a successful retry/fallback allow admission to continue. Async
+  execution retains results from tasks already admitted. Ready work remains in
+  the returned graph and can run in a later call. There is no permanent graph halt.
+
+  Async results are applied in completion order. Use serial evaluation or a
+  scheduler with an explicit application order when state or effect order matters.
+
+  If an async task exits or reaches the outer `:timeout` without a result, its
+  outcome is uncertain. The call logs that loss, stops admission, and retains
+  the activation. A later call can repeat external effects. Use a policy
+  `:timeout_ms` for node-level timeout, retry, and fallback handling. This API
+  returns a graph, not a structured execution outcome.
+
+  Ready-work retention is subject to the existing structural downstream
+  suppression in `apply_runnable/2`. It does not isolate failure between inputs
+  or guarantee exact replay of a partly ready Join after failure.
 
   ## Basic Usage
 
@@ -3362,6 +3381,19 @@ defmodule Runic.Workflow do
   def react(workflow, opts \\ [])
 
   def react(%__MODULE__{} = workflow, opts) when is_list(opts) do
+    {workflow, _stopped?} = react_cycle(workflow, opts)
+    workflow
+  end
+
+  def react(%__MODULE__{} = wrk, %Fact{ancestry: nil} = fact) do
+    react(wrk, fact, [])
+  end
+
+  def react(%__MODULE__{} = wrk, raw_fact) when not is_list(raw_fact) do
+    react(wrk, Fact.new(value: raw_fact), [])
+  end
+
+  defp react_cycle(workflow, opts) do
     if is_runnable?(workflow) do
       {workflow, runnables} = prepare_for_dispatch(workflow)
 
@@ -3371,16 +3403,8 @@ defmodule Runic.Workflow do
         execute_runnables_serial(workflow, runnables, opts)
       end
     else
-      workflow
+      {workflow, false}
     end
-  end
-
-  def react(%__MODULE__{} = wrk, %Fact{ancestry: nil} = fact) do
-    react(wrk, fact, [])
-  end
-
-  def react(%__MODULE__{} = wrk, raw_fact) when not is_list(raw_fact) do
-    react(wrk, Fact.new(value: raw_fact), [])
   end
 
   @doc """
@@ -3413,16 +3437,11 @@ defmodule Runic.Workflow do
     policies = resolve_effective_policies(workflow, opts)
     driver_opts = build_driver_opts(opts)
 
-    runnables
-    |> Enum.map(fn runnable ->
-      if policies == [] do
-        Invokable.execute(runnable.node, runnable)
-      else
-        policy = SchedulerPolicy.resolve(runnable, policies)
-        PolicyDriver.execute(runnable, policy, driver_opts)
-      end
+    Enum.reduce_while(runnables, {workflow, false}, fn runnable, {wrk, false} ->
+      executed = execute_with_policy(runnable, policies, driver_opts)
+      result = {apply_runnable(wrk, executed), executed.status == :failed}
+      if executed.status == :failed, do: {:halt, result}, else: {:cont, result}
     end)
-    |> Enum.reduce(workflow, fn executed, wrk -> apply_runnable(wrk, executed) end)
   end
 
   defp execute_runnables_async(workflow, runnables, opts) do
@@ -3431,29 +3450,129 @@ defmodule Runic.Workflow do
     policies = resolve_effective_policies(workflow, opts)
     driver_opts = build_driver_opts(opts)
 
-    runnables
-    |> Runic.TaskScope.async_reduce(
-      fn runnable ->
-        if policies == [] do
-          Invokable.execute(runnable.node, runnable)
-        else
-          policy = SchedulerPolicy.resolve(runnable, policies)
-          PolicyDriver.execute(runnable, policy, driver_opts)
-        end
-      end,
-      workflow,
-      fn
-        {:ok, executed}, wrk ->
-          apply_runnable(wrk, executed)
+    unless is_integer(max_concurrency) and max_concurrency > 0 do
+      raise ArgumentError, "max_concurrency must be a positive integer"
+    end
 
-        {:exit, {runnable, reason}}, wrk ->
-          Logger.warning("Async execution failed: #{inspect(reason)}")
-          apply_runnable(wrk, Runnable.fail(runnable, {:task_crashed, reason}))
-      end,
-      max_concurrency: max_concurrency,
-      timeout: timeout,
-      zip_input_on_exit: true
+    unless timeout == :infinity or (is_integer(timeout) and timeout >= 0) do
+      raise ArgumentError, "timeout must be a non-negative integer or :infinity"
+    end
+
+    Runic.TaskScope.with_scope(fn scope ->
+      config = %{
+        scope: scope,
+        max_concurrency: max_concurrency,
+        timeout: timeout,
+        execute: &execute_with_policy(&1, policies, driver_opts)
+      }
+
+      async_cycle(workflow, runnables, %{}, false, config)
+    end)
+  end
+
+  defp execute_with_policy(runnable, [], _opts), do: Invokable.execute(runnable.node, runnable)
+
+  defp execute_with_policy(runnable, policies, opts) do
+    PolicyDriver.execute(runnable, SchedulerPolicy.resolve(runnable, policies), opts)
+  end
+
+  defp async_cycle(workflow, pending, active, stopped?, config) do
+    # Consume available results before using a free slot. A stopped scope drains
+    # admitted tasks, but leaves all other activations ready for the next call.
+    case receive_async_result(active, 0) do
+      nil ->
+        cond do
+          not stopped? and pending != [] and map_size(active) < config.max_concurrency ->
+            [runnable | rest] = pending
+
+            {handle, pid} =
+              Runic.TaskScope.dispatch(config.scope, fn -> config.execute.(runnable) end)
+
+            deadline =
+              if config.timeout == :infinity,
+                do: :infinity,
+                else: System.monotonic_time(:millisecond) + config.timeout
+
+            async_cycle(
+              workflow,
+              rest,
+              Map.put(active, handle, {pid, deadline}),
+              stopped?,
+              config
+            )
+
+          map_size(active) == 0 ->
+            {workflow, stopped?}
+
+          true ->
+            deadline = active |> Map.values() |> Enum.map(&elem(&1, 1)) |> Enum.min()
+
+            wait =
+              if deadline == :infinity,
+                do: :infinity,
+                else: max(deadline - System.monotonic_time(:millisecond), 0)
+
+            case receive_async_result(active, wait) do
+              nil ->
+                {ref, {_pid, _}} = Enum.find(active, fn {_, {_, at}} -> at == deadline end)
+                :ok = Runic.TaskScope.cancel(config.scope, ref)
+
+                # Scope replies precede cancellation acknowledgement. Preserve a
+                # result that completed at the deadline instead of discarding it.
+                case receive_async_result(%{ref => Map.fetch!(active, ref)}, 0) do
+                  nil ->
+                    Logger.warning("Async execution outcome is uncertain: task timeout")
+                    async_cycle(workflow, pending, Map.delete(active, ref), true, config)
+
+                  result ->
+                    apply_async_result(result, workflow, pending, active, stopped?, config)
+                end
+
+              result ->
+                apply_async_result(result, workflow, pending, active, stopped?, config)
+            end
+        end
+
+      result ->
+        apply_async_result(result, workflow, pending, active, stopped?, config)
+    end
+  end
+
+  defp receive_async_result(active, timeout) do
+    receive do
+      {ref, executed} when is_map_key(active, ref) -> {:result, ref, executed}
+      {:DOWN, ref, :process, _pid, reason} when is_map_key(active, ref) -> {:down, ref, reason}
+    after
+      timeout -> nil
+    end
+  end
+
+  defp apply_async_result(
+         {:result, ref, %Runnable{} = executed},
+         workflow,
+         pending,
+         active,
+         stopped?,
+         config
+       ) do
+    workflow = apply_runnable(workflow, executed)
+
+    async_cycle(
+      workflow,
+      pending,
+      Map.delete(active, ref),
+      stopped? or executed.status == :failed,
+      config
     )
+  end
+
+  defp apply_async_result({:result, ref, _invalid}, workflow, pending, active, stopped?, config) do
+    apply_async_result({:down, ref, :invalid_result}, workflow, pending, active, stopped?, config)
+  end
+
+  defp apply_async_result({:down, ref, reason}, workflow, pending, active, _stopped?, config) do
+    Logger.warning("Async execution outcome is uncertain: #{inspect(reason)}")
+    async_cycle(workflow, pending, Map.delete(active, ref), true, config)
   end
 
   defp build_driver_opts(opts) do
@@ -3483,10 +3602,12 @@ defmodule Runic.Workflow do
   end
 
   @doc """
-  Executes the workflow until no more runnables remain.
+  Executes the workflow until no more runnables remain or a failure stops admission.
 
-  Iteratively calls `react/2` until all reachable nodes have been executed.
-  This is the recommended way to fully evaluate a workflow pipeline.
+  Evaluates successive reaction cycles within one call-scoped admission boundary.
+  A failure ends this call after active tasks drain. A later call starts a new
+  scope and can execute the ready work retained in the graph. See `react/2` for
+  async uncertainty and timeout behavior.
 
   ## Basic Usage
 
@@ -3546,7 +3667,7 @@ defmodule Runic.Workflow do
     wrk = maybe_apply_run_context(wrk, opts)
 
     wrk
-    |> react(fact, opts)
+    |> invoke(root(), fact)
     |> react_until_satisfied(nil, opts)
   end
 
@@ -3574,12 +3695,9 @@ defmodule Runic.Workflow do
   defp do_react_until_satisfied(%__MODULE__{} = workflow, true = _is_runnable?, opts) do
     checkpoint = Keyword.get(opts, :checkpoint)
 
-    workflow
-    |> react(opts)
-    |> then(fn wrk ->
-      if is_function(checkpoint, 1), do: checkpoint.(wrk)
-      do_react_until_satisfied(wrk, is_runnable?(wrk), opts)
-    end)
+    {workflow, stopped?} = react_cycle(workflow, opts)
+    if is_function(checkpoint, 1), do: checkpoint.(workflow)
+    do_react_until_satisfied(workflow, not stopped? and is_runnable?(workflow), opts)
   end
 
   defp do_react_until_satisfied(%__MODULE__{} = workflow, false = _is_runnable?, _opts),
@@ -3687,6 +3805,8 @@ defmodule Runic.Workflow do
   and you want to continue preparing reactions in the workflow from output facts.
 
   Finds facts via `:produced` edges that don't have pending `:runnable` or `:matchable` edges.
+  Stops at the first failed match, leaving unstarted activations in the returned
+  workflow. A later planning or execution call can continue that work.
 
   ## Examples
 
@@ -3703,7 +3823,16 @@ defmodule Runic.Workflow do
       iex> Workflow.is_runnable?(workflow)
       true
   """
-  def plan_eagerly(%__MODULE__{graph: graph} = workflow) do
+  def plan_eagerly(%__MODULE__{} = workflow) do
+    {workflow, _failed} = plan_eagerly_with_result(workflow)
+    workflow
+  end
+
+  # Keep the outcome outside the reusable graph. Managed drivers must observe
+  # match failures before admitting any right-hand-side work.
+  @doc false
+  @spec plan_eagerly_with_result(t()) :: {t(), Runnable.t() | nil}
+  def plan_eagerly_with_result(%__MODULE__{graph: graph} = workflow) do
     # Find all produced facts that don't have pending activations
     # Also exclude facts that have :ran edges - those have already been processed
     new_productions =
@@ -3718,13 +3847,15 @@ defmodule Runic.Workflow do
     Enum.reduce(new_productions, workflow, fn output_fact, wrk ->
       plan(wrk, output_fact)
     end)
-    |> activate_through_possible_matches()
+    |> activate_matches_with_result()
   end
 
   @doc """
   Invokes all left hand side / match-phase runnables in the workflow for a given input fact until all are satisfied.
 
-  Upon calling plan_eagerly/2, the workflow will only have right hand side runnables left to execute that react or react_until_satisfied can execute.
+  On success, only right hand side runnables remain for react or
+  react_until_satisfied. A failed match stops this planning call and retains
+  unstarted matches. The graph itself has no persistent failure scope.
 
   ## Examples
 
@@ -3738,48 +3869,32 @@ defmodule Runic.Workflow do
       iex> workflow |> Workflow.react() |> Workflow.raw_productions()
       [:positive]
   """
-  def plan_eagerly(%__MODULE__{} = workflow, %Fact{ancestry: nil} = input_fact) do
+  def plan_eagerly(%__MODULE__{} = workflow, input) do
+    {workflow, _failed} = plan_eagerly_with_result(workflow, input)
     workflow
-    |> plan(input_fact)
-    |> activate_through_possible_matches()
   end
 
-  def plan_eagerly(%__MODULE__{} = workflow, %Fact{ancestry: {_, _}} = produced_fact) do
+  @doc false
+  @spec plan_eagerly_with_result(t(), Fact.t() | term()) :: {t(), Runnable.t() | nil}
+  def plan_eagerly_with_result(%__MODULE__{} = workflow, input) do
     workflow
-    |> plan(produced_fact)
-    |> activate_through_possible_matches()
+    |> plan(input)
+    |> activate_matches_with_result()
   end
 
-  def plan_eagerly(%__MODULE__{} = wrk, raw_fact) do
-    plan_eagerly(wrk, Fact.new(value: raw_fact))
-  end
+  defp activate_matches_with_result(workflow) do
+    case next_match_runnables(workflow) do
+      [] ->
+        {workflow, nil}
 
-  defp activate_through_possible_matches(wrk) do
-    activate_through_possible_matches(
-      wrk,
-      next_match_runnables(wrk),
-      any_match_phase_runnables?(wrk)
-    )
-  end
-
-  defp activate_through_possible_matches(
-         wrk,
-         next_match_runnables,
-         _any_match_phase_runnables? = true
-       ) do
-    Enum.reduce(next_match_runnables, wrk, fn {node, fact}, wrk ->
-      wrk
-      |> invoke(node, fact)
-      |> activate_through_possible_matches()
-    end)
-  end
-
-  defp activate_through_possible_matches(
-         wrk,
-         _match_runnables,
-         _any_match_phase_runnables? = false
-       ) do
-    wrk
+      [{node, fact} | _] ->
+        # Read a fresh frontier after applying each match. Recursing inside a
+        # reduce over an older frontier can execute an already-consumed match.
+        case invoke_with_result(workflow, node, fact) do
+          {workflow, %Runnable{status: :failed} = failed} -> {workflow, failed}
+          {workflow, _result} -> activate_matches_with_result(workflow)
+        end
+    end
   end
 
   @doc """
@@ -3811,16 +3926,21 @@ defmodule Runic.Workflow do
       # => true
   """
   def invoke(%__MODULE__{} = wrk, step, fact) do
+    {workflow, _result} = invoke_with_result(wrk, step, fact)
+    workflow
+  end
+
+  defp invoke_with_result(wrk, step, fact) do
     case Invokable.prepare(step, wrk, fact) do
       {:ok, runnable} ->
         executed = Invokable.execute(step, runnable)
-        apply_runnable(wrk, executed)
+        {apply_runnable(wrk, executed), executed}
 
       {:skip, reducer_fn} ->
-        reducer_fn.(wrk)
+        {reducer_fn.(wrk), nil}
 
       {:defer, reducer_fn} ->
-        reducer_fn.(wrk)
+        {reducer_fn.(wrk), nil}
     end
   end
 
@@ -3939,10 +4059,6 @@ defmodule Runic.Workflow do
         properties: edge.properties
       }
     end)
-  end
-
-  defp any_match_phase_runnables?(%__MODULE__{graph: graph}) do
-    not Enum.empty?(Multigraph.edges(graph, by: :matchable))
   end
 
   defp next_match_runnables(%__MODULE__{graph: graph}) do
@@ -4478,9 +4594,22 @@ defmodule Runic.Workflow do
        }) do
     Logger.warning("Runnable failed for node #{inspect(node)} with error: #{inspect(error)}")
 
-    workflow
-    |> mark_runnable_as_ran(node, fact)
-    |> skip_downstream_subgraph(node)
+    event = %ActivationConsumed{
+      fact_hash: fact.hash,
+      node_hash: node.hash,
+      from_label: Private.connection_for_activatable(node)
+    }
+
+    workflow =
+      workflow
+      |> apply_event(event)
+      |> skip_downstream_subgraph(node)
+
+    if workflow.emit_events do
+      %{workflow | uncommitted_events: [event | workflow.uncommitted_events]}
+    else
+      workflow
+    end
   end
 
   @doc """

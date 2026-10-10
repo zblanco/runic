@@ -108,6 +108,8 @@ defmodule Runic.Runner.ParallelPromiseTest do
     end
 
     test "parallel promise with Task executor (async dispatch)", %{runner: runner} do
+      observer = self()
+      completed = make_ref()
       step_a = Runic.step(fn x -> x + 1 end, name: :a)
       step_b = Runic.step(fn x -> x * 2 end, name: :b)
 
@@ -115,11 +117,15 @@ defmodule Runic.Runner.ParallelPromiseTest do
 
       {:ok, _} =
         Runic.Runner.start_workflow(runner, :wf_par_async, workflow,
-          scheduler: TestParallelScheduler
+          scheduler: TestParallelScheduler,
+          on_complete: fn _, _ -> send(observer, {completed, :complete}) end
         )
 
       :ok = Runic.Runner.run(runner, :wf_par_async, 7)
-      assert_workflow_idle(runner, :wf_par_async)
+      assert_receive {^completed, :complete}, 5_000
+
+      assert {:ok, %{active_units: 0, status: :open}} =
+               Runic.Runner.admission_status(runner, :wf_par_async)
 
       {:ok, results} = Runic.Runner.get_results(runner, :wf_par_async)
       # 7 + 1
@@ -129,15 +135,15 @@ defmodule Runic.Runner.ParallelPromiseTest do
     end
 
     test "parallel promise verifies concurrent execution", %{runner: runner} do
-      # Each step sleeps and records its start/end time to prove concurrency
       parent = self()
+      completed = make_ref()
 
       step_a =
         Runic.step(
           fn x ->
-            send(parent, {:started, :a, System.monotonic_time(:millisecond)})
-            Process.sleep(50)
-            send(parent, {:finished, :a, System.monotonic_time(:millisecond)})
+            send(parent, {:started, :a, self()})
+            receive do: (:release -> :ok)
+            send(parent, {:finished, :a})
             x + 1
           end,
           name: :a
@@ -146,9 +152,9 @@ defmodule Runic.Runner.ParallelPromiseTest do
       step_b =
         Runic.step(
           fn x ->
-            send(parent, {:started, :b, System.monotonic_time(:millisecond)})
-            Process.sleep(50)
-            send(parent, {:finished, :b, System.monotonic_time(:millisecond)})
+            send(parent, {:started, :b, self()})
+            receive do: (:release -> :ok)
+            send(parent, {:finished, :b})
             x * 2
           end,
           name: :b
@@ -158,21 +164,25 @@ defmodule Runic.Runner.ParallelPromiseTest do
 
       {:ok, _} =
         Runic.Runner.start_workflow(runner, :wf_par_concurrent, workflow,
-          scheduler: TestParallelScheduler
+          scheduler: TestParallelScheduler,
+          scheduler_opts: [flow_opts: [stages: 2, max_demand: 1]],
+          on_complete: fn _, _ -> send(parent, {completed, :complete}) end
         )
 
       :ok = Runic.Runner.run(runner, :wf_par_concurrent, 5)
-      assert_workflow_idle(runner, :wf_par_concurrent)
-
-      # Collect timing messages
-      assert_receive {:started, :a, a_start}, 2000
-      assert_receive {:started, :b, b_start}, 2000
-      assert_receive {:finished, :a, _a_end}, 2000
-      assert_receive {:finished, :b, _b_end}, 2000
-
-      # Both should start within a small window (< 40ms apart),
-      # proving they run concurrently, not sequentially
-      assert abs(a_start - b_start) < 40
+      # Neither callback can finish before both are confirmed active.
+      assert_receive {:started, :a, a_pid}, 2_000
+      assert_receive {:started, :b, b_pid}, 2_000
+      assert a_pid != b_pid
+      assert Process.alive?(a_pid) and Process.alive?(b_pid)
+      refute_received {:finished, _}
+      send(a_pid, :release)
+      assert_receive {:finished, :a}, 2_000
+      assert {:ok, %{active_units: 1}} = Runic.Runner.admission_status(runner, :wf_par_concurrent)
+      refute_received {:finished, :b}
+      send(b_pid, :release)
+      assert_receive {^completed, :complete}, 5_000
+      assert_received {:finished, :b}
 
       {:ok, results} = Runic.Runner.get_results(runner, :wf_par_concurrent)
       assert 6 in results

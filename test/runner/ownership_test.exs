@@ -244,7 +244,7 @@ defmodule Runic.Runner.OwnershipTest do
     assert Runner.list_workflows(ctx.runner) == []
   end
 
-  test "an immediate asynchronous work-process crash is contained and consumes its activation" do
+  test "an immediate asynchronous work-process crash is contained and retains uncertain work" do
     observer = self()
 
     workflow =
@@ -258,7 +258,7 @@ defmodule Runic.Runner.OwnershipTest do
       end)
 
     on_exit(fn -> if Process.alive?(caller), do: Process.exit(caller, :kill) end)
-    assert_receive {:returned, false}, 1_000
+    assert_receive {:returned, true}, 1_000
   end
 
   test "cancel can stop an inline Worker that traps exits", ctx do

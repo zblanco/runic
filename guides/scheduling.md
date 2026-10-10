@@ -744,6 +744,104 @@ Your scheduler only decides the execution strategy (tasks, pool, remote nodes). 
 
 Using `Task.Supervisor` means a crashing task doesn't bring down the scheduler. The `handle_info({:DOWN, ...})` callback handles task failures gracefully. The `%Runnable{}` struct includes an `error` field for failed executions, and `Workflow.apply_runnable/2` handles failed runnables by logging a warning and marking them as ran.
 
+## Failure scope and retained work
+
+`on_failure: :halt` stops new admission after retries and fallback finish with a
+failed Runnable. `on_failure: :skip` consumes the failed activation and permits
+independent work to continue. A successful retry or fallback also permits
+admission to continue. A failed retry predicate still fails closed.
+
+For `Workflow.react/2` and `Workflow.react_until_satisfied/3`, one call is one
+admission scope. The returned graph retains ready work. A later call starts a
+new scope. The graph has no permanent halt field, and replay does not create one.
+Async execution processes task completions as they arrive and fills free slots.
+After a failure, it admits no new tasks and retains results from tasks already
+admitted. There is no whole-group wait before a free slot can be used.
+Results are applied in completion order, which can change the latest state when
+several activations update one component. Use serial evaluation or a scheduler
+with an explicit application order when state or effect order matters.
+
+For a Runner Worker, a final node failure stops admission until explicit
+`Runner.continue/2` or stop/resume. `Runner.admission_status/2` returns the current
+status, number of active units, and causes. Each cause has a kind, unit identity,
+and reason. `:failed` means a returned node failure. `:uncertain` means an outer
+executor ended without a result. Multiple causes remain visible while units
+drain. `step/2` returns `{:error, :admission_stopped}` in a stopped scope.
+`run/4` can add input but does not reopen admission. `continue/2` returns
+`{:error, :busy}` if a stopped scope still has active units.
+
+Failures during eager predicate planning also stop Worker admission and invoke
+the Worker's `on_failed` hook before dispatch. Planning consumes the failed
+activation and retains unstarted matches. Adding input to a stopped scope
+records its activations without executing predicate hooks; explicit continuation
+or recovery can process them. Already admitted units still drain normally.
+
+Do not query Worker APIs synchronously from callbacks or hooks. Have a hook
+notify an observer process, which can query after the callback returns.
+
+This local example uses inline execution so each call can be inspected without
+a wait loop:
+
+```elixir
+require Runic
+alias Runic.{Runner, Workflow}
+
+workflow = Runic.workflow(steps: [
+  Runic.step(fn input ->
+    if input == :fail, do: raise("input failed"), else: {:ok, input}
+  end, name: :check)
+])
+
+# Each immediate call has its own scope. A new input can use the same graph.
+stopped = Workflow.react_until_satisfied(workflow, :fail)
+reused = Workflow.react_until_satisfied(stopped, :good)
+[{:ok, :good}] = Workflow.raw_productions(reused)
+
+{:ok, _} = Runner.start_link(name: ExampleRunner)
+{:ok, _} = Runner.start_workflow(ExampleRunner, :example, workflow,
+  dispatch_mode: :manual, executor: :inline)
+:ok = Runner.run(ExampleRunner, :example, :fail)
+:ok = Runner.step(ExampleRunner, :example) # Admission succeeded; the node failed.
+{:ok, %{status: :stopped, active_units: 0, causes: [%{kind: :failed}]}} =
+  Runner.admission_status(ExampleRunner, :example)
+
+:ok = Runner.run(ExampleRunner, :example, :good)
+{:error, :admission_stopped} = Runner.step(ExampleRunner, :example)
+:ok = Runner.continue(ExampleRunner, :example)
+{:ok, [{:ok, :good}]} = Runner.get_results(ExampleRunner, :example)
+:ok = Runner.stop(ExampleRunner, :example)
+```
+
+Outer executor loss does not prove that a node ran or failed. It does not invoke
+node retry/fallback or produce invented node lifecycle events. The Worker keeps
+the activation ready. Explicit continue or resume can repeat its external
+effects; the caller must decide whether that is acceptable. Immediate async
+calls also retain uncertain work and log the loss. They return only a graph.
+Use policy `timeout_ms` for node timeout/retry handling; the immediate async
+`:timeout` option limits the outer task and can leave an uncertain result.
+
+A Promise is one scheduler unit. An admitted parallel Promise completes all its
+members even after another unit stops Worker admission. Sequential Promises
+return a completed prefix and the failed node when a node fails. The Worker
+accepts final or partial replies once. It does not receive live progress before
+that reply. If the outer executor loses the reply, the computed prefix can be
+unknown and its effects can repeat. This change does not add a progress journal,
+distributed recovery, or exactly-once effects.
+
+Admission state is local to the Worker. It is separate from persistence:
+`admission_status/2` does not acknowledge storage. Use `persistence_status/2` to
+inspect Store errors and pending events. Reopening admission does not clear
+those errors or events. A failed persistent stop retains the live Worker and
+executor resources. Replay retains accepted node effects, including consumed
+failed activations, but starts a new admission scope.
+
+The existing core downstream suppression still uses graph structure. It can
+suppress ready downstream work from another input, and its `:upstream_failed`
+edge changes are not all represented in the event stream. This change does not
+provide failure isolation between concurrent inputs or exact replay of a
+partly ready Join after failure. Retention of ready work is subject to that
+existing behavior. Use separate workflows when input failure isolation is required.
+
 ## Key API Reference
 
 | Function | Purpose |

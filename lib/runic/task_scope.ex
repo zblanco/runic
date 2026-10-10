@@ -130,12 +130,14 @@ defmodule Runic.TaskScope do
         {:DOWN, ^handle, :process, _pid, reason} -> {:exit, reason}
       after
         timeout ->
-          GenServer.call(scope, {:cancel, handle}, :infinity)
+          cancel(scope, handle)
           flush(handle)
           nil
       end
     end)
   end
+
+  def cancel(scope, handle), do: GenServer.call(scope, {:cancel, handle}, :infinity)
 
   def async_reduce(enumerable, work, initial, reducer, opts) do
     context = capture_context()

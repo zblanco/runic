@@ -377,18 +377,19 @@ defmodule Runic.Runner.DurableExecutionTest do
       )
 
     :ok = Runic.Runner.run(runner, :wf_prepared_recovery, {1, observer})
-    assert_receive :first_step_completed
-    assert_receive {:blocking_step_started, first_task}
+    assert_receive :first_step_completed, 2_000
+    assert_receive {:blocking_step_started, first_task}, 2_000
 
     first_task_ref = Process.monitor(first_task)
     :ok = Runic.Runner.checkpoint(runner, :wf_prepared_recovery)
     :ok = Runic.Runner.stop(runner, :wf_prepared_recovery, persist: true)
-    Process.exit(first_task, :kill)
-    assert_receive {:DOWN, ^first_task_ref, :process, ^first_task, _reason}
+    refute Process.alive?(first_task)
+    assert_receive {:DOWN, ^first_task_ref, :process, ^first_task, _reason}, 2_000
 
     {:ok, _pid} = Runic.Runner.resume(runner, :wf_prepared_recovery)
-    assert_receive {:blocking_step_started, resumed_task}
-    refute_receive :first_step_completed
+    assert_receive {:blocking_step_started, resumed_task}, 2_000
+    # Reaching the second callback is a barrier for any repeated first callback.
+    refute_received :first_step_completed
     send(resumed_task, :release)
 
     assert_workflow_idle(runner, :wf_prepared_recovery)

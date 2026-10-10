@@ -182,6 +182,20 @@ defmodule Runic.Runner.Scheduler.AdaptiveTest do
   # ---------------------------------------------------------------------------
 
   describe "on_complete/3" do
+    test "unresolved units do not produce success samples" do
+      {:ok, state} = Adaptive.init([])
+      runnable = build_runnable(:unresolved)
+      promise = Runic.Runner.Promise.new([runnable])
+      assert Adaptive.on_complete({:runnable, runnable}, 10, state) == state
+      assert Adaptive.on_complete({:promise, promise}, 10, state) == state
+    end
+
+    test "partial Promise failure does not profile unexecuted members" do
+      {:ok, state} = Adaptive.init([])
+      promise = Runic.Runner.Promise.new([build_runnable(:partial)])
+      assert Adaptive.on_complete({:promise, %{promise | status: :failed}}, 10, state) == state
+    end
+
     test "accumulates sample count for individual runnables" do
       {:ok, state} = Adaptive.init([])
       runnable = build_runnable(:test)
@@ -249,7 +263,7 @@ defmodule Runic.Runner.Scheduler.AdaptiveTest do
           node_hashes: MapSet.new([1, 2, 3])
         )
 
-      state = Adaptive.on_complete({:promise, promise}, 30, state)
+      state = Adaptive.on_complete({:promise, %{promise | status: :resolved}}, 30, state)
 
       # 30ms / 3 nodes = 10ms each
       for hash <- [1, 2, 3] do
@@ -267,7 +281,7 @@ defmodule Runic.Runner.Scheduler.AdaptiveTest do
           node_hashes: MapSet.new([42])
         )
 
-      state = Adaptive.on_complete({:promise, promise}, 10, state)
+      state = Adaptive.on_complete({:promise, %{promise | status: :resolved}}, 10, state)
 
       profile = Adaptive.get_profile(state, 42)
       assert profile.error_count == 0
