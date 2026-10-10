@@ -248,6 +248,7 @@ defmodule Runic.Workflow do
   alias Runic.Workflow.RunnableCompleted
   alias Runic.Workflow.RunnableFailed
   alias Runic.Workflow.ExecutionUncertain
+  alias Runic.Workflow.Execution
   alias Runic.Workflow.Private
   alias Runic.Workflow.Events.FactProduced
   alias Runic.Workflow.Events.ActivationConsumed
@@ -3353,6 +3354,96 @@ defmodule Runic.Workflow do
 
   @doc false
   def matches(workflow), do: Private.matches(workflow)
+
+  @doc """
+  Executes one input in an observable, call-scoped admission boundary.
+
+  Returns the updated reusable workflow and a `%Runic.Workflow.Execution{}`.
+  The execution ID and input Fact occurrence ID distinguish repeated equal
+  inputs. Pass an existing `:execution_id` to use the same correlation identity.
+
+  Outcomes keep actual acceptance or uncertainty order. Stable consumer order
+  is available through `Runic.Workflow.Execution.ordered_outcomes/2`.
+
+  This immediate API has no Store acknowledgement, so its persistence status is
+  `:not_managed`. It does not add a permanent halt to the workflow. A stopped
+  execution can leave ready work in the returned workflow for a later call.
+
+  ## Options
+
+  Accepts the options of `react_until_satisfied/3`, plus:
+
+    * `:execution_id` - an optional `%Runic.Identity{domain: :execution}`
+    * `:runnable_order` - defaults to `:stable` for this observation API
+
+  ## Example
+
+      iex> require Runic
+      iex> alias Runic.Workflow
+      iex> workflow = Runic.workflow(steps: [Runic.step(&(&1 * 2), name: :double)])
+      iex> {_workflow, execution} = Workflow.execute(workflow, 3)
+      iex> execution.quiescent?
+      true
+      iex> Runic.Workflow.Execution.outputs(execution)
+      [6]
+  """
+  @spec execute(t(), term(), keyword()) :: {t(), Execution.t()}
+  def execute(%__MODULE__{} = workflow, input, opts \\ []) when is_list(opts) do
+    {execution, input_fact} = Execution.start(workflow, input, opts)
+    runnable_event_count = length(workflow.runnable_events)
+    emit_events = workflow.emit_events
+    uncommitted_events = workflow.uncommitted_events
+
+    observed_workflow = %{workflow | emit_events: true}
+
+    {observed_workflow, planning_failure} =
+      plan_eagerly_with_result(observed_workflow, input_fact)
+
+    execution =
+      if planning_failure,
+        do: Execution.record(execution, observed_workflow, planning_failure),
+        else: execution
+
+    run_opts = opts |> Keyword.delete(:execution_id) |> Keyword.put_new(:runnable_order, :stable)
+
+    observed_workflow =
+      if planning_failure do
+        observed_workflow
+      else
+        react_until_satisfied(observed_workflow, nil, run_opts)
+      end
+
+    lifecycle_events = Enum.drop(observed_workflow.runnable_events, runnable_event_count)
+    execution = Execution.record_events(execution, observed_workflow, lifecycle_events)
+
+    admission =
+      if Enum.any?(execution.outcomes, &(&1.kind in [:failed, :uncertain])),
+        do: :stopped,
+        else: :open
+
+    execution =
+      Execution.observe(
+        execution,
+        observed_workflow,
+        [],
+        admission,
+        %{status: :not_managed, event_cursor: nil, pending_events: 0}
+      )
+
+    returned_workflow =
+      if emit_events do
+        observed_workflow
+      else
+        %{
+          observed_workflow
+          | emit_events: false,
+            runnable_events: workflow.runnable_events,
+            uncommitted_events: uncommitted_events
+        }
+      end
+
+    {returned_workflow, execution}
+  end
 
   @doc """
   Executes a single reaction cycle using the three-phase model.

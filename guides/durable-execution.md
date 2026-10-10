@@ -433,6 +433,10 @@ includes the same field. Neither callback nor workflow `:stop` alone claims
 durable completion. Applications requiring persistence should act on an acknowledged
 checkpoint or check persistence status before announcing saved progress.
 
+`Runic.Runner.execution/3` combines this Worker persistence status with one
+process-local execution observation. See
+[Execution observation](execution-observation.md) for the exact boundary.
+
 Observe automatic failures through an additive hook:
 
 ```elixir

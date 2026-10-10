@@ -77,7 +77,7 @@ defmodule Runic.Runner.Worker do
   require Logger
 
   alias Runic.Workflow
-  alias Runic.Workflow.{Runnable, FactRef, FactResolver}
+  alias Runic.Workflow.{Execution, Runnable, FactRef, FactResolver}
   alias Runic.Workflow.Events.FactProduced
   alias Runic.Workflow.SchedulerPolicy
   alias Runic.Workflow.PolicyDriver
@@ -115,6 +115,8 @@ defmodule Runic.Runner.Worker do
     event_cursor: 0,
     uncommitted_events: [],
     persistence: :pending,
+    executions: %{},
+    current_execution_id: nil,
     hooks: %{},
     override_executors: %{},
     promise_opts: []
@@ -273,38 +275,84 @@ defmodule Runic.Runner.Worker do
   @impl GenServer
   def handle_cast({:run, input, opts}, %__MODULE__{status: status} = state)
       when status in [:idle, :running] do
-    policies = merge_runtime_policies(opts, state.workflow.scheduler_policies)
-
-    workflow =
-      state.workflow
-      |> maybe_set_policies(policies, state.workflow.scheduler_policies)
-      |> maybe_apply_run_context(opts)
-
-    {workflow, failed} =
-      if state.admission_causes == [] do
-        Workflow.plan_eagerly_with_result(workflow, input)
-      else
-        # Adding input is allowed in a stopped scope; executing its predicates
-        # is not. Leave those activations for explicit continuation/recovery.
-        {Workflow.plan(workflow, input), nil}
-      end
-
-    status = if state.admission_causes == [], do: :running, else: state.status
-
-    state =
-      %{state | workflow: workflow, status: status}
-      |> mark_persistence_pending()
-      |> record_planning_failure(failed)
-
-    state = dispatch_runnables(state)
-
-    state = maybe_transition_to_idle(state)
-
-    {:noreply, state}
+    state = close_quiescent_execution(state)
+    {:noreply, admit_input(state, input, opts)}
   end
 
   def handle_cast({:run, _input, _opts}, state) do
     {:noreply, state}
+  end
+
+  @impl GenServer
+  def handle_call({:start_execution, input, opts}, _from, state) do
+    case execution_start_status(state) do
+      :ok ->
+        try do
+          {execution, input_fact} = Execution.start(state.workflow, input, opts)
+
+          if Map.has_key?(state.executions, execution.id) do
+            {:reply, {:error, :execution_exists}, state}
+          else
+            state = store_current_execution_snapshot(state)
+
+            state = %{
+              state
+              | executions: Map.put(state.executions, execution.id, execution),
+                current_execution_id: execution.id
+            }
+
+            state = admit_input(state, input_fact, opts)
+            {:reply, {:ok, execution.id}, state}
+          end
+        rescue
+          error in ArgumentError -> {:reply, {:error, error}, state}
+        end
+
+      error ->
+        {:reply, {:error, error}, state}
+    end
+  end
+
+  def handle_call({:execution, execution_id}, _from, state) do
+    case Map.fetch(state.executions, execution_id) do
+      {:ok, execution} when execution_id == state.current_execution_id ->
+        {:reply, {:ok, execution_snapshot(execution, state)}, state}
+
+      {:ok, execution} ->
+        {:reply, {:ok, execution}, state}
+
+      :error ->
+        {:reply, {:error, :not_found}, state}
+    end
+  end
+
+  def handle_call({:forget_execution, execution_id}, _from, state) do
+    case Map.fetch(state.executions, execution_id) do
+      :error ->
+        {:reply, {:error, :not_found}, state}
+
+      {:ok, execution} ->
+        execution =
+          if execution_id == state.current_execution_id,
+            do: execution_snapshot(execution, state),
+            else: execution
+
+        if execution.quiescent? do
+          current =
+            if execution_id == state.current_execution_id,
+              do: nil,
+              else: state.current_execution_id
+
+          {:reply, :ok,
+           %{
+             state
+             | executions: Map.delete(state.executions, execution_id),
+               current_execution_id: current
+           }}
+        else
+          {:reply, {:error, :busy}, state}
+        end
+    end
   end
 
   @impl GenServer
@@ -377,7 +425,23 @@ defmodule Runic.Runner.Worker do
 
   def handle_call(:continue, _from, %__MODULE__{} = state) do
     status = if Workflow.is_runnable?(state.workflow), do: :running, else: state.status
-    state = %{state | dispatch_mode: :automatic, admission_causes: [], status: status}
+
+    state =
+      if state.admission_causes == [] do
+        state
+      else
+        state
+        |> store_current_execution_snapshot()
+        |> Map.put(:current_execution_id, nil)
+      end
+
+    state = %{
+      state
+      | dispatch_mode: :automatic,
+        admission_causes: [],
+        status: status
+    }
+
     state = dispatch_runnables(state)
     state = maybe_transition_to_idle(state)
     {:reply, :ok, state}
@@ -401,9 +465,40 @@ defmodule Runic.Runner.Worker do
 
   def handle_call(:checkpoint, _from, state) do
     case do_checkpoint(state) do
-      {:ok, state} -> {:reply, :ok, state}
-      {:error, reason, state} -> {:reply, {:error, reason}, state}
+      {:ok, state} ->
+        {:reply, :ok, store_current_execution_snapshot(state)}
+
+      {:error, reason, state} ->
+        {:reply, {:error, reason}, store_current_execution_snapshot(state)}
     end
+  end
+
+  defp admit_input(state, input, opts) do
+    policies = merge_runtime_policies(opts, state.workflow.scheduler_policies)
+
+    workflow =
+      state.workflow
+      |> maybe_set_policies(policies, state.workflow.scheduler_policies)
+      |> maybe_apply_run_context(opts)
+
+    {workflow, failed} =
+      if state.admission_causes == [] do
+        Workflow.plan_eagerly_with_result(workflow, input)
+      else
+        # Adding input is allowed in a stopped scope; executing its predicates
+        # is not. Leave those activations for explicit continuation/recovery.
+        {Workflow.plan(workflow, input), nil}
+      end
+
+    status = if state.admission_causes == [], do: :running, else: state.status
+
+    state =
+      %{state | workflow: workflow, status: status}
+      |> mark_persistence_pending()
+      |> record_planning_failure(failed)
+
+    state = dispatch_runnables(state)
+    maybe_transition_to_idle(state)
   end
 
   # Task completed successfully — the result is a %Runnable{}
@@ -694,10 +789,80 @@ defmodule Runic.Runner.Worker do
     Runic.TaskScope.close(state.task_scope)
   end
 
+  defp execution_start_status(%__MODULE__{admission_causes: [_ | _]}),
+    do: :admission_stopped
+
+  defp execution_start_status(%__MODULE__{status: :running}), do: :busy
+
+  defp execution_start_status(%__MODULE__{current_execution_id: nil}), do: :ok
+
+  defp execution_start_status(state) do
+    execution = Map.fetch!(state.executions, state.current_execution_id)
+    if execution_snapshot(execution, state).quiescent?, do: :ok, else: :busy
+  end
+
+  defp execution_snapshot(execution, state) do
+    admission = if state.admission_causes == [], do: :open, else: :stopped
+
+    Execution.observe(
+      execution,
+      state.workflow,
+      Map.values(state.dispatched_units),
+      admission,
+      persistence_snapshot(state)
+    )
+  end
+
+  defp store_current_execution_snapshot(%__MODULE__{current_execution_id: nil} = state),
+    do: state
+
+  defp store_current_execution_snapshot(state) do
+    execution = Map.fetch!(state.executions, state.current_execution_id)
+    execution = execution_snapshot(execution, state)
+    %{state | executions: Map.put(state.executions, execution.id, execution)}
+  end
+
+  defp close_quiescent_execution(%__MODULE__{current_execution_id: nil} = state), do: state
+
+  defp close_quiescent_execution(state) do
+    state = store_current_execution_snapshot(state)
+    execution = Map.fetch!(state.executions, state.current_execution_id)
+    if execution.quiescent?, do: %{state | current_execution_id: nil}, else: state
+  end
+
+  defp persistence_snapshot(state) do
+    %{
+      status: state.persistence,
+      event_cursor: state.event_cursor,
+      pending_events: length(state.uncommitted_events) + length(state.workflow.uncommitted_events)
+    }
+  end
+
+  defp record_execution_outcome(state, %Runnable{} = runnable) do
+    update_current_execution(state, fn execution, current_state ->
+      Execution.record(execution, current_state.workflow, runnable)
+    end)
+  end
+
+  defp update_current_execution(%__MODULE__{current_execution_id: nil} = state, _update),
+    do: state
+
+  defp update_current_execution(state, update) do
+    execution = Map.fetch!(state.executions, state.current_execution_id)
+    execution = update.(execution, state)
+
+    %{state | executions: Map.put(state.executions, execution.id, execution)}
+  end
+
   defp record_execution_loss(state, unit, reason) do
     event = Runic.Workflow.ExecutionUncertain.new(unit, reason)
     workflow = Workflow.append_runnable_events(state.workflow, [event])
-    collect_pending_events(state, workflow, [event])
+
+    state
+    |> collect_pending_events(workflow, [event])
+    |> update_current_execution(fn execution, current_state ->
+      Execution.record_uncertain(execution, current_state.workflow, unit, reason)
+    end)
   end
 
   defp stop_admission(state, kind, unit, reason) do
@@ -716,7 +881,10 @@ defmodule Runic.Runner.Worker do
   defp record_planning_failure(state, %Runnable{status: :failed} = failed) do
     emit_runnable_result(failed, state.id, nil)
     invoke_hook(state.hooks, :on_failed, [failed, failed.error, state])
-    record_failure(state, failed)
+
+    state
+    |> record_execution_outcome(failed)
+    |> record_failure(failed)
   end
 
   defp handle_task_result(ref, executed, events, state, dispatch? \\ true) do
@@ -750,6 +918,7 @@ defmodule Runic.Runner.Worker do
     state =
       %{state | active_tasks: active_tasks, dispatch_times: dispatch_times}
       |> collect_pending_events(workflow, events)
+      |> record_execution_outcome(executed)
       |> record_failure(executed)
 
     state = notify_scheduler_complete(state, {:runnable, executed}, duration)
@@ -1200,7 +1369,10 @@ defmodule Runic.Runner.Worker do
           workflow
         end
 
-      acc |> collect_pending_events(workflow, events) |> record_failure(executed_runnable)
+      acc
+      |> collect_pending_events(workflow, events)
+      |> record_execution_outcome(executed_runnable)
+      |> record_failure(executed_runnable)
     end)
   end
 
@@ -1325,7 +1497,9 @@ defmodule Runic.Runner.Worker do
           state
         end
 
-      %{state | status: :idle}
+      state
+      |> Map.put(:status, :idle)
+      |> store_current_execution_snapshot()
     else
       state
     end

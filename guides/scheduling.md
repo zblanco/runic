@@ -835,12 +835,13 @@ those errors or events. A failed persistent stop retains the live Worker and
 executor resources. Replay retains accepted node effects, including consumed
 failed activations, but starts a new admission scope.
 
-The existing core downstream suppression still uses graph structure. It can
-suppress ready downstream work from another input, and its `:upstream_failed`
-edge changes are not all represented in the event stream. This change does not
-provide failure isolation between concurrent inputs or exact replay of a
-partly ready Join after failure. Retention of ready work is subject to that
-existing behavior. Use separate workflows when input failure isolation is required.
+Downstream failure suppression is scoped to the failed root input and emits
+replayable suppression events. General Join invocation identity remains a
+separate design area.
+
+For a public execution ID, input occurrence identity, outcomes, wait behavior,
+and combined computation and persistence state, see
+[Execution observation](execution-observation.md).
 
 ## Key API Reference
 

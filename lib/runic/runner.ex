@@ -155,6 +155,124 @@ defmodule Runic.Runner do
   end
 
   @doc """
+  Starts one observable execution scope with one input occurrence.
+
+  Returns `{:ok, execution_id}` after the input is admitted to the Worker. The
+  call does not wait for computation or persistence. Use `execution/3` to
+  observe progress or `await_execution/4` to wait for scope quiescence.
+
+  Supply an `%Runic.Identity{domain: :execution}` in `:execution_id` when a
+  caller owns the correlation identity. Equal repeated inputs receive
+  different generated execution and input occurrence identities. Dispatch
+  order stays under the Worker's `:runnable_order` configuration.
+
+  Only one observed scope can make progress in a Worker at a time. The call
+  returns `{:error, :busy}` while the current observed scope is active or ready.
+  It returns `{:error, :admission_stopped}` until the caller makes an explicit
+  recovery decision with the existing admission API.
+  """
+  @spec start_execution(Supervisor.supervisor(), term(), term(), keyword()) ::
+          {:ok, Runic.Identity.t()} | {:error, term()}
+  def start_execution(runner, workflow_id, input, opts \\ []) do
+    case lookup(runner, workflow_id) do
+      nil ->
+        {:error, :not_found}
+
+      pid ->
+        GenServer.call(pid, {:start_execution, input, opts})
+    end
+  end
+
+  @doc """
+  Returns the current observation for an execution scope.
+
+  Active and ready units are scoped to the execution input ancestry. Outcomes
+  preserve actual Worker acceptance order. Persistence uses the existing
+  Worker-wide Store acknowledgement and can remain pending after computation is
+  quiescent.
+  """
+  @spec execution(Supervisor.supervisor(), term(), Runic.Identity.t()) ::
+          {:ok, Runic.Workflow.Execution.t()} | {:error, :not_found}
+  def execution(runner, workflow_id, execution_id) do
+    case lookup(runner, workflow_id) do
+      nil -> {:error, :not_found}
+      pid -> GenServer.call(pid, {:execution, execution_id})
+    end
+  end
+
+  @doc """
+  Removes a quiescent process-local execution observation from a Worker.
+
+  This does not change the workflow, event stream, or Store. It returns
+  `{:error, :busy}` while the execution can still make progress.
+  """
+  @spec forget_execution(Supervisor.supervisor(), term(), Runic.Identity.t()) ::
+          :ok | {:error, :not_found | :busy}
+  def forget_execution(runner, workflow_id, execution_id) do
+    case lookup(runner, workflow_id) do
+      nil -> {:error, :not_found}
+      pid -> GenServer.call(pid, {:forget_execution, execution_id})
+    end
+  end
+
+  @doc """
+  Waits until an execution scope is quiescent.
+
+  Returns `{:ok, execution}` when no admitted work remains and the scope either
+  has no ready work or has stopped admission. Ready work remains visible on a
+  stopped execution. Returns `{:error, :timeout}` when the deadline expires.
+
+  This wait observes computation state. A quiescent execution can still report
+  pending or failed persistence. `timeout` is in milliseconds or `:infinity`.
+  """
+  @spec await_execution(Supervisor.supervisor(), term(), Runic.Identity.t(), timeout()) ::
+          {:ok, Runic.Workflow.Execution.t()} | {:error, :not_found | :timeout}
+  def await_execution(runner, workflow_id, execution_id, timeout \\ 5_000)
+
+  def await_execution(runner, workflow_id, execution_id, timeout)
+      when timeout == :infinity or (is_integer(timeout) and timeout >= 0) do
+    deadline =
+      if timeout == :infinity,
+        do: :infinity,
+        else: System.monotonic_time(:millisecond) + timeout
+
+    do_await_execution(runner, workflow_id, execution_id, deadline)
+  end
+
+  def await_execution(_runner, _workflow_id, _execution_id, timeout) do
+    raise ArgumentError,
+          "timeout must be a non-negative integer or :infinity, got: #{inspect(timeout)}"
+  end
+
+  defp do_await_execution(runner, workflow_id, execution_id, deadline) do
+    case execution(runner, workflow_id, execution_id) do
+      {:ok, %{quiescent?: true} = execution} ->
+        {:ok, execution}
+
+      {:ok, _execution} ->
+        case remaining_wait(deadline) do
+          0 ->
+            {:error, :timeout}
+
+          wait ->
+            receive do
+            after
+              wait -> do_await_execution(runner, workflow_id, execution_id, deadline)
+            end
+        end
+
+      error ->
+        error
+    end
+  end
+
+  defp remaining_wait(:infinity), do: 10
+
+  defp remaining_wait(deadline) do
+    min(max(deadline - System.monotonic_time(:millisecond), 0), 10)
+  end
+
+  @doc """
   Dispatches one ready scheduler unit from a manually dispatched workflow.
 
   The call returns after the unit is dispatched. It returns `{:error, :busy}`
