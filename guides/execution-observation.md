@@ -11,7 +11,7 @@ Use `Runic.Workflow.execute/3` when the caller owns the workflow value:
 ```elixir
 {workflow, execution} = Runic.Workflow.execute(workflow, order)
 
-if execution.quiescent? and execution.failures == [] do
+if execution.quiescent? and execution.admission == :open and execution.failures == [] do
   values = Runic.Workflow.Execution.outputs(execution, order: :stable)
 end
 ```
@@ -58,11 +58,16 @@ An execution reports separate fields for separate concerns:
 | `admission` | `:open` or `:stopped` for the current scope. |
 | `quiescent?` | No active unit remains, and the scope cannot make more progress by itself. |
 | `outcomes` | Accepted results and uncertain outer-executor observations. |
-| `persistence` | The current Runner Store acknowledgement state. |
+| `persistence` | The Runner Store acknowledgement state at observation time. |
 
 A stopped scope can be quiescent and still have ready work. This means that
 the scope ended, but an explicit recovery decision can run the retained work.
 It does not mean that the reusable graph has a permanent halt.
+
+Immediate execution can also run work retained from an earlier input. If that
+work stops admission, the new scope reports `admission: :stopped`. Its outcomes
+still contain only results for the new input. Thus an empty failure list alone
+does not mean that admission stayed open.
 
 Manual `Runic.Runner.step/2` still confirms the admission of one scheduler
 unit. It does not confirm completion, quiescence, or persistence.
@@ -103,7 +108,8 @@ Outcome kinds are:
 
   * `:completed` - Runic accepted a computed result.
   * `:failed` - A node returned a final failure and stopped admission.
-  * `:skipped` - A policy recorded a failure and consumed it with skip policy.
+  * `:skipped` - A policy or custom node consumed an activation without a result.
+    A custom skip can have no error.
   * `:uncertain` - The outer executor ended without an accepted result.
 
 An uncertain outcome does not prove whether the work ran or whether it caused
@@ -112,9 +118,15 @@ the work.
 
 ## Persistence boundary
 
-Managed observations include the same status as
+The current managed observation includes the same status as
 `Runic.Runner.persistence_status/2`: `:saved`, `:pending`, or a persistence
 error. Computation can be quiescent while persistence is pending or failed.
+
+When another execution or legacy input starts, or stopped admission resumes,
+the Worker retains the previous observation as a fixed snapshot. Its
+persistence field does not change after later writes or retries. Use
+`Runic.Runner.persistence_status/2` to check the current Store acknowledgement
+after this point.
 
 The status is the Worker Store boundary. It does not acknowledge an external
 broker, undo an effect, or provide exactly-once execution.
