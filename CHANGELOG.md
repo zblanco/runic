@@ -24,6 +24,10 @@ explicitly. A merge to `main` is not a published Hex release.
   projections, including Step/Condition contracts. Rebuild preserves recorded
   authored closures. Runtime context is excluded from artifact identity.
 - Cytoscape exports full tagged identity strings in its JSON `hash` fields.
+- **Event-log compatibility:** older Runic readers cannot replay
+  `ActivationSuppressed` events. Upgrade readers before writing logs that contain
+  these events. Historical logs without suppression events cannot restore
+  unrecorded suppressions.
 
 ### Added
 
@@ -35,6 +39,8 @@ explicitly. A merge to `main` is not a published Hex release.
 - Payload digest verification during FactRef hydration and optional
   `save_payload/3` / `load_payload/2` Store callbacks implemented by ETS and Mnesia.
 - Canonical byte vectors and a reproducible identity benchmark in `.docs`.
+- `ActivationSuppressed` events record pending downstream edges changed to
+  `:upstream_failed`, so full and lean replay preserve those changes.
 
 ### Fixed
 
@@ -46,6 +52,10 @@ explicitly. A merge to `main` is not a published Hex release.
   bindings cannot alias literal MFA tuple data.
 - Binding-dependent Step, Condition, Reduce, and Accumulator macros use the
   same portable binding projection, including pinned external function captures.
+- Failed and skipped activations preserve unrelated ready work in the two-input
+  case. Suppression supports `FactRef` recovery and treats handoff ancestry that
+  leaves the receiving graph as a local root boundary.
+  See [#42](https://github.com/zblanco/runic/pull/42).
 
 ### Upgrading from `0.1.0-alpha.8` or `0.1.0-alpha.9`
 

@@ -4525,10 +4525,10 @@ defmodule Runic.Workflow do
   end
 
   # Skipped runnable: fold events (marks activation as consumed),
-  # then skip all downstream nodes to prevent stalled workflows.
+  # then suppress downstream work for the same input.
   def apply_runnable(
         %__MODULE__{} = workflow,
-        %Runnable{status: :skipped, events: events, node: node} = _runnable
+        %Runnable{status: :skipped, events: events, node: node, input_fact: fact}
       )
       when is_list(events) and events != [] do
     wf = Enum.reduce(events, workflow, fn event, wf -> apply_event(wf, event) end)
@@ -4540,7 +4540,7 @@ defmodule Runic.Workflow do
         wf
       end
 
-    skip_downstream_subgraph(wf, node)
+    suppress_downstream_for_input(wf, node, fact)
   end
 
   def apply_runnable(%__MODULE__{} = workflow, %Runnable{status: :failed} = runnable) do
@@ -4633,7 +4633,7 @@ defmodule Runic.Workflow do
         workflow
       end
 
-    skip_downstream_subgraph(workflow, node, fact)
+    suppress_downstream_for_input(workflow, node, fact)
   end
 
   @doc """
@@ -4652,16 +4652,16 @@ defmodule Runic.Workflow do
     do_skip_downstream_subgraph(workflow, graph, failed_node, fn _edge -> true end)
   end
 
-  defp skip_downstream_subgraph(
+  defp suppress_downstream_for_input(
          %__MODULE__{graph: graph} = workflow,
          failed_node,
          failed_fact
        )
        when is_struct(failed_fact, Fact) or is_struct(failed_fact, FactRef) do
-    failed_root_hash = root_ancestor_hash(workflow, failed_fact)
+    failed_root_hash = local_root_ancestor_hash(workflow, failed_fact)
 
     do_skip_downstream_subgraph(workflow, graph, failed_node, fn edge ->
-      same_root_ancestor?(workflow, edge.v1, failed_root_hash)
+      same_local_root?(workflow, edge.v1, failed_root_hash)
     end)
   end
 
@@ -4690,13 +4690,31 @@ defmodule Runic.Workflow do
     end)
   end
 
-  defp same_root_ancestor?(workflow, fact, failed_root_hash)
+  defp same_local_root?(workflow, fact, failed_root_hash)
        when not is_nil(failed_root_hash) and
               (is_struct(fact, Fact) or is_struct(fact, FactRef)) do
-    root_ancestor_hash(workflow, fact) == failed_root_hash
+    local_root_ancestor_hash(workflow, fact) == failed_root_hash
   end
 
-  defp same_root_ancestor?(_workflow, _fact, _failed_root_hash), do: false
+  defp same_local_root?(_workflow, _fact, _failed_root_hash), do: false
+
+  # A fact passed from another workflow can retain ancestry outside this graph.
+  # Use its own hash as the local input boundary, so separate handoff facts do
+  # not share a suppression scope merely because they have an external parent.
+  defp local_root_ancestor_hash(_workflow, %{ancestry: nil, hash: hash}), do: hash
+
+  defp local_root_ancestor_hash(
+         %__MODULE__{graph: graph} = workflow,
+         %{ancestry: {_producer_hash, parent_fact_hash}, hash: hash}
+       ) do
+    case Map.get(graph.vertices, parent_fact_hash) do
+      parent_fact when is_struct(parent_fact, Fact) or is_struct(parent_fact, FactRef) ->
+        local_root_ancestor_hash(workflow, parent_fact)
+
+      nil ->
+        hash
+    end
+  end
 
   defp reachable_via_flow(graph, start_node) do
     do_reachable_via_flow(graph, [start_node], MapSet.new(), [])
