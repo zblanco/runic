@@ -9,6 +9,7 @@ defmodule Runic.Workflow.Events do
 
   alias Runic.Workflow.Events.FactProduced
   alias Runic.Workflow.Events.ActivationConsumed
+  alias Runic.Workflow.Events.ActivationSuppressed
   alias Runic.Workflow.Events.RunnableActivated
   alias Runic.Workflow.Events.ConditionSatisfied
   alias Runic.Workflow.Events.MapReduceTracked
@@ -22,6 +23,7 @@ defmodule Runic.Workflow.Events do
   @type event ::
           FactProduced.t()
           | ActivationConsumed.t()
+          | ActivationSuppressed.t()
           | RunnableActivated.t()
           | ConditionSatisfied.t()
           | MapReduceTracked.t()
@@ -34,6 +36,7 @@ defmodule Runic.Workflow.Events do
 
   defdelegate fact_produced(), to: FactProduced, as: :__struct__
   defdelegate activation_consumed(), to: ActivationConsumed, as: :__struct__
+  defdelegate activation_suppressed(), to: ActivationSuppressed, as: :__struct__
   defdelegate runnable_activated(), to: RunnableActivated, as: :__struct__
   defdelegate condition_satisfied(), to: ConditionSatisfied, as: :__struct__
   defdelegate map_reduce_tracked(), to: MapReduceTracked, as: :__struct__
