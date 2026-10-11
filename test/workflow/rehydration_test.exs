@@ -4,7 +4,8 @@ defmodule Runic.Workflow.RehydrationTest do
   require Runic
 
   alias Runic.Workflow
-  alias Runic.Workflow.{Fact, FactRef, Facts, FactResolver, Rehydration}
+  alias Runic.Workflow.{Fact, FactRef, Facts, FactResolver, Invokable, Rehydration}
+  alias Runic.Workflow.Events.{ActivationConsumed, FactProduced}
   alias Runic.Runner.Store.ETS
 
   # ---------------------------------------------------------------------------
@@ -334,6 +335,60 @@ defmodule Runic.Workflow.RehydrationTest do
   # ---------------------------------------------------------------------------
 
   describe "round-trip execution" do
+    @tag capture_log: true
+    test "failed activation stays consumed after recovery with cold ancestors" do
+      {store_mod, store_state} = store = setup_ets_store()
+
+      base =
+        Workflow.new()
+        |> Workflow.add(Runic.step(fn x -> x + 1 end, name: :add))
+        |> Workflow.add(Runic.step(fn x -> x * 2 end, name: :double), to: :add)
+        |> Workflow.add(Runic.step(fn _ -> raise "failed after recovery" end, name: :fail),
+          to: :double
+        )
+        |> Workflow.enable_event_emission()
+
+      ready = base |> Workflow.react(5) |> Workflow.react()
+      runtime_events = Enum.reverse(ready.uncommitted_events)
+
+      for fact <- Multigraph.vertices(ready.graph), match?(%Fact{}, fact) do
+        :ok = store_mod.save_fact(fact.hash, fact.value, store_state)
+      end
+
+      stored_events =
+        Enum.map(runtime_events, fn
+          %FactProduced{} = event -> %{event | value: nil}
+          event -> event
+        end)
+
+      rebuilt = Workflow.from_events(stored_events, base, fact_mode: :ref)
+      %{hot: hot, cold: cold} = Rehydration.classify(rebuilt)
+      {recovered, _resolver} = Rehydration.resolve_hot(rebuilt, hot, FactResolver.new(store))
+
+      assert MapSet.size(cold) == 2
+      assert fact_ref_hashes(recovered) == cold
+      assert full_fact_hashes(recovered) == hot
+
+      assert [%{node: %{name: :fail}, input_fact: %Fact{value: 12}} = runnable] =
+               Workflow.prepared_runnables(recovered)
+
+      failed = Invokable.execute(runnable.node, runnable)
+      assert failed.status == :failed
+
+      completed = Workflow.apply_runnable(recovered, failed)
+      refute Workflow.is_runnable?(completed)
+      assert Workflow.prepared_runnables(completed) == []
+
+      assert [%ActivationConsumed{} = consumed] = completed.uncommitted_events
+
+      assert consumed.fact_hash == runnable.input_fact.hash
+      assert consumed.node_hash == runnable.node.hash
+
+      replayed = Workflow.from_events(runtime_events ++ [consumed], base)
+      refute Workflow.is_runnable?(replayed)
+      assert Workflow.prepared_runnables(replayed) == []
+    end
+
     test "dehydrated workflow can continue execution to completion" do
       # Execute partway through, dehydrate, then continue
       workflow =

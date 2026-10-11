@@ -1010,6 +1010,43 @@ defmodule Runic.Workflow.EventSourcedTest do
   # -----------------------------------------------------------------------
 
   describe "from_events/2" do
+    @tag capture_log: true
+    test "failed input preserves another input's ready child during live execution and replay" do
+      step_a =
+        Runic.step(
+          fn input ->
+            if input == :bad, do: raise("bad"), else: input
+          end,
+          name: :a
+        )
+
+      step_b = Runic.step(fn input -> {:b, input} end, name: :b)
+
+      base =
+        Runic.workflow(steps: [{step_a, [step_b]}])
+        |> Workflow.enable_event_emission()
+
+      ready = base |> Workflow.react(:good) |> Workflow.plan_eagerly(:bad)
+      {ready, runnables} = Workflow.prepare_for_dispatch(ready)
+
+      failed =
+        Enum.find(runnables, &(&1.node.name == :a and &1.input_fact.value == :bad))
+
+      live = Workflow.apply_runnable(ready, Invokable.execute(failed.node, failed))
+      replayed = Workflow.from_events(Enum.reverse(live.uncommitted_events), base)
+
+      frontier = fn workflow ->
+        workflow
+        |> Workflow.prepared_runnables()
+        |> Enum.map(&{&1.node.name, &1.input_fact.value})
+        |> Enum.sort()
+      end
+
+      assert frontier.(ready) == [a: :bad, b: :good]
+      assert frontier.(live) == [b: :good]
+      assert frontier.(replayed) == [b: :good]
+    end
+
     test "rebuilds a simple step workflow from build + runtime events" do
       step = Runic.step(fn x -> x * 3 end, name: :triple)
       workflow = Runic.workflow(steps: [step]) |> Workflow.enable_event_emission()
