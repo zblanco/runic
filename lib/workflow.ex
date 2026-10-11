@@ -4669,9 +4669,9 @@ defmodule Runic.Workflow do
     downstream_nodes = reachable_via_flow(graph, failed_node) -- [failed_node]
 
     Enum.reduce(downstream_nodes, workflow, fn node, wf ->
-      wf.graph
-      |> Multigraph.in_edges(node)
-      |> Enum.filter(&(&1.label in [:runnable, :joined] and suppress_edge?.(&1)))
+      [:runnable, :joined]
+      |> Enum.flat_map(&Multigraph.in_edges(wf.graph, node, by: &1))
+      |> Enum.filter(suppress_edge?)
       |> Enum.reduce(wf, fn edge, wrk ->
         event = %ActivationSuppressed{
           fact_hash: edge.v1.hash,
