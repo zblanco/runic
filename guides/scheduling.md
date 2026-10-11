@@ -849,7 +849,7 @@ scope across inputs.
 This does not provide general failure isolation. Map items that share one root
 can suppress one another. A sibling result that arrives after a failure can
 still be joined with facts from another input. General Join invocation identity
-remains separate design work in [#33](https://github.com/zblanco/runic/issues/33).
+remains separate design work.
 Use separate workflows when input failure isolation is required.
 
 ## Key API Reference
