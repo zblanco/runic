@@ -852,6 +852,10 @@ still be joined with facts from another input. General Join invocation identity
 remains separate design work.
 Use separate workflows when input failure isolation is required.
 
+For a public execution ID, input occurrence identity, outcomes, wait behavior,
+and combined computation and persistence state, see
+[Execution observation](execution-observation.md).
+
 ## Key API Reference
 
 | Function | Purpose |

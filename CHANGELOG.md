@@ -25,9 +25,9 @@ explicitly. A merge to `main` is not a published Hex release.
   authored closures. Runtime context is excluded from artifact identity.
 - Cytoscape exports full tagged identity strings in its JSON `hash` fields.
 - **Event-log compatibility:** older Runic readers cannot replay
-  `ActivationSuppressed` events. Upgrade readers before writing logs that contain
-  these events. Historical logs without suppression events cannot restore
-  unrecorded suppressions.
+  `ActivationSuppressed` or `ExecutionUncertain` events. Upgrade readers before
+  writing logs that contain these events. Historical logs without suppression
+  events cannot restore unrecorded suppressions.
 
 ### Added
 

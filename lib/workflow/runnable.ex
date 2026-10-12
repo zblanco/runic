@@ -80,14 +80,24 @@ defmodule Runic.Workflow.Runnable do
   end
 
   @doc """
-  Creates a new Runnable with explicit id.
+  Creates a new Runnable with an explicit metadata ID.
+
+  An `:activation` identity is used directly. Other IDs remain in `id`, while
+  activation and attempt identities use the node and input Fact coordinates.
   """
   @spec new(term(), struct(), Fact.t(), CausalContext.t()) :: t()
   def new(id, node, fact, context) do
+    activation_id =
+      case {id, node} do
+        {%Identity{domain: :activation}, _} -> id
+        {_, %Runic.Workflow.Root{}} -> nil
+        _ -> runnable_id(node, fact)
+      end
+
     %__MODULE__{
       id: id,
-      activation_id: if(is_struct(id, Identity), do: id),
-      attempt_id: if(is_struct(id, Identity), do: Identity.derive(:attempt, [id, 0])),
+      activation_id: activation_id,
+      attempt_id: if(activation_id, do: Identity.derive(:attempt, [activation_id, 0])),
       attempt_number: 0,
       node: node,
       input_fact: fact,
@@ -111,16 +121,32 @@ defmodule Runic.Workflow.Runnable do
   end
 
   @doc false
-  @spec for_attempt(t(), non_neg_integer()) :: t()
-  def for_attempt(%__MODULE__{activation_id: %Identity{} = activation_id} = runnable, attempt) do
-    %{
-      runnable
-      | attempt_number: attempt,
-        attempt_id: Identity.derive(:attempt, [activation_id, attempt])
-    }
+  @spec activation_id(t()) :: Identity.t() | nil
+  def activation_id(%__MODULE__{activation_id: %Identity{domain: :activation} = id}), do: id
+
+  def activation_id(%__MODULE__{node: %Runic.Workflow.Root{}}), do: nil
+
+  def activation_id(%__MODULE__{node: node, input_fact: fact}), do: runnable_id(node, fact)
+
+  @doc "Stable admission key: causal depth followed by activation identity."
+  @spec order_key(t()) :: {non_neg_integer(), term()}
+  def order_key(%__MODULE__{context: context} = runnable) do
+    depth = if is_map(context), do: Map.get(context, :ancestry_depth) || 0, else: 0
+    {depth, activation_id(runnable)}
   end
 
-  def for_attempt(%__MODULE__{} = runnable, attempt), do: %{runnable | attempt_number: attempt}
+  @doc false
+  @spec for_attempt(t(), non_neg_integer()) :: t()
+  def for_attempt(%__MODULE__{} = runnable, attempt) do
+    activation_id = activation_id(runnable)
+
+    %{
+      runnable
+      | activation_id: activation_id,
+        attempt_number: attempt,
+        attempt_id: if(activation_id, do: Identity.derive(:attempt, [activation_id, attempt]))
+    }
+  end
 
   @doc """
   Marks a runnable as completed with result and events.

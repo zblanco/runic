@@ -60,6 +60,50 @@ defmodule Runic.Workflow.RunnableTest do
       assert runnable.id == 12345
       assert runnable.status == :pending
     end
+
+    test "typed metadata uses canonical activation and attempt coordinates" do
+      step = Step.new(work: &double/1)
+      fact = Fact.new(value: 42)
+      context = CausalContext.new(ancestry_depth: 2)
+
+      for domain <- Identity.domains() -- [:activation] do
+        id = Identity.derive(domain, [:business_id])
+        runnable = Runnable.new(id, step, fact, context)
+        activation_id = Runnable.runnable_id(step, fact)
+
+        assert runnable.id == id
+        assert runnable.activation_id == activation_id
+        assert runnable.attempt_id == Identity.derive(:attempt, [activation_id, 0])
+        assert Runnable.order_key(runnable) == {2, activation_id}
+
+        retry = Runnable.for_attempt(runnable, 2)
+        assert retry.id == id
+        assert retry.attempt_id == Identity.derive(:attempt, [activation_id, 2])
+      end
+    end
+
+    test "an explicit activation identity is preserved" do
+      step = Step.new(work: &double/1)
+      fact = Fact.new(value: 42)
+      id = Identity.derive(:activation, [:custom_coordinates])
+      runnable = Runnable.new(id, step, fact, CausalContext.new())
+
+      assert runnable.id == id
+      assert runnable.activation_id == id
+      assert runnable.attempt_id == Identity.derive(:attempt, [id, 0])
+      assert Runnable.order_key(runnable) == {0, id}
+    end
+
+    test "the structural root keeps its absent activation identity" do
+      root = %Runic.Workflow.Root{}
+      fact = Fact.new(value: :input)
+      runnable = Runnable.new(nil, root, fact, CausalContext.new()) |> Runnable.for_attempt(1)
+
+      assert runnable.id == nil
+      assert runnable.activation_id == nil
+      assert runnable.attempt_id == nil
+      assert Runnable.order_key(runnable) == {0, nil}
+    end
   end
 
   describe "Runnable.runnable_id/2" do

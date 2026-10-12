@@ -156,7 +156,7 @@ defmodule Runic.Runner.FailureAdmissionEdgesTest do
       assert read_counts(counts, 3) == expected
       assert {:ok, wf} = Runner.get_workflow(ctx.runner, :live)
       assert Workflow.is_runnable?(wf)
-      assert wf.runnable_events == []
+      refute Enum.any?(wf.runnable_events, &is_struct(&1, Workflow.RunnableFailed))
       assert Workflow.raw_productions(wf) == []
       refute_received {:stage, _, _}
 
