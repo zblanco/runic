@@ -25,11 +25,19 @@ defmodule Runic.Workflow.InputBinding do
           target_component_hash: term(),
           source_order: list(term()),
           bindings: list(binding()),
+          input_shape: :positional | :named,
           input_ports: keyword()
         }
 
   @enforce_keys [:hash, :target_component_hash, :source_order, :bindings, :input_ports]
-  defstruct [:hash, :target_component_hash, :source_order, :bindings, :input_ports]
+  defstruct [
+    :hash,
+    :target_component_hash,
+    :source_order,
+    :bindings,
+    :input_ports,
+    input_shape: :positional
+  ]
 
   @spec new(keyword()) :: t()
   def new(opts) do
@@ -37,19 +45,22 @@ defmodule Runic.Workflow.InputBinding do
     source_order = Keyword.fetch!(opts, :source_order)
     bindings = Keyword.fetch!(opts, :bindings)
     input_ports = Keyword.fetch!(opts, :input_ports)
+    input_shape = Keyword.get(opts, :input_shape, :positional)
 
-    hash =
-      Components.identity(
-        :connection_definition,
-        {__MODULE__, target_component_hash, source_order, bindings, input_ports}
-      )
+    identity_data = {__MODULE__, target_component_hash, source_order, bindings, input_ports}
+
+    identity_data =
+      if input_shape == :positional, do: identity_data, else: {identity_data, input_shape}
+
+    hash = Components.identity(:connection_definition, identity_data)
 
     %__MODULE__{
       hash: hash,
       target_component_hash: target_component_hash,
       source_order: source_order,
       bindings: bindings,
-      input_ports: input_ports
+      input_ports: input_ports,
+      input_shape: input_shape
     }
   end
 
@@ -72,15 +83,21 @@ defmodule Runic.Workflow.InputBinding do
     ordered_values =
       Enum.map(binding.input_ports, fn {port, _schema} -> Map.get(values_by_port, port) end)
 
-    case ordered_values do
-      [value] -> value
-      values -> values
+    case {ordered_values, Map.get(binding, :input_shape, :positional)} do
+      {[value], _} ->
+        value
+
+      {values, :positional} ->
+        values
+
+      {_, :named} ->
+        Map.new(binding.input_ports, fn {port, _} -> {port, Map.get(values_by_port, port)} end)
     end
   end
 
   @doc false
-  @spec fact_meta(t()) :: map()
-  def fact_meta(%__MODULE__{} = binding) do
+  @spec fact_meta(t(), map()) :: map()
+  def fact_meta(%__MODULE__{} = binding, metadata \\ %{}) do
     sources =
       Enum.map(binding.bindings, fn source_binding ->
         Map.take(source_binding, [
@@ -93,7 +110,12 @@ defmodule Runic.Workflow.InputBinding do
         ])
       end)
 
-    %{runic: %{input_bindings: sources}}
+    Map.update(
+      metadata,
+      :runic,
+      %{input_bindings: sources},
+      &Map.put(&1, :input_bindings, sources)
+    )
   end
 
   defp source_values([source_hash], input), do: %{source_hash => input}

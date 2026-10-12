@@ -380,7 +380,7 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.InputBinding do
       Fact.new(
         value: result,
         ancestry: {binding.hash, fact.hash},
-        meta: InputBinding.fact_meta(binding)
+        meta: InputBinding.fact_meta(binding, fact.meta)
       )
 
     causal_depth = Workflow.ancestry_depth(workflow, fact) + 1
@@ -411,7 +411,7 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.InputBinding do
         Fact.new(
           value: result,
           ancestry: {binding.hash, fact.hash},
-          meta: InputBinding.fact_meta(binding)
+          meta: InputBinding.fact_meta(binding, fact.meta)
         )
 
       events = [

@@ -132,6 +132,7 @@ defmodule Runic.Runner.PromiseBuilder do
 
     cond do
       is_nil(node) -> true
+      is_struct(node, Runic.Workflow.Call) -> true
       is_struct(node, Runic.Workflow.Join) -> true
       is_struct(node, Runic.Workflow.FanIn) -> true
       has_meta_refs?(graph, node_hash) -> true

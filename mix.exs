@@ -31,6 +31,7 @@ defmodule Runic.MixProject do
         "guides/usage-rules.md",
         "guides/protocols.md",
         "guides/custom-components.md",
+        "guides/composite-ports-and-child-calls.md",
         "guides/execution-observation.md",
         "guides/scheduling.md",
         "guides/durable-execution.md",
@@ -54,7 +55,9 @@ defmodule Runic.MixProject do
           Runic.Workflow.Accumulator,
           Runic.Workflow.Map,
           Runic.Workflow.Reduce,
-          Runic.Workflow.Join
+          Runic.Workflow.Join,
+          Runic.Workflow.Call,
+          Runic.Workflow.ChildInvocation
         ],
         "Scheduling & Execution": [
           Runic.Workflow.SingleOutput,

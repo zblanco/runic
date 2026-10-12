@@ -668,6 +668,12 @@ defmodule Runic.Workflow do
   - `:target_path` — optional safe path assembled within the target port
   - `:id` — optional stable atom, string, or non-negative integer
 
+  `:input_mode` is `:all` by default: all source producers must supply their
+  values. With `:any`, each source producer binds all required target inputs
+  separately. This mode is saved for replay and does not depend on value shape.
+  Multi-port non-Step components receive a map keyed by declared input names.
+  Custom output schemas can select internal producers with `from: name_or_identity`.
+
   `:connections` and `:to` are mutually exclusive. Connections are validated as
   one target assignment, retained on logical `:connects_to` edges, and lowered
   through an internal `InputBinding` plus the existing `Join` when necessary.
@@ -732,8 +738,14 @@ defmodule Runic.Workflow do
   """
   def add(%__MODULE__{} = workflow, component, opts \\ []) do
     case Keyword.fetch(opts, :connections) do
-      {:ok, connections} -> add_with_connections(workflow, component, connections, opts)
-      :error -> add_to_parent(workflow, component, opts)
+      {:ok, connections} ->
+        add_with_connections(workflow, component, connections, opts)
+
+      :error ->
+        if Keyword.has_key?(opts, :input_mode),
+          do: raise(ArgumentError, ":input_mode requires :connections")
+
+        add_to_parent(workflow, component, opts)
     end
   end
 
@@ -783,8 +795,39 @@ defmodule Runic.Workflow do
     connections = Connection.normalize_all!(connection_specs, component)
     resolved = Enum.map(connections, &resolve_connection!(workflow, &1))
 
-    validate_connection_group!(component, resolved, opts)
+    input_mode = Keyword.get(opts, :input_mode, :all)
+
+    groups =
+      case input_mode do
+        :all ->
+          [resolved]
+
+        :any ->
+          Enum.group_by(resolved, &Components.vertex_id_of(&1.source_node))
+          |> Enum.sort_by(&elem(&1, 0))
+          |> Enum.map(&elem(&1, 1))
+
+        other ->
+          raise ArgumentError, "input_mode must be :all or :any, got: #{inspect(other)}"
+      end
+
+    Enum.each(groups, &validate_connection_group!(component, &1, opts))
     validate_bound_call_contract!(component)
+
+    workflow = Enum.reduce(groups, workflow, &lower_connection_group(&2, component, &1))
+
+    if Keyword.get(opts, :log, true) do
+      events =
+        Enum.map(build_events(component, nil, connections), &%{&1 | input_mode: input_mode})
+
+      append_build_log(workflow, events)
+    else
+      workflow
+    end
+  end
+
+  defp lower_connection_group(workflow, component, resolved) do
+    connections = Enum.map(resolved, & &1.connection)
 
     source_nodes =
       resolved
@@ -814,7 +857,12 @@ defmodule Runic.Workflow do
         target_component_hash: Component.hash(component),
         source_order: source_order,
         bindings: bindings,
-        input_ports: Component.inputs(component)
+        input_ports: Component.inputs(component),
+        input_shape:
+          if(is_struct(component, Step) or length(Component.inputs(component)) == 1,
+            do: :positional,
+            else: :named
+          )
       )
 
     {workflow, binding_parent} = connect_binding_sources(workflow, source_nodes)
@@ -831,11 +879,7 @@ defmodule Runic.Workflow do
       )
       |> draw_logical_connections(component, resolved)
 
-    if Keyword.get(opts, :log, true) do
-      append_build_log(workflow, build_events(component, nil, connections))
-    else
-      workflow
-    end
+    workflow
   end
 
   defp ensure_component(%__MODULE__{hash: nil} = workflow) do
@@ -862,12 +906,26 @@ defmodule Runic.Workflow do
             "component #{inspect(component_name(source_component))} has no output port #{inspect(connection.source_port)}"
     end
 
+    source_node = output_node!(workflow, source_component, connection.source_port)
+
+    endpoint_ports =
+      workflow.graph
+      |> Multigraph.out_edges(source_component, by: :component_of)
+      |> Enum.filter(&(&1.properties[:kind] == :output and &1.v2.hash == source_node.hash))
+      |> Enum.flat_map(&Map.get(&1.properties, :ports, []))
+
+    endpoint_outputs =
+      if endpoint_ports == [],
+        do: source_outputs,
+        else: Enum.filter(source_outputs, &(elem(&1, 0) in endpoint_ports))
+
     %{
       connection: connection,
       source_component: source_component,
-      source_node: output_node!(workflow, source_component, connection.source_port),
-      source_outputs: source_outputs,
-      source_port_index: source_port_index
+      source_node: source_node,
+      source_outputs: endpoint_outputs,
+      source_port_index:
+        Enum.find_index(endpoint_outputs, &(elem(&1, 0) == connection.source_port))
     }
   end
 
@@ -895,30 +953,34 @@ defmodule Runic.Workflow do
 
   defp resolve_component_ref!(workflow, name), do: get_component!(workflow, name)
 
-  defp output_node!(workflow, %__MODULE__{} = child, source_port) do
-    output_edges =
-      Multigraph.out_edges(workflow.graph, child,
+  defp output_node!(workflow, component, source_port) do
+    edges =
+      Multigraph.out_edges(workflow.graph, component,
         by: :component_of,
         where: fn edge ->
-          edge.properties[:kind] == :output and source_port in edge.properties[:ports]
+          edge.properties[:kind] == :output and
+            source_port in Map.get(edge.properties, :ports, [])
         end
       )
 
-    case output_edges do
-      [%{v2: output_node}] ->
-        output_node
+    edges = Enum.uniq_by(edges, &Components.vertex_id_of(&1.v2))
+
+    case edges do
+      [%{v2: node}] ->
+        node
+
+      [] when is_struct(component, __MODULE__) ->
+        raise ArgumentError,
+              "nested workflow #{inspect(component.name)} has no compiled output node for port #{inspect(source_port)}"
 
       [] ->
-        raise ArgumentError,
-              "nested workflow #{inspect(child.name)} has no compiled output node for port #{inspect(source_port)}"
+        output_node!(workflow, component)
 
-      edges ->
+      _ ->
         raise ArgumentError,
-              "nested workflow #{inspect(child.name)} has #{length(edges)} compiled output nodes for port #{inspect(source_port)}"
+              "component #{inspect(component_name(component))} has multiple output nodes for port #{inspect(source_port)}"
     end
   end
-
-  defp output_node!(workflow, component, _source_port), do: output_node!(workflow, component)
 
   defp output_node!(workflow, %Rule{} = rule) do
     Map.fetch!(workflow.graph.vertices, rule.reaction_hash)
@@ -1122,12 +1184,7 @@ defmodule Runic.Workflow do
     end
   end
 
-  defp validate_bound_call_contract!(component) do
-    if length(Component.inputs(component)) > 1 do
-      raise ArgumentError,
-            "multi-port lowering is currently supported only for Runic steps"
-    end
-  end
+  defp validate_bound_call_contract!(_component), do: :ok
 
   defp do_add_component(%__MODULE__{} = workflow, component, parent, opts) do
     should_log = Keyword.get(opts, :log, true)
@@ -1208,14 +1265,21 @@ defmodule Runic.Workflow do
   end
 
   defp connect_component(%__MODULE__{} = workflow, component, parent) do
-    Component.connect(component, parent, workflow)
+    workflow
+    |> then(&Component.connect(component, parent, &1))
+    |> register_declared_outputs(component)
   end
 
-  defp register_workflow_outputs(workflow, %__MODULE__{output_ports: output_ports} = child) do
+  defp register_workflow_outputs(workflow, child), do: register_declared_outputs(workflow, child)
+
+  defp register_declared_outputs(workflow, child) do
+    output_ports = Component.outputs(child)
+
     outputs =
       for {port, opts} <- output_ports || [],
+          is_list(opts),
           {:ok, source_name} <- [Keyword.fetch(opts, :from)] do
-        source_component = get_component!(workflow, source_name)
+        source_component = resolve_component_ref!(workflow, source_name)
         output_node = output_node!(workflow, source_component)
         {output_node, port, source_name}
       end
@@ -1337,7 +1401,10 @@ defmodule Runic.Workflow do
         :error -> nil
       end
 
-    events = build_events(component, to, connections)
+    events =
+      Enum.map(build_events(component, to, connections), fn event ->
+        %{event | input_mode: Keyword.get(opts, :input_mode, :all)}
+      end)
 
     workflow =
       workflow
@@ -1775,7 +1842,10 @@ defmodule Runic.Workflow do
   defp add_component_event(workflow, component, %ComponentAdded{} = event) do
     case Map.get(event, :connections) do
       connections when is_list(connections) and connections != [] ->
-        add(workflow, component, connections: connections)
+        add(workflow, component,
+          connections: connections,
+          input_mode: Map.get(event, :input_mode) || :all
+        )
 
       _ ->
         add(workflow, component, to: event.to)
@@ -3099,8 +3169,12 @@ defmodule Runic.Workflow do
   end
 
   def productions(%__MODULE__{} = wrk, component) do
-    wrk.graph
-    |> Multigraph.out_edges(component, by: :component_of)
+    edges = Multigraph.out_edges(wrk.graph, component, by: :component_of)
+    outputs = Enum.filter(edges, &(&1.properties[:kind] == :output))
+    edges = if outputs == [], do: edges, else: outputs
+
+    edges
+    |> Enum.uniq_by(&Components.vertex_id_of(&1.v2))
     |> Enum.flat_map(fn %{v2: invokable} ->
       for edge <-
             Multigraph.out_edges(wrk.graph, invokable,
