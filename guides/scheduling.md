@@ -835,12 +835,22 @@ those errors or events. A failed persistent stop retains the live Worker and
 executor resources. Replay retains accepted node effects, including consumed
 failed activations, but starts a new admission scope.
 
-Downstream failure suppression is scoped to the failed root input and emits
-replayable suppression events. Skipped activations retain global downstream
-suppression, including those from `on_failure: :skip`. A skip can suppress ready
-work from another input. The public `skip_downstream_subgraph/2` helper also keeps
-this global behavior. General Join invocation identity remains a separate
-design area.
+Applying a failed or skipped runnable consumes its activation. It suppresses
+currently pending `:runnable` and `:joined` edges at downstream nodes only when
+their source facts share the same local root input. For a handoff, ancestry
+traversal stops at the last fact present in the receiving graph if its parent
+is absent. Both `Fact` and `FactRef` use this rule without loading values.
+
+When event emission is enabled, each `ActivationSuppressed` event records one
+edge change to `:upstream_failed`. Replay restores those recorded changes.
+Direct calls to `Workflow.skip_downstream_subgraph/2` retain global structural
+scope across inputs.
+
+This does not provide general failure isolation. Map items that share one root
+can suppress one another. A sibling result that arrives after a failure can
+still be joined with facts from another input. General Join invocation identity
+remains separate design work.
+Use separate workflows when input failure isolation is required.
 
 For a public execution ID, input occurrence identity, outcomes, wait behavior,
 and combined computation and persistence state, see

@@ -5,7 +5,17 @@ defmodule Runic.Workflow.FailureSuppressionTest do
 
   alias Runic.Runner.Store.ETS
   alias Runic.Workflow
-  alias Runic.Workflow.{Fact, FactRef, FactResolver, Invokable, Join, Runnable}
+
+  alias Runic.Workflow.{
+    Fact,
+    FactRef,
+    FactResolver,
+    Invokable,
+    Join,
+    PolicyDriver,
+    SchedulerPolicy
+  }
+
   alias Runic.Workflow.Events.{ActivationConsumed, FactProduced, Serializer}
 
   @moduletag capture_log: true
@@ -55,8 +65,59 @@ defmodule Runic.Workflow.FailureSuppressionTest do
     assert live.uncommitted_events == ready.uncommitted_events
   end
 
+  for fact_mode <- [:full, :ref] do
+    test "failure isolates handoff inputs with a shared external parent in #{fact_mode} replay" do
+      upstream =
+        Workflow.new()
+        |> Workflow.add(Runic.step(fn _ -> :bad end, name: :bad_source))
+        |> Workflow.add(Runic.step(fn _ -> :good end, name: :good_source))
+        |> Workflow.react_until_satisfied(:source_input)
+
+      [bad] = Workflow.productions(upstream, :bad_source)
+      [good] = Workflow.productions(upstream, :good_source)
+      assert {_, parent_hash} = bad.ancestry
+      assert {_, ^parent_hash} = good.ancestry
+      refute bad.hash == good.hash
+
+      %{base: base, ready: ready, failed: failed} =
+        fixture = join_fixture(%{bad: bad, good: good})
+
+      refute Map.has_key?(ready.graph.vertices, parent_hash)
+      assert Workflow.root_ancestor_hash(ready, bad) == nil
+
+      full_events = Enum.reverse(ready.uncommitted_events)
+      events = if unquote(fact_mode) == :ref, do: strip_values(full_events), else: full_events
+      recovered = Workflow.from_events(events, base, fact_mode: unquote(fact_mode))
+
+      input = Map.fetch!(recovered.graph.vertices, bad.hash)
+      assert {:ok, runnable} = Invokable.prepare(failed.node, recovered, input)
+      failed = Invokable.execute(runnable.node, runnable)
+      assert failed.status == :failed
+      live = Workflow.apply_runnable(recovered, failed)
+      assert_suppressed(fixture, live)
+
+      failure_events = Enum.reverse(live.uncommitted_events)
+
+      replayed =
+        Workflow.from_events(events ++ failure_events, base, fact_mode: unquote(fact_mode))
+
+      assert edge_labels(replayed) == edge_labels(live)
+
+      completed =
+        (full_events ++ failure_events)
+        |> Workflow.from_events(base)
+        |> Workflow.react_until_satisfied()
+
+      refute Workflow.is_runnable?(completed)
+
+      assert Workflow.raw_productions(completed, :combine) == [
+               {{:a, :good}, {:b, :good}, {:c, :good}}
+             ]
+    end
+  end
+
   for mode <- [:public, :skipped] do
-    test "#{mode} downstream suppression survives replay with global scope" do
+    test "#{mode} downstream suppression survives replay" do
       %{base: base, ready: ready, failed: failed} = fixture = join_fixture()
 
       live =
@@ -65,21 +126,24 @@ defmodule Runic.Workflow.FailureSuppressionTest do
             Workflow.skip_downstream_subgraph(ready, failed.node)
 
           :skipped ->
-            consumed = %ActivationConsumed{
-              fact_hash: failed.input_fact.hash,
-              node_hash: failed.node.hash,
-              from_label: :runnable
-            }
+            skipped =
+              ready
+              |> find_runnable(failed.node, :bad)
+              |> PolicyDriver.execute(SchedulerPolicy.io_policy(max_retries: 0))
 
-            skipped = ready |> find_runnable(failed.node, :bad) |> Runnable.skip([consumed])
+            assert skipped.status == :skipped
             Workflow.apply_runnable(ready, skipped)
         end
 
-      assert join_labels(live, fixture.join) == %{
-               fixture.bad_b.hash => :upstream_failed,
-               fixture.bad_c.hash => :upstream_failed,
-               fixture.good_c.hash => :upstream_failed
-             }
+      if unquote(mode) == :public do
+        assert join_labels(live, fixture.join) == %{
+                 fixture.bad_b.hash => :upstream_failed,
+                 fixture.bad_c.hash => :upstream_failed,
+                 fixture.good_c.hash => :upstream_failed
+               }
+      else
+        assert_suppressed(fixture, live)
+      end
 
       events = Enum.reverse(live.uncommitted_events)
       new_events = Enum.drop(events, length(ready.uncommitted_events))
@@ -94,10 +158,44 @@ defmodule Runic.Workflow.FailureSuppressionTest do
             suppressed
         end
 
-      assert length(suppressed) == 3
+      assert length(suppressed) == if(unquote(mode) == :public, do: 3, else: 2)
       assert Enum.all?(suppressed, &is_struct(&1, Runic.Workflow.Events.ActivationSuppressed))
       replayed = Workflow.from_events(events, base)
       assert edge_labels(replayed) == edge_labels(live)
+    end
+  end
+
+  test "I/O policy skip preserves another input's ready child in live state and replay" do
+    a =
+      Runic.step(
+        fn
+          :bad -> raise "failed input"
+          input -> input
+        end,
+        name: :a
+      )
+
+    b = Runic.step(fn input -> {:b, input} end, name: :b)
+    base = Runic.workflow(steps: [{a, [b]}]) |> Workflow.enable_event_emission()
+    ready = base |> Workflow.react(:good) |> Workflow.plan_eagerly(:bad)
+
+    skipped =
+      ready
+      |> find_runnable(a, :bad)
+      |> PolicyDriver.execute(SchedulerPolicy.io_policy(max_retries: 0))
+
+    assert skipped.status == :skipped
+    live = Workflow.apply_runnable(ready, skipped)
+    replayed = Workflow.from_events(Enum.reverse(live.uncommitted_events), base)
+    assert edge_labels(replayed) == edge_labels(live)
+
+    for workflow <- [live, replayed] do
+      assert [%{node: %{name: :b}, input_fact: %{value: :good}}] =
+               Workflow.prepared_runnables(workflow)
+
+      completed = Workflow.react_until_satisfied(workflow)
+      refute Workflow.is_runnable?(completed)
+      assert Workflow.raw_productions(completed, :b) == [{:b, :good}]
     end
   end
 
@@ -149,7 +247,7 @@ defmodule Runic.Workflow.FailureSuppressionTest do
     refute Workflow.is_runnable?(replayed)
   end
 
-  defp join_fixture do
+  defp join_fixture(inputs \\ %{bad: :bad, good: :good}) do
     a =
       Runic.step(
         fn
@@ -175,11 +273,11 @@ defmodule Runic.Workflow.FailureSuppressionTest do
 
     ready =
       base
-      |> Workflow.plan_eagerly(:bad)
+      |> Workflow.plan_eagerly(inputs.bad)
       |> execute(b, :bad)
       |> execute(c, :bad)
       |> execute(join, {:b, :bad})
-      |> Workflow.plan_eagerly(:good)
+      |> Workflow.plan_eagerly(inputs.good)
       |> execute(c, :good)
 
     failed = ready |> find_runnable(a, :bad) |> then(&Invokable.execute(a, &1))
