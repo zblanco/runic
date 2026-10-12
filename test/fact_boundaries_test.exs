@@ -6,6 +6,7 @@ defmodule Runic.FactBoundariesTest do
   alias Runic.Examples.{FactBoundary, LocalValue}
   alias Runic.Identity.{Canonical, CanonicalError}
   alias Runic.Runner
+  alias Runic.TestSupport.ProjectedResource
   alias Runic.Workflow
   alias Runic.Workflow.{Execution, Fact}
 
@@ -64,6 +65,19 @@ defmodule Runic.FactBoundariesTest do
 
     assert :ok =
              FactBoundary.check(%{values: [nil, true, 12, 2.5, "text", {:ok, :ready}]}, :input)
+  end
+
+  test "a general identity projection can omit a raw resource that the gate rejects" do
+    digest = Fact.new(value: %ProjectedResource{name: :client, resource: nil}).payload_digest
+
+    for {resource, type} <- [{self(), :pid}, {fn -> :ok end, :function}] do
+      value = %ProjectedResource{name: :client, resource: resource}
+      assert is_binary(Canonical.encode!(value))
+      assert Fact.new(value: value).payload_digest == digest
+
+      assert {:error, %{path: [:input, :client, :resource], reason: {:unsupported, ^type}}} =
+               FactBoundary.check(%{client: value}, :input)
+    end
   end
 
   test "native containers retain wrappers and a scalar child stays local" do
@@ -225,6 +239,38 @@ defmodule Runic.FactBoundariesTest do
     assert replay.run_context == %{}
     assert Workflow.raw_productions(replay) == [%{found: true}]
     refute_received {:lookup, _}
+  end
+
+  test "missing restored context can produce successful nil without explicit validation" do
+    step = Runic.step(fn _ -> context(:resource) end, name: :lookup)
+
+    planned =
+      Runic.workflow(steps: [step])
+      |> Workflow.put_run_context(%{lookup: %{resource: :old}})
+      |> Workflow.plan("key")
+
+    restored = Workflow.from_events(Workflow.event_log(planned))
+    assert restored.run_context == %{}
+    assert {:error, %{lookup: [:resource]}} = Workflow.validate_run_context(restored, %{})
+    completed = Workflow.react_until_satisfied(restored)
+    assert [%Fact{value: nil}] = Workflow.productions(completed, :lookup)
+    assert :ok = Workflow.validate_run_context(restored, %{lookup: %{resource: nil}})
+  end
+
+  test "a restored context default is optional and yields the selected default" do
+    step = Runic.step(fn _ -> context(:resource, default: :fallback) end, name: :lookup)
+
+    planned =
+      Runic.workflow(steps: [step])
+      |> Workflow.put_run_context(%{lookup: %{resource: :old}})
+      |> Workflow.plan("key")
+
+    restored = Workflow.from_events(Workflow.event_log(planned))
+    assert restored.run_context == %{}
+    assert :ok = Workflow.validate_run_context(restored, %{})
+
+    assert [%Fact{value: :fallback}] =
+             restored |> Workflow.react_until_satisfied() |> Workflow.productions(:lookup)
   end
 
   test "cancellation stops native work that uses a transient local callback" do

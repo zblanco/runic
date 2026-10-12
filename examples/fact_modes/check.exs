@@ -9,9 +9,12 @@ alias Runic.Workflow.{Execution, Fact}
 lookup = Runic.step(fn key -> context(:fetch).(key) end, name: :lookup)
 definition = Runic.workflow(steps: [lookup])
 fetch = fn "invoice-17" -> %{amount: 120} end
+cache_context = %{lookup: %{fetch: fetch}}
+:ok = Workflow.validate_run_context(definition, cache_context)
+true = is_function(fetch, 1)
 
 {_workflow, execution} =
-  Workflow.execute(definition, "invoice-17", run_context: %{lookup: %{fetch: fetch}})
+  Workflow.execute(definition, "invoice-17", run_context: cache_context)
 
 [%{amount: 120}] = Execution.outputs(execution)
 :ok = FactBoundary.check(Execution.outputs(execution), :output)

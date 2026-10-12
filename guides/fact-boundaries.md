@@ -97,8 +97,12 @@ must identify the field and nested path. For example:
 
 `Runic.Examples.FactBoundary.check/2` shows a small data gate. It checks raw
 fields before canonical projection and rejects the example local wrapper,
-even for a scalar. `Runic.Examples.JidoFactBoundary.check/2` shows the matching
-gate for Jido's local metadata; Jido retains its own raw-value validator.
+even for a scalar. `Runic.Examples.JidoFactBoundary.check/2` checks the full raw
+Fact envelope, including metadata and wrappers in native containers. Jido
+retains its own raw-value validator. The consumer keeps the whole execution's
+local marker outside its outputs and calls the example's `check_execution/3`.
+A native scalar output with empty metadata cannot remove that marker. Explicit
+portable admission starts a new scope for the selected validated data.
 These modules are example code, not new public Runic APIs. Production adapters
 must define their schemas and bounds and check all fields they save or send.
 A remote executor must obtain fresh resources on the target node from that
@@ -135,10 +139,22 @@ change does not modify a Runnable that is already prepared or running.
 
 Event replay and `Runner.encode_snapshot/1` omit top-level run context.
 `Runner.resume/3` accepts fresh `:run_context` before it prepares pending work.
-Replaying accepted values does not call the resource callback again. Pending
-work needs fresh resources; an omitted resource follows the component's normal
-missing-context failure. A local execution cannot use this portable resume
-contract. Start it again with new local values. Cancellation stops Runic-owned
+Replaying accepted values does not call the resource callback again. An absent
+context key resolves to `nil`, or to the supplied `context/2` default. The
+component determines the result; it can successfully return `nil`. Runic does
+not automatically enforce required context when it executes pending work.
+
+When resources are required, call `Workflow.validate_run_context/2` with the
+workflow and fresh context before dispatch or `Runner.resume/3`. Continue only
+after that check and the application's resource checks pass. The validation
+checks key presence for declared context references, not resource validity.
+An explicit `nil` counts as present. Keys with defaults are optional. Validate
+that supplied resources and selected defaults are usable for the operation.
+`SingleOutput` callbacks must also validate resources that they use directly
+from `Context.runtime` without declared context references.
+
+A local execution cannot use this portable resume contract. Start it again
+with new local values. Cancellation stops Runic-owned
 work; the application remains responsible for the resources it supplies.
 
 Do not copy resources into fact metadata, policies, component bindings, or
@@ -186,10 +202,12 @@ MIX_INSTALL_DIR="$PWD/_build/fact_modes_install" \
   elixir examples/jido_action/fact_check.exs
 ```
 
-It tests the real Jido wrapper, native containers, local scalar inheritance,
-portable-parent rejection, and field errors. The default Runic tests also
-check repeated and nested execution, failure followed by graph reuse, context
-replacement, pending-work replay, snapshots, accepted replay, and cancellation.
+It tests the real Jido wrapper, native containers, full fact fields, local
+scalar inheritance, whole-execution rejection, explicit portable admission,
+and field errors. The default Runic tests also check raw fields hidden by a
+general identity projection, repeated and nested execution, graph reuse after
+failure, context replacement, pending-work replay with missing keys or defaults,
+snapshots, accepted replay, and cancellation.
 
 Reconsider a native mode when a consumer needs live values through arbitrary
 native producers and demonstrates a material total adapter reduction. Require
