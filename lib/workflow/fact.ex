@@ -34,6 +34,13 @@ defmodule Runic.Workflow.Fact do
   The compatibility `:hash` field mirrors that ID; supplying both fields with
   different identities raises. Legacy integer or binary hashes remain accepted
   when no `:id` is supplied.
+
+  Default payload identity uses the strict canonical codec. Process-local
+  values need a consumer wrapper and a separate persistence/remote gate.
+  A projection or a caller-supplied digest does not prove that the raw value
+  can be saved or recovered. Child Facts do not inherit a local identity mode.
+  Keep live resources in the existing workflow run context when possible.
+  See the Fact boundaries guide for examples and the selected design.
   """
   def new(params) do
     struct!(__MODULE__, params)

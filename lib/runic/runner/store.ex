@@ -5,6 +5,12 @@ defmodule Runic.Runner.Store do
   Adapters handle saving and loading workflow event logs for
   durability across process restarts.
 
+  Adapters and their consumers must define and check the data they can recover.
+  ETF encoding and canonical identity projection do not prove that a raw value
+  is portable. The core does not reject every local wrapper or embedded live
+  handle. Reject unsupported data with its field path before writing it. Keep
+  transient resources in workflow run context. See the Fact boundaries guide.
+
   ## Stream Semantics (Event-Sourced)
 
   The preferred interface uses `append/3` and `stream/2` for incremental

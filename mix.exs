@@ -32,6 +32,7 @@ defmodule Runic.MixProject do
         "guides/protocols.md",
         "guides/custom-components.md",
         "guides/execution-observation.md",
+        "guides/fact-boundaries.md",
         "guides/scheduling.md",
         "guides/durable-execution.md",
         "guides/execution-strategies.md",
@@ -161,7 +162,9 @@ defmodule Runic.MixProject do
     ]
   end
 
-  defp elixirc_paths(:test), do: ["lib", "test/support", "examples/single_output"]
+  defp elixirc_paths(:test),
+    do: ["lib", "test/support", "examples/single_output", "examples/fact_modes"]
+
   defp elixirc_paths(_), do: ["lib"]
 
   defp aliases do
