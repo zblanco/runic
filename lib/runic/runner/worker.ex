@@ -494,11 +494,11 @@ defmodule Runic.Runner.Worker do
       |> maybe_apply_run_context(opts)
 
     {workflow, failed} =
-      if state.admission_causes == [] do
+      if state.admission_causes == [] and is_nil(state.current_execution_id) do
         Workflow.plan_eagerly_with_result(workflow, input)
       else
-        # Adding input is allowed in a stopped scope; executing its predicates
-        # is not. Leave those activations for explicit continuation/recovery.
+        # Observed matches use scheduler policy and outcome recording. In a
+        # stopped scope, leave matches for explicit continuation/recovery.
         {Workflow.plan(workflow, input), nil}
       end
 

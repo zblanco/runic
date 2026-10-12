@@ -3393,25 +3393,27 @@ defmodule Runic.Workflow do
   """
   @spec execute(t(), term(), keyword()) :: {t(), Execution.t()}
   def execute(%__MODULE__{} = workflow, input, opts \\ []) when is_list(opts) do
-    {execution, input_fact} = Execution.start(workflow, input, opts)
-    emit_events = workflow.emit_events
-    uncommitted_events = workflow.uncommitted_events
-
-    observed_workflow = maybe_apply_run_context(%{workflow | emit_events: true}, opts)
-
-    {observed_workflow, planning_failure} =
-      plan_eagerly_with_result(observed_workflow, input_fact)
-
-    execution =
-      if planning_failure,
-        do: Execution.record(execution, observed_workflow, planning_failure),
-        else: execution
-
     run_opts =
       opts
       |> Keyword.delete(:execution_id)
       |> Keyword.put_new(:runnable_order, :stable)
       |> maybe_convert_deadline()
+
+    {execution, input_fact} = Execution.start(workflow, input, opts)
+    emit_events = workflow.emit_events
+    uncommitted_events = workflow.uncommitted_events
+
+    observed_workflow = maybe_apply_run_context(%{workflow | emit_events: true}, run_opts)
+    policies = resolve_effective_policies(observed_workflow, run_opts)
+    driver_opts = Keyword.put(build_driver_opts(run_opts), :emit_events, true)
+
+    {observed_workflow, planning_failure, execution} =
+      observed_workflow
+      |> plan(input_fact)
+      |> activate_matches_with_result(
+        &execute_with_policy(&1, policies, driver_opts),
+        execution
+      )
 
     {observed_workflow, stopped?, execution} =
       if planning_failure do
@@ -4082,16 +4084,30 @@ defmodule Runic.Workflow do
   end
 
   defp activate_matches_with_result(workflow) do
+    {workflow, failed, _execution} =
+      activate_matches_with_result(
+        workflow,
+        &{Invokable.execute(&1.node, &1), []},
+        nil
+      )
+
+    {workflow, failed}
+  end
+
+  defp activate_matches_with_result(workflow, execute, execution) do
     case next_match_runnables(workflow) do
       [] ->
-        {workflow, nil}
+        {workflow, nil, execution}
 
       [{node, fact} | _] ->
         # Read a fresh frontier after applying each match. Recursing inside a
         # reduce over an older frontier can execute an already-consumed match.
-        case invoke_with_result(workflow, node, fact) do
-          {workflow, %Runnable{status: :failed} = failed} -> {workflow, failed}
-          {workflow, _result} -> activate_matches_with_result(workflow)
+        {workflow, result} = invoke_with_result(workflow, node, fact, execute)
+        execution = if result, do: Execution.record(execution, workflow, result), else: execution
+
+        case result do
+          %Runnable{status: :failed} -> {workflow, result, execution}
+          _ -> activate_matches_with_result(workflow, execute, execution)
         end
     end
   end
@@ -4130,10 +4146,14 @@ defmodule Runic.Workflow do
   end
 
   defp invoke_with_result(wrk, step, fact) do
+    invoke_with_result(wrk, step, fact, &{Invokable.execute(&1.node, &1), []})
+  end
+
+  defp invoke_with_result(wrk, step, fact, execute) do
     case Invokable.prepare(step, wrk, fact) do
       {:ok, runnable} ->
-        executed = Invokable.execute(step, runnable)
-        {apply_runnable(wrk, executed), executed}
+        {executed, events} = execute.(runnable)
+        {wrk |> append_runnable_events(events) |> apply_runnable(executed), executed}
 
       {:skip, reducer_fn} ->
         {reducer_fn.(wrk), nil}

@@ -140,7 +140,7 @@ defmodule Runic.Workflow.ExecutionObservationTest do
       {_workflow, execution} =
         Workflow.execute(workflow, 10, run_context: %{_global: %{threshold: 5}})
 
-      assert Execution.outputs(execution) == [{:accepted, 10}]
+      assert Execution.outputs(execution) == [true, {:accepted, 10}]
       assert Execution.failures(execution) == []
       assert execution.quiescent?
     end
@@ -167,7 +167,15 @@ defmodule Runic.Workflow.ExecutionObservationTest do
     assert execution.quiescent?
     assert execution.active == []
     assert Enum.any?(execution.ready, &(&1.node_name == :echo))
-    assert execution.outcomes == []
+
+    expected_activation =
+      Runic.Identity.derive(:activation, [:local, execution.input_fact_id, condition.hash])
+
+    assert Enum.all?(execution.outcomes, fn outcome ->
+             outcome.kind == :completed and outcome.result == true and
+               outcome.activation_id == expected_activation
+           end)
+
     assert execution.failures == []
     assert Workflow.is_runnable?(workflow)
   end

@@ -27,6 +27,11 @@ old Fact envelope or its metadata.
 Immediate execution has no Runner Store. Its persistence status is
 `:not_managed`.
 
+Eager predicates and hooks use the same execution policies as later work.
+`deadline_ms` starts before planning. An expired `deadline_at` prevents a new
+predicate attempt. Retry, fallback, and `on_failure: :skip` also apply to match
+activations. Accepted match results are included in the execution outcomes.
+
 ## Managed execution
 
 Use the Runner API when a Worker owns the workflow:
@@ -41,6 +46,10 @@ Use the Runner API when a Worker owns the workflow:
 
 `start_execution/4` confirms input admission. It does not confirm computation
 or persistence. `await_execution/4` waits for execution quiescence.
+
+Observed match activations pass through the Worker scheduler, including policy
+handling and outcome recording. With manual dispatch, `step/2` can admit a
+predicate before its reaction becomes ready.
 
 Use `Runic.Runner.execution/3` for a current snapshot. Do not call it from a
 Worker callback or hook.
@@ -73,11 +82,12 @@ work stops admission, the new scope reports `admission: :stopped`. Its outcomes
 still contain only results for the new input. Thus an empty failure list alone
 does not mean that admission stayed open.
 
-Skipped activations retain the existing global downstream suppression rule.
-A skip from an older input can suppress ready downstream work for the new
-input. The new scope can then be quiescent with open admission and no failures.
-These fields describe observed progress. Applications must also check their
-expected results when retained inputs can skip work.
+Failed and skipped activations suppress pending downstream work for the same
+local input root. This includes `on_failure: :skip`. Map items that share a root
+can still suppress one another. General Join invocation identity remains
+separate design work. These fields describe observed progress. Applications
+must also check their expected results. See [Scheduling](scheduling.md) for the
+suppression and replay rules.
 
 Manual `Runic.Runner.step/2` still confirms the admission of one scheduler
 unit. It does not confirm completion, quiescence, or persistence.
@@ -94,6 +104,11 @@ execution rejects an ID that the Worker already knows.
 
 Outcome IDs use the execution, activation, attempt, and outcome kind. Retry
 attempts have different attempt IDs.
+
+Custom runnable IDs remain metadata. An ID from another domain, such as an
+`:event` business ID, does not change the activation coordinates, outcome ID,
+or stable admission order. These use the node and input Fact identities unless
+the custom runnable supplies an `:activation` identity.
 
 ## Outcome order and selection
 

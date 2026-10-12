@@ -9,9 +9,9 @@ defmodule Runic.Workflow.Execution.Outcome do
 
   Custom runnable IDs remain available in `runnable_ids` as metadata. Outcome
   identity and stable order use activation coordinates. When a custom runnable
-  has no activation identity, it is derived from the node and input Fact. A
-  missing terminal attempt identity is derived from that activation and the
-  runnable's attempt number.
+  has no `:activation` identity, it is derived from the node and input Fact.
+  Terminal attempt identity is derived from that activation and the runnable's
+  attempt number.
 
   `observed_at` is the acceptance time in the caller or Worker. For failed or
   skipped outcomes, `failure_action` records terminal handling (`:halt` or
@@ -68,11 +68,8 @@ defmodule Runic.Workflow.Execution.Outcome do
   @spec from_runnable(Identity.t(), Runnable.t(), pos_integer()) :: t()
   def from_runnable(execution_id, %Runnable{} = runnable, sequence) do
     kind = runnable_kind(runnable.status)
-    activation_id = activation_id(runnable)
-
-    attempt_id =
-      runnable.attempt_id ||
-        Identity.derive(:attempt, [activation_id, runnable.attempt_number || 0])
+    activation_id = Runnable.activation_id(runnable)
+    attempt_id = Identity.derive(:attempt, [activation_id, runnable.attempt_number || 0])
 
     build(execution_id, kind, sequence, [activation_id],
       activation_id: activation_id,
@@ -83,7 +80,7 @@ defmodule Runic.Workflow.Execution.Outcome do
       result: runnable.result,
       error: runnable.error,
       failure_action: failure_action(runnable.status),
-      order_key: order_key(runnable)
+      order_key: Runnable.order_key(runnable)
     )
   end
 
@@ -97,16 +94,16 @@ defmodule Runic.Workflow.Execution.Outcome do
           t()
   def uncertain(execution_id, unit, reason, sequence) do
     runnables = unit_runnables(unit)
-    first = Enum.min_by(runnables, &order_key/1)
+    first = Enum.min_by(runnables, &Runnable.order_key/1)
 
-    build(execution_id, :uncertain, sequence, Enum.map(runnables, &activation_id/1),
-      activation_id: activation_id(first),
+    build(execution_id, :uncertain, sequence, Enum.map(runnables, &Runnable.activation_id/1),
+      activation_id: Runnable.activation_id(first),
       attempt_id: nil,
       runnable_ids: Enum.map(runnables, & &1.id),
       node_hash: first.node.hash,
       node_name: Map.get(first.node, :name, first.node.hash),
       error: reason,
-      order_key: order_key(first)
+      order_key: Runnable.order_key(first)
     )
   end
 
@@ -133,16 +130,6 @@ defmodule Runic.Workflow.Execution.Outcome do
         observed_at: System.monotonic_time(:millisecond)
       ] ++ attrs
     )
-  end
-
-  defp activation_id(%Runnable{activation_id: %Identity{} = id}), do: id
-
-  defp activation_id(%Runnable{node: node, input_fact: fact}),
-    do: Runnable.runnable_id(node, fact)
-
-  defp order_key(%Runnable{} = runnable) do
-    {depth, _id} = Runnable.order_key(runnable)
-    {depth, activation_id(runnable)}
   end
 
   defp failure_action(:failed), do: :halt

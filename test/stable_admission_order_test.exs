@@ -6,6 +6,52 @@ defmodule Runic.Workflow.StableAdmissionOrderTest do
   alias Runic.Workflow
   alias Runic.Workflow.{Fact, Runnable, RunnableFailed}
 
+  test "custom metadata IDs do not change stable admission or outcome order" do
+    execution_id = Runic.Identity.derive(:execution, [:stable_custom_ids])
+
+    nodes =
+      for name <- [:one, :two] do
+        %Runic.Test.CustomIdNode{
+          name: name,
+          hash: Runic.Identity.derive(:component_definition, [name]),
+          owner: self()
+        }
+      end
+
+    workflow = Enum.reduce(nodes, Workflow.new(), &Workflow.add_step(&2, &1))
+
+    {_execution, fact} =
+      Runic.Workflow.Execution.start(workflow, :input, execution_id: execution_id)
+
+    [first, second] = Enum.sort_by(nodes, &Runnable.runnable_id(&1, fact))
+
+    for [first_id, second_id] <- [
+          [make_ref(), self()],
+          [self(), make_ref()],
+          ["z-metadata", "a-metadata"],
+          [Runic.Identity.derive(:event, [:one]), Runic.Identity.derive(:event, [:two])]
+        ] do
+      workflow =
+        Enum.reduce(
+          [%{first | id: first_id}, %{second | id: second_id}],
+          Workflow.new(),
+          &Workflow.add_step(&2, &1)
+        )
+
+      {_workflow, execution} = Workflow.execute(workflow, :input, execution_id: execution_id)
+
+      assert_received {:custom_started, name}
+      assert name == first.name
+      refute_received {:custom_started, _}
+
+      assert [%{kind: :failed, node_name: ^name, runnable_ids: [^first_id]} = outcome] =
+               execution.outcomes
+
+      assert outcome.order_key == {0, Runnable.runnable_id(first, fact)}
+      assert Runic.Workflow.Execution.ordered_outcomes(execution, order: :stable) == [outcome]
+    end
+  end
+
   test "stable serial admission stops at the lowest ready key" do
     owner = self()
     workflow = workflow(owner)

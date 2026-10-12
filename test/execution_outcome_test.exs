@@ -10,7 +10,7 @@ defmodule Runic.Workflow.Execution.OutcomeTest do
   test "opaque runnable IDs remain metadata for completed, skipped, and uncertain outcomes" do
     execution_id = execution_id()
 
-    for id <- [make_ref(), self(), fn -> :opaque end] do
+    for id <- [make_ref(), self(), fn -> :opaque end, Identity.derive(:event, [:business_id])] do
       runnable = runnable(id)
       activation_id = Runnable.runnable_id(runnable.node, runnable.input_fact)
       attempt_id = Identity.derive(:attempt, [activation_id, 0])
@@ -36,6 +36,43 @@ defmodule Runic.Workflow.Execution.OutcomeTest do
       assert uncertain.error == :executor_lost
       assert uncertain.attempt_id == nil
     end
+  end
+
+  test "typed metadata cannot alias different activations or change logical outcomes" do
+    first = runnable(Identity.derive(:event, [:first]))
+    replacement = runnable(Identity.derive(:event, [:replacement]))
+    reused = runnable(first.id, value: :other_input)
+    other_node = runnable(first.id, name: :other_node)
+
+    assert completed(first).id == completed(replacement).id
+    assert completed(first).order_key == completed(replacement).order_key
+    refute completed(first).id == completed(reused).id
+    refute completed(first).id == completed(other_node).id
+
+    assert uncertain([first]).id == uncertain([replacement]).id
+    refute uncertain([first]).id == uncertain([reused]).id
+  end
+
+  test "terminal observations normalize invalid activation and mismatched attempt identities" do
+    canonical = runnable(make_ref()) |> Runnable.for_attempt(2)
+    expected = completed(canonical)
+
+    for activation_id <- [nil, Identity.derive(:event, [:metadata])] do
+      custom = %{
+        canonical
+        | activation_id: activation_id,
+          attempt_id: Identity.derive(:attempt, [:unrelated_activation, 2])
+      }
+
+      assert completed(custom).id == expected.id
+      assert completed(custom).activation_id == expected.activation_id
+      assert completed(custom).attempt_id == expected.attempt_id
+      assert completed(custom).order_key == expected.order_key
+      assert uncertain([custom]).id == uncertain([canonical]).id
+    end
+
+    mismatched = %{canonical | attempt_id: Identity.derive(:event, [:metadata])}
+    assert completed(mismatched).id == expected.id
   end
 
   test "outcome identity uses the logical activation instead of the opaque runnable ID" do

@@ -36,6 +36,67 @@ defmodule Runic.Runner.ExecutionObservationTest do
              Runner.await_execution(runner, :success, execution_id, 0)
   end
 
+  for mode <- [:retry, :skip], executor <- [:inline, Runic.Runner.Executor.Task] do
+    @tag match_policy_mode: mode, match_executor: executor
+    test "managed predicates honor #{mode} policy with #{executor}", %{
+      runner: runner,
+      match_policy_mode: mode,
+      match_executor: executor
+    } do
+      counter = :counters.new(1, [])
+
+      condition =
+        Runic.Workflow.Condition.new(
+          work: fn _ -> true end,
+          arity: 1,
+          name: :gate,
+          hash: Runic.Identity.derive(:component_definition, [:managed_gate])
+        )
+
+      hook = fn _, _ ->
+        :counters.add(counter, 1, 1)
+        if :counters.get(counter, 1) == 1, do: {:error, :transient}, else: :ok
+      end
+
+      policy =
+        if mode == :retry, do: %{max_retries: 1, backoff: :none}, else: %{on_failure: :skip}
+
+      workflow =
+        Workflow.new()
+        |> Workflow.add_step(condition)
+        |> Workflow.add(Runic.step(fn value -> {:accepted, value} end, name: :reaction),
+          to: condition
+        )
+        |> Map.put(:before_hooks, %{condition.hash => [hook]})
+
+      {:ok, _} =
+        Runner.start_workflow(runner, :match_policy, workflow, executor: executor)
+
+      {:ok, id} =
+        Runner.start_execution(runner, :match_policy, :input,
+          scheduler_policies: [{:gate, policy}]
+        )
+
+      {:ok, execution} = Runner.await_execution(runner, :match_policy, id)
+
+      assert execution.admission == :open
+      assert execution.quiescent?
+      assert [%{node_name: :gate} = outcome | _] = execution.outcomes
+
+      if mode == :retry do
+        assert outcome.kind == :completed
+        assert outcome.attempt_id == Runic.Identity.derive(:attempt, [outcome.activation_id, 1])
+        assert Execution.outputs(execution) == [true, {:accepted, :input}]
+        assert :counters.get(counter, 1) == 2
+      else
+        assert outcome.kind == :skipped
+        assert outcome.failure_action == :skip
+        assert Execution.outputs(execution) == []
+        assert :counters.get(counter, 1) == 1
+      end
+    end
+  end
+
   test "managed repeated inputs keep distinct stable observations", %{runner: runner} do
     workflow = Runic.workflow(steps: [Runic.step(& &1, name: :echo)])
     {:ok, _pid} = Runner.start_workflow(runner, :repeated, workflow, executor: :inline)
@@ -58,6 +119,55 @@ defmodule Runic.Runner.ExecutionObservationTest do
 
     assert :ok = Runner.forget_execution(runner, :repeated, first_id)
     assert {:error, :not_found} = Runner.execution(runner, :repeated, first_id)
+  end
+
+  test "manual dispatch admits predicates before their reactions", %{runner: runner} do
+    owner = self()
+
+    condition =
+      Runic.Workflow.Condition.new(
+        work: fn _ -> true end,
+        arity: 1,
+        name: :gate,
+        hash: Runic.Identity.derive(:component_definition, [:manual_gate])
+      )
+
+    workflow =
+      Workflow.new()
+      |> Workflow.add_step(condition)
+      |> Workflow.add(Runic.step(fn value -> {:accepted, value} end, name: :reaction),
+        to: condition
+      )
+
+    hook = fn _, _ ->
+      send(owner, :predicate_ran)
+      :ok
+    end
+
+    workflow = %{workflow | before_hooks: %{condition.hash => [hook]}}
+
+    {:ok, _} =
+      Runner.start_workflow(runner, :manual_match, workflow,
+        executor: :inline,
+        dispatch_mode: :manual
+      )
+
+    {:ok, id} = Runner.start_execution(runner, :manual_match, :input)
+
+    assert {:ok, %{status: :ready, outcomes: [], ready: [_]}} =
+             Runner.execution(runner, :manual_match, id)
+
+    refute_received :predicate_ran
+
+    assert :ok = Runner.step(runner, :manual_match)
+    assert_received :predicate_ran
+
+    assert {:ok, %{status: :ready, outcomes: [%{result: true}], ready: [_]}} =
+             Runner.execution(runner, :manual_match, id)
+
+    assert :ok = Runner.step(runner, :manual_match)
+    assert {:ok, execution} = Runner.await_execution(runner, :manual_match, id)
+    assert Execution.outputs(execution) == [true, {:accepted, :input}]
   end
 
   for mode <- [:halt, :skip, :custom_skip] do
