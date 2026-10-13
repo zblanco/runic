@@ -67,6 +67,29 @@ a new portable execution, not changing a local child's marker.
 
 ## Persistence, replay, and remote execution
 
+Value meta references (`state_of`, `latest_value_of`, `all_values_of`, and the
+Fact-returning getters) retain their actual source Facts in the prepared
+`CausalContext.meta_parents`. The runtime checks their scopes with the input
+before hooks or application callbacks. Outputs inherit from these parents.
+Condition read parents also reach the reaction through satisfied gates. Count
+and presence getters and unrelated run context do not become value parents.
+Remote checks include these retained Facts even when the extracted value is
+a scalar or a bare PID.
+
+Custom coordinators implement `CoordinatorParents.parents/3` and return their
+actual read Facts. Runic checks those Facts before finalization. A coordinator
+without this contract is limited to portable workflows. The scope-error safety
+net converts native finalization errors to failed acceptance; it does not undo
+external effects or hide unrelated exceptions.
+
+Schedulers must record the Runnable returned by `Workflow.accept_runnable/3`.
+An attempt can complete and then fail current-graph acceptance. The convenience
+`apply_runnable/2` returns only the workflow. See `examples/native_acceptance.exs`
+for a scheduler that records the accepted status and lifecycle events.
+Low-level Invokable implementations that read meta values must use
+`prepare_meta_context_with_parents/3`, retain `meta_parents` in the causal
+context, and use those parents for scope checks and `Fact.child/2`.
+
 Native local facts cannot be persisted. The Worker rejects the event batch
 before `save_fact/3`, `save_payload/3`, or append/save callbacks. Built-in ETS
 and Mnesia also check direct writes, including local identity keys. Encoded
@@ -103,6 +126,12 @@ allow_local: true)` and must use the same live VM. Local events must retain
 their original mode, scope, and identities. Replay does not create a new scope
 for an existing identity. The option applies to both the events and the base
 workflow. Replay does not call accepted callbacks again.
+
+An existing local identity also requires its original payload digest. Local
+payload verification binds the value to its declared scope. Native state,
+Join, and FanIn events now retain that digest. Replay also checks known
+in-graph parent scopes. Swapping a valid same-VM scope is rejected. Portable
+records keep their prior defaults and identity bytes.
 
 Local FactRefs cannot load their values from a Store or resolver cache.
 Reference and preload checks run before any Store read. `Rehydration.dehydrate/2`

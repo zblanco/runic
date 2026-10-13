@@ -42,6 +42,7 @@ defmodule Runic.Workflow.CausalContext do
           fan_in_context: map() | nil,
           mergeable: boolean(),
           meta_context: map(),
+          meta_parents: [Fact.t()],
           run_context: map()
         }
 
@@ -59,6 +60,7 @@ defmodule Runic.Workflow.CausalContext do
     fan_in_context: nil,
     mergeable: false,
     meta_context: %{},
+    meta_parents: [],
     run_context: %{}
   ]
 
@@ -69,6 +71,9 @@ defmodule Runic.Workflow.CausalContext do
   def new(attrs \\ []) do
     struct!(__MODULE__, attrs)
   end
+
+  @doc "Returns the input and retained meta source Facts. Run context is not a data parent."
+  def parents(context, fact), do: [fact | Map.get(context, :meta_parents, [])]
 
   @doc """
   Builds a basic context with node hash, input fact, and ancestry depth.

@@ -17,6 +17,7 @@ defmodule Runic.Workflow.Events.StateInitiated do
   defstruct [
     :accumulator_hash,
     :init_fact_hash,
+    :init_payload_digest,
     :init_value,
     :init_ancestry,
     :weight,

@@ -1457,6 +1457,8 @@ defmodule Runic.Workflow do
   end
 
   def apply_event(%__MODULE__{} = wf, %FactProduced{} = e) do
+    Runic.Workflow.LocalBoundary.validate_event!(wf, e)
+
     fact =
       Fact.new(
         hash: e.hash,
@@ -1521,7 +1523,13 @@ defmodule Runic.Workflow do
     cond_node = Map.get(wf.graph.vertices, e.condition_hash)
 
     if fact && cond_node do
-      draw_connection(wf, fact, cond_node, :satisfied, weight: e.weight || 0)
+      parents = Map.get(e, :meta_parents, [])
+      opts = [weight: e.weight || 0]
+
+      opts =
+        if parents == [], do: opts, else: Keyword.put(opts, :properties, %{meta_parents: parents})
+
+      draw_connection(wf, fact, cond_node, :satisfied, opts)
     else
       wf
     end
@@ -1552,9 +1560,12 @@ defmodule Runic.Workflow do
   end
 
   def apply_event(%__MODULE__{} = wf, %StateInitiated{} = e) do
+    Runic.Workflow.LocalBoundary.validate_event!(wf, e)
+
     init_fact =
       Fact.new(
         hash: e.init_fact_hash,
+        payload_digest: Map.get(e, :init_payload_digest),
         value: e.init_value,
         ancestry: e.init_ancestry,
         identity_mode: Map.get(e, :init_identity_mode, :portable),
@@ -1584,11 +1595,13 @@ defmodule Runic.Workflow do
   end
 
   def apply_event(%__MODULE__{} = wf, %JoinCompleted{} = e) do
+    Runic.Workflow.LocalBoundary.validate_event!(wf, e)
     join = Map.get(wf.graph.vertices, e.join_hash)
 
     result_fact =
       Fact.new(
         hash: e.result_fact_hash,
+        payload_digest: Map.get(e, :result_payload_digest),
         value: e.result_value,
         ancestry: e.result_ancestry,
         identity_mode: Map.get(e, :result_identity_mode, :portable),
@@ -1619,6 +1632,8 @@ defmodule Runic.Workflow do
   end
 
   def apply_event(%__MODULE__{} = wf, %FanOutFactEmitted{} = e) do
+    Runic.Workflow.LocalBoundary.validate_event!(wf, e)
+
     fact =
       Fact.new(
         hash: e.emitted_fact_hash,
@@ -1649,11 +1664,13 @@ defmodule Runic.Workflow do
   end
 
   def apply_event(%__MODULE__{} = wf, %FanInCompleted{} = e) do
+    Runic.Workflow.LocalBoundary.validate_event!(wf, e)
     fan_in = Map.get(wf.graph.vertices, e.fan_in_hash)
 
     result_fact =
       Fact.new(
         hash: e.result_fact_hash,
+        payload_digest: Map.get(e, :result_payload_digest),
         value: e.result_value,
         ancestry: e.result_ancestry,
         identity_mode: Map.get(e, :result_identity_mode, :portable),
@@ -4731,7 +4748,26 @@ defmodule Runic.Workflow do
   @spec apply_runnable(t(), Runnable.t()) :: t()
   def apply_runnable(workflow, runnable), do: elem(accept_runnable(workflow, runnable), 0)
 
-  @doc false
+  @doc """
+  Accepts a completed Runnable and returns its accepted status and lifecycle events.
+
+  Returns `{workflow, accepted_runnable, lifecycle_events}`. Acceptance can turn
+  a completed attempt into a failed result, for example when current coordination
+  parents have incompatible local scopes. Schedulers must record outcomes and
+  invoke completion/failure hooks from `accepted_runnable`, not the attempt.
+  Pass driver lifecycle events as the third argument so a rejected completion
+  becomes a correlated failure event in the returned workflow and event list.
+
+      {attempt, events} = PolicyDriver.execute(prepared, policy, emit_events: true)
+      {workflow, accepted, events} = Workflow.accept_runnable(workflow, attempt, events)
+      # Record accepted.status, accepted.error, and the returned events.
+
+  `apply_runnable/2` is a convenience for callers that need only the workflow.
+  Custom coordinators declare their read Facts through `CoordinatorParents`.
+  Scope failures during finalization also become failed acceptance. Graph changes
+  from a rejected attempt are discarded; external effects cannot be rolled back.
+  """
+  @spec accept_runnable(t(), Runnable.t(), list()) :: {t(), Runnable.t(), list()}
   def accept_runnable(workflow, %Runnable{} = runnable, events \\ []) do
     accepted =
       case validate_acceptance(workflow, runnable) do
@@ -4739,42 +4775,75 @@ defmodule Runic.Workflow do
           runnable
 
         {:error, error} ->
-          %{
-            runnable
-            | status: :failed,
-              error: error,
-              result: nil,
-              events: nil,
-              hook_apply_fns: []
-          }
+          rejected_runnable(runnable, error)
       end
 
     lifecycle =
       if accepted.status != runnable.status, do: rejection_events(events, accepted), else: events
 
-    wf = do_apply_runnable(workflow, accepted) |> append_runnable_events(lifecycle)
-    {wf, accepted, lifecycle}
+    case apply_with_scope_guard(workflow, accepted) do
+      {:ok, wf} ->
+        {append_runnable_events(wf, lifecycle), accepted, lifecycle}
+
+      {:error, error} ->
+        rejected = rejected_runnable(runnable, error)
+        lifecycle = rejection_events(events, rejected)
+        wf = do_apply_runnable(workflow, rejected) |> append_runnable_events(lifecycle)
+        {wf, rejected, lifecycle}
+    end
+  end
+
+  defp rejected_runnable(runnable, error),
+    do: %{runnable | status: :failed, error: error, result: nil, events: nil, hook_apply_fns: []}
+
+  defp apply_with_scope_guard(workflow, runnable) do
+    {:ok, do_apply_runnable(workflow, runnable)}
+  rescue
+    error in [ArgumentError, Runic.Workflow.LocalFactError] ->
+      if Fact.scope_error?(error), do: {:error, error}, else: reraise(error, __STACKTRACE__)
   end
 
   defp validate_acceptance(workflow, %Runnable{status: :completed} = runnable) do
-    with :ok <- Fact.check_parents([runnable.input_fact]) do
+    with :ok <-
+           Fact.check_parents(
+             Runic.Workflow.CausalContext.parents(runnable.context, runnable.input_fact)
+           ) do
       Runic.Workflow.LocalBoundary.validate_current!(runnable.events, :events)
 
-      case runnable.node do
-        %Runic.Workflow.Join{} = join ->
-          staged = Enum.reduce(runnable.events || [], workflow, &apply_event(&2, &1))
-          Runic.Workflow.Join.check_parents(join, staged)
+      if Runic.Workflow.Coordinator.impl_for(runnable.node) do
+        staged = Enum.reduce(runnable.events || [], workflow, &apply_event(&2, &1))
 
-        %Runic.Workflow.FanIn{} = fan_in ->
-          staged = Enum.reduce(runnable.events || [], workflow, &apply_event(&2, &1))
-          Runic.Workflow.FanIn.check_parents(fan_in, staged, runnable.context)
+        case Runic.Workflow.CoordinatorParents.parents(runnable.node, staged, runnable) do
+          {:ok, parents} ->
+            Fact.check_parents(
+              parents ++
+                Runic.Workflow.CausalContext.parents(runnable.context, runnable.input_fact)
+            )
 
-        _ ->
-          :ok
+          :unsupported ->
+            case Runic.Workflow.LocalBoundary.check(
+                   %{workflow: staged, runnable: runnable},
+                   :coordination
+                 ) do
+              :ok ->
+                :ok
+
+              {:error, _} ->
+                {:error,
+                 %Runic.Workflow.LocalFactError{
+                   field: :coordination,
+                   path: [:coordination, :node],
+                   reason: :unsupported_local_coordinator
+                 }}
+            end
+        end
+      else
+        :ok
       end
     end
   rescue
-    error in [ArgumentError, Runic.Workflow.LocalFactError] -> {:error, error}
+    error in [ArgumentError, Runic.Workflow.LocalFactError] ->
+      if Fact.scope_error?(error), do: {:error, error}, else: reraise(error, __STACKTRACE__)
   end
 
   defp validate_acceptance(_, _), do: :ok
@@ -5169,6 +5238,10 @@ defmodule Runic.Workflow do
   """
   @spec prepare_meta_context(t(), struct()) :: map()
   def prepare_meta_context(workflow, node), do: Private.prepare_meta_context(workflow, node)
+
+  @doc "Returns meta values and the source Facts that supply those values."
+  def prepare_meta_context_with_parents(workflow, node, fact \\ nil),
+    do: Private.prepare_meta_context_with_parents(workflow, node, fact)
 
   @doc """
   Returns the list of components that a node depends on via `:meta_ref` edges.

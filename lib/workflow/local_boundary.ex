@@ -21,12 +21,15 @@ defmodule Runic.Workflow.LocalBoundary do
     Fact => {:identity_mode, :local_scope, [:id, :hash, :payload_digest, :content_digest]},
     FactRef => {:identity_mode, :local_scope, [:id, :hash, :payload_digest, :content_digest]},
     FactProduced => {:identity_mode, :local_scope, [:hash, :payload_digest, :content_digest]},
-    StateInitiated => {:init_identity_mode, :init_local_scope, [:init_fact_hash]},
-    JoinCompleted => {:result_identity_mode, :result_local_scope, [:result_fact_hash]},
+    StateInitiated =>
+      {:init_identity_mode, :init_local_scope, [:init_fact_hash, :init_payload_digest]},
+    JoinCompleted =>
+      {:result_identity_mode, :result_local_scope, [:result_fact_hash, :result_payload_digest]},
     FanOutFactEmitted =>
       {:emitted_identity_mode, :emitted_local_scope,
        [:emitted_fact_hash, :emitted_payload_digest, :emitted_content_digest]},
-    FanInCompleted => {:result_identity_mode, :result_local_scope, [:result_fact_hash]}
+    FanInCompleted =>
+      {:result_identity_mode, :result_local_scope, [:result_fact_hash, :result_payload_digest]}
   }
 
   def check(value, field), do: walk(value, [field])
@@ -41,6 +44,61 @@ defmodule Runic.Workflow.LocalBoundary do
   @doc false
   def validate_current!(value, field), do: validate_scopes(value, [field])
 
+  @doc false
+  def validate_event!(workflow, %module{} = event) when is_map_key(@scope_records, module) do
+    {mode_key, scope_key, _} = Map.fetch!(@scope_records, module)
+
+    if Map.get(event, mode_key, :portable) == :local do
+      validate_current!(event, :event)
+
+      ancestry =
+        Map.get(event, :ancestry) || Map.get(event, :init_ancestry) ||
+          Map.get(event, :result_ancestry) || Map.get(event, :emitted_ancestry)
+
+      parent =
+        case ancestry do
+          {_, hash} -> Map.get(workflow.graph.vertices, hash)
+          _ -> nil
+        end
+
+      parents = [parent | event_parents(workflow, event)] |> Enum.reject(&is_nil/1)
+      local_parents = Enum.filter(parents, &(Map.get(&1, :identity_mode, :portable) == :local))
+
+      case Fact.check_parents(local_parents) do
+        :ok -> :ok
+        {:error, error} -> raise error
+      end
+
+      if Enum.any?(local_parents, &(Map.get(&1, :local_scope) != Map.get(event, scope_key))),
+        do:
+          raise(LocalFactError,
+            field: :event,
+            path: [:event, scope_key],
+            reason: :local_parent_scope_mismatch
+          )
+    end
+
+    :ok
+  end
+
+  def validate_event!(_, _), do: :ok
+
+  defp event_parents(workflow, %JoinCompleted{join_hash: hash}) do
+    case Map.get(workflow.graph.vertices, hash) do
+      %Runic.Workflow.Join{} = join -> Runic.Workflow.Join.pending_parents(join, workflow)
+      _ -> []
+    end
+  end
+
+  defp event_parents(workflow, %FanInCompleted{seen_key: key}),
+    do:
+      workflow.mapped
+      |> Map.get(key, %{})
+      |> Map.values()
+      |> Enum.map(&Map.get(workflow.graph.vertices, &1))
+
+  defp event_parents(_, _), do: []
+
   defp validate_scopes(%LocalScope{} = scope, path) do
     unless LocalScope.valid?(scope),
       do: raise(LocalFactError, field: hd(path), path: path, reason: :foreign_local_scope)
@@ -53,6 +111,7 @@ defmodule Runic.Workflow.LocalBoundary do
 
     native? =
       Map.get(record, mode_key, :portable) == :local or
+        not is_nil(Map.get(record, scope_key)) or
         Enum.any?(identities, &match?(%Identity{scheme: :local_sha256}, Map.get(record, &1)))
 
     if native? do
@@ -78,6 +137,35 @@ defmodule Runic.Workflow.LocalBoundary do
         true ->
           :ok
       end
+
+      {payload_key, value_key} =
+        case module do
+          Fact -> {:payload_digest, :value}
+          FactProduced -> {:payload_digest, :value}
+          StateInitiated -> {:init_payload_digest, :init_value}
+          JoinCompleted -> {:result_payload_digest, :result_value}
+          FanInCompleted -> {:result_payload_digest, :result_value}
+          FanOutFactEmitted -> {:emitted_payload_digest, :emitted_value}
+          _ -> {nil, nil}
+        end
+
+      if payload_key && is_nil(Map.get(record, payload_key)),
+        do:
+          raise(LocalFactError,
+            field: hd(path),
+            path: path ++ [payload_key],
+            reason: :missing_local_payload
+          )
+
+      if payload_key && Map.get(record, payload_key) &&
+           Map.get(record, payload_key) !=
+             Fact.local_payload_digest(Map.get(record, value_key), Map.get(record, scope_key)),
+         do:
+           raise(LocalFactError,
+             field: hd(path),
+             path: path ++ [payload_key],
+             reason: :local_identity_mismatch
+           )
     end
 
     validate_scope_fields(record, path)

@@ -79,6 +79,7 @@ defimpl Runic.Workflow.Coordinator, for: Runic.Workflow.Join do
       completion_event = %JoinCompleted{
         join_hash: join.hash,
         result_fact_hash: join_fact.hash,
+        result_payload_digest: join_fact.payload_digest,
         result_value: join_fact.value,
         result_ancestry: join_fact.ancestry,
         result_identity_mode: join_fact.identity_mode,

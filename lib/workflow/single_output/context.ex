@@ -12,7 +12,7 @@ defmodule Runic.Workflow.SingleOutput.Context do
   portable dispatch envelope. Do not retain resources from it in outputs or
   captured bindings. Resume must supply fresh runtime resources as usual.
 
-  `identity_mode` and `local_scope` describe the input Fact, not another runtime
+  `identity_mode` and `local_scope` describe the input and retained meta source Facts, not another runtime
   context system. A native local callback receives bare data. To pass it to a
   nested workflow, explicitly pass these fields to `Workflow.execute/3`.
   """
@@ -42,10 +42,15 @@ defmodule Runic.Workflow.SingleOutput.Context do
 
   @doc false
   def from_runnable(runnable) do
+    local =
+      runnable.context
+      |> Runic.Workflow.CausalContext.parents(runnable.input_fact)
+      |> Enum.find(&(Map.get(&1, :identity_mode, :portable) == :local))
+
     %__MODULE__{
       runtime: runnable.context.run_context,
-      identity_mode: Map.get(runnable.input_fact, :identity_mode, :portable),
-      local_scope: Map.get(runnable.input_fact, :local_scope),
+      identity_mode: if(local, do: :local, else: :portable),
+      local_scope: if(local, do: local.local_scope),
       meta: runnable.context.meta_context,
       input_metadata: runnable.input_fact.meta,
       runnable_id: runnable.id,

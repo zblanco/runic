@@ -265,27 +265,12 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Condition do
         %Condition{} = condition,
         %Workflow{} = workflow,
         %Fact{} = fact
-      ) do
-    if Condition.check(condition, fact) do
-      workflow
-      |> Workflow.prepare_next_runnables(condition, fact)
-      |> Workflow.draw_connection(fact, condition, :satisfied)
-      |> Workflow.mark_runnable_as_ran(condition, fact)
-      |> Workflow.run_after_hooks(condition, fact)
-    else
-      workflow
-      |> Workflow.mark_runnable_as_ran(condition, fact)
-      |> Workflow.run_after_hooks(condition, fact)
-    end
-  end
+      ),
+      do: Workflow.invoke(workflow, condition, fact)
 
   def prepare(%Condition{} = condition, %Workflow{} = workflow, %Fact{} = fact) do
-    meta_context =
-      if Condition.has_meta_refs?(condition) do
-        Workflow.prepare_meta_context(workflow, condition)
-      else
-        %{}
-      end
+    {meta_context, meta_parents} =
+      Workflow.prepare_meta_context_with_parents(workflow, condition, fact)
 
     run_context = Workflow.get_run_context(workflow, condition.name)
 
@@ -296,6 +281,7 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Condition do
         ancestry_depth: Workflow.ancestry_depth(workflow, fact),
         hooks: Workflow.get_hooks(workflow, condition.hash),
         meta_context: meta_context,
+        meta_parents: meta_parents,
         run_context: run_context
       )
 
@@ -303,7 +289,8 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Condition do
   end
 
   def execute(%Condition{} = condition, %Runnable{input_fact: fact, context: ctx} = runnable) do
-    with {:ok, before_apply_fns} <- HookRunner.run_before(ctx, condition, fact) do
+    with :ok <- Fact.check_parents(CausalContext.parents(ctx, fact)),
+         {:ok, before_apply_fns} <- HookRunner.run_before(ctx, condition, fact) do
       effective_context = merge_effective_context(ctx.meta_context, ctx.run_context)
 
       satisfied =
@@ -321,6 +308,7 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Condition do
                 %ConditionSatisfied{
                   fact_hash: fact.hash,
                   condition_hash: condition.hash,
+                  meta_parents: Map.get(ctx, :meta_parents, []),
                   weight: ctx.ancestry_depth + 1
                 },
                 %ActivationConsumed{
@@ -346,6 +334,9 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Condition do
           Runnable.fail(runnable, {:hook_error, reason})
       end
     else
+      {:error, %ArgumentError{} = error} ->
+        Runnable.fail(runnable, error)
+
       {:error, reason} ->
         Runnable.fail(runnable, {:hook_error, reason})
     end
@@ -374,29 +365,17 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.InputBinding do
   def match_or_execute(_binding), do: :execute
 
   def invoke(%InputBinding{} = binding, %Workflow{} = workflow, %Fact{} = fact) do
-    result = InputBinding.bind(binding, fact.value)
-
-    result_fact =
-      Fact.child(fact,
-        value: result,
-        ancestry: {binding.hash, fact.hash},
-        meta: InputBinding.fact_meta(binding)
-      )
-
-    causal_depth = Workflow.ancestry_depth(workflow, fact) + 1
-
-    workflow
-    |> Workflow.log_fact(result_fact)
-    |> Workflow.draw_connection(binding, result_fact, :produced, weight: causal_depth)
-    |> Workflow.mark_runnable_as_ran(binding, fact)
-    |> Workflow.prepare_next_runnables(binding, result_fact)
+    Workflow.invoke(workflow, binding, fact)
   end
 
   def prepare(%InputBinding{} = binding, %Workflow{} = workflow, %Fact{} = fact) do
+    {_, meta_parents} = Workflow.prepare_meta_context_with_parents(workflow, binding, fact)
+
     context =
       CausalContext.new(
         node_hash: binding.hash,
         input_fact: fact,
+        meta_parents: meta_parents,
         ancestry_depth: Workflow.ancestry_depth(workflow, fact)
       )
 
@@ -405,10 +384,15 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.InputBinding do
 
   def execute(%InputBinding{} = binding, %Runnable{input_fact: fact, context: ctx} = runnable) do
     try do
+      case Fact.check_parents(CausalContext.parents(ctx, fact)) do
+        :ok -> :ok
+        {:error, error} -> raise error
+      end
+
       result = InputBinding.bind(binding, fact.value)
 
       result_fact =
-        Fact.child(fact,
+        Fact.child(CausalContext.parents(ctx, fact),
           value: result,
           ancestry: {binding.hash, fact.hash},
           meta: InputBinding.fact_meta(binding)
@@ -451,29 +435,18 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Conjunction do
         %Conjunction{} = conj,
         %Workflow{} = workflow,
         %Fact{} = fact
-      ) do
-    satisfied_conditions = Workflow.satisfied_condition_hashes(workflow, fact)
-
-    causal_depth = Workflow.ancestry_depth(workflow, fact) + 1
-
-    if conj.hash not in satisfied_conditions and
-         Enum.all?(conj.condition_hashes, &(&1 in satisfied_conditions)) do
-      workflow
-      |> Workflow.prepare_next_runnables(conj, fact)
-      |> Workflow.draw_connection(fact, conj, :satisfied, weight: causal_depth)
-      |> Workflow.mark_runnable_as_ran(conj, fact)
-    else
-      Workflow.mark_runnable_as_ran(workflow, conj, fact)
-    end
-  end
+      ),
+      do: Workflow.invoke(workflow, conj, fact)
 
   def prepare(%Conjunction{} = conj, %Workflow{} = workflow, %Fact{} = fact) do
     satisfied_conditions = Workflow.satisfied_condition_hashes(workflow, fact)
+    {_, meta_parents} = Workflow.prepare_meta_context_with_parents(workflow, conj, fact)
 
     context =
       CausalContext.new(
         node_hash: conj.hash,
         input_fact: fact,
+        meta_parents: meta_parents,
         ancestry_depth: Workflow.ancestry_depth(workflow, fact),
         satisfied_conditions: MapSet.new(satisfied_conditions)
       )
@@ -482,6 +455,16 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Conjunction do
   end
 
   def execute(%Conjunction{} = conj, %Runnable{input_fact: fact, context: ctx} = runnable) do
+    case Fact.check_parents(CausalContext.parents(ctx, fact)) do
+      :ok -> execute_satisfied(conj, runnable)
+      {:error, error} -> Runnable.fail(runnable, error)
+    end
+  end
+
+  defp execute_satisfied(
+         %Conjunction{} = conj,
+         %Runnable{input_fact: fact, context: ctx} = runnable
+       ) do
     satisfied_conditions = ctx.satisfied_conditions
 
     all_satisfied =
@@ -494,6 +477,7 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Conjunction do
           %ConditionSatisfied{
             fact_hash: fact.hash,
             condition_hash: conj.hash,
+            meta_parents: Map.get(ctx, :meta_parents, []),
             weight: ctx.ancestry_depth + 1
           },
           %ActivationConsumed{
@@ -538,12 +522,7 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Accumulator do
   def prepare(%Accumulator{} = acc, %Workflow{} = workflow, %Fact{} = fact) do
     last_state_fact = Workflow.latest_state_fact(workflow, acc)
 
-    meta_context =
-      if Accumulator.has_meta_refs?(acc) do
-        Workflow.prepare_meta_context(workflow, acc)
-      else
-        %{}
-      end
+    {meta_context, meta_parents} = Workflow.prepare_meta_context_with_parents(workflow, acc, fact)
 
     run_context = Workflow.get_run_context(workflow, acc.name)
 
@@ -558,6 +537,7 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Accumulator do
         is_state_initialized: not is_nil(last_state_fact),
         mergeable: acc.mergeable,
         meta_context: meta_context,
+        meta_parents: meta_parents,
         run_context: run_context
       )
 
@@ -565,7 +545,7 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Accumulator do
   end
 
   def execute(%Accumulator{} = acc, %Runnable{input_fact: fact, context: ctx} = runnable) do
-    case Fact.check_parents([fact, Map.get(ctx, :state_fact)]) do
+    case Fact.check_parents([Map.get(ctx, :state_fact) | CausalContext.parents(ctx, fact)]) do
       :ok -> execute_state(acc, runnable)
       {:error, error} -> Runnable.fail(runnable, error)
     end
@@ -577,7 +557,7 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Accumulator do
         next_state = run_accumulator_reducer(acc, fact.value, ctx.last_known_state, ctx)
 
         next_state_produced_fact =
-          Fact.child([fact, Map.get(ctx, :state_fact)],
+          Fact.child([Map.get(ctx, :state_fact) | CausalContext.parents(ctx, fact)],
             value: next_state,
             ancestry: {acc.hash, fact.hash}
           )
@@ -606,12 +586,15 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Accumulator do
         init_fact_val = acc.init.()
 
         init_fact =
-          Fact.initial(fact, acc.hash, init_fact_val)
+          Fact.initial(fact, acc.hash, init_fact_val, Map.get(ctx, :meta_parents, []))
 
         next_state = run_accumulator_reducer(acc, fact.value, init_fact_val, ctx)
 
         next_state_produced_fact =
-          Fact.child(fact, value: next_state, ancestry: {acc.hash, fact.hash})
+          Fact.child(CausalContext.parents(ctx, fact),
+            value: next_state,
+            ancestry: {acc.hash, fact.hash}
+          )
 
         case HookRunner.run_after(ctx, acc, fact, next_state_produced_fact) do
           {:ok, after_apply_fns} ->
@@ -619,6 +602,7 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Accumulator do
               %StateInitiated{
                 accumulator_hash: acc.hash,
                 init_fact_hash: init_fact.hash,
+                init_payload_digest: init_fact.payload_digest,
                 init_value: init_fact.value,
                 init_ancestry: init_fact.ancestry,
                 init_identity_mode: init_fact.identity_mode,
@@ -972,12 +956,8 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.FanIn do
       ) do
     fan_out = find_upstream_fan_out(workflow, fan_in)
 
-    meta_context =
-      if FanIn.has_meta_refs?(fan_in) do
-        Workflow.prepare_meta_context(workflow, fan_in)
-      else
-        %{}
-      end
+    {meta_context, meta_parents} =
+      Workflow.prepare_meta_context_with_parents(workflow, fan_in, fact)
 
     run_context = Workflow.get_run_context(workflow, fan_in.name)
 
@@ -993,6 +973,7 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.FanIn do
             mergeable: fan_in.mergeable,
             fan_in_context: %{mode: :simple},
             meta_context: meta_context,
+            meta_parents: meta_parents,
             run_context: run_context
           )
 
@@ -1021,6 +1002,7 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.FanIn do
               seen_key: seen_key
             },
             meta_context: meta_context,
+            meta_parents: meta_parents,
             run_context: run_context
           )
 
@@ -1051,10 +1033,16 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.FanIn do
       ) do
     case ctx.fan_in_context.mode do
       :simple ->
-        with {:ok, before_apply_fns} <- HookRunner.run_before(ctx, fan_in, fact) do
+        with :ok <- Fact.check_parents(CausalContext.parents(ctx, fact)),
+             {:ok, before_apply_fns} <- HookRunner.run_before(ctx, fan_in, fact) do
           effective_context = merge_effective_context(ctx.meta_context, ctx.run_context)
           reduced = reduce_with_context(fact.value, init.(), reducer, effective_context)
-          reduced_fact = Fact.child(fact, value: reduced, ancestry: {fan_in.hash, fact.hash})
+
+          reduced_fact =
+            Fact.child(CausalContext.parents(ctx, fact),
+              value: reduced,
+              ancestry: {fan_in.hash, fact.hash}
+            )
 
           case HookRunner.run_after(ctx, fan_in, fact, reduced_fact) do
             {:ok, after_apply_fns} ->
@@ -1077,6 +1065,9 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.FanIn do
               Runnable.fail(runnable, {:hook_error, reason})
           end
         else
+          {:error, %ArgumentError{} = error} ->
+            Runnable.fail(runnable, error)
+
           {:error, reason} ->
             Runnable.fail(runnable, {:hook_error, reason})
         end

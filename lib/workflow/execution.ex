@@ -96,6 +96,7 @@ defmodule Runic.Workflow.Execution do
       Fact.new(
         value: input,
         id: input_fact_id,
+        payload_digest: draft.payload_digest,
         identity_mode: draft.identity_mode,
         local_scope: draft.local_scope
       )

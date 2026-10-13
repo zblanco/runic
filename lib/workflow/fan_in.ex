@@ -85,7 +85,8 @@ defimpl Runic.Workflow.Coordinator, for: Runic.Workflow.FanIn do
           end
 
         parents =
-          Enum.map(expected_in_order, fn origin -> wf.graph.vertices[seen_map[origin]] end)
+          Enum.map(expected_in_order, fn origin -> wf.graph.vertices[seen_map[origin]] end) ++
+            Map.get(ctx, :meta_parents, [])
 
         case Fact.check_parents(parents) do
           :ok -> :ok
@@ -116,6 +117,7 @@ defimpl Runic.Workflow.Coordinator, for: Runic.Workflow.FanIn do
           fan_in_hash: fan_in.hash,
           source_fact_hash: fctx.source_fact_hash,
           result_fact_hash: reduced_fact.hash,
+          result_payload_digest: reduced_fact.payload_digest,
           result_value: reduced_fact.value,
           result_ancestry: reduced_fact.ancestry,
           result_identity_mode: reduced_fact.identity_mode,

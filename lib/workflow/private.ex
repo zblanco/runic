@@ -638,7 +638,10 @@ defmodule Runic.Workflow.Private do
     draw_connection(workflow, from, to, :meta_ref, properties: properties)
   end
 
-  def prepare_meta_context(%Workflow{graph: graph} = workflow, node) do
+  def prepare_meta_context(workflow, node),
+    do: elem(prepare_meta_context_with_parents(workflow, node), 0)
+
+  def prepare_meta_context_with_parents(%Workflow{graph: graph} = workflow, node, fact \\ nil) do
     node_vertex =
       case node do
         %{hash: hash} -> hash
@@ -646,10 +649,10 @@ defmodule Runic.Workflow.Private do
       end
 
     # Resolve graph-based meta_refs via :meta_ref edges
-    graph_context =
+    {graph_context, parents} =
       graph
       |> Multigraph.out_edges(node_vertex, by: :meta_ref)
-      |> Enum.reduce(%{}, fn edge, acc ->
+      |> Enum.reduce({%{}, []}, fn edge, {acc, parents} ->
         properties = edge.properties || %{}
         getter_fn = Map.get(properties, :getter_fn)
         context_key = Map.get(properties, :context_key)
@@ -657,9 +660,26 @@ defmodule Runic.Workflow.Private do
 
         if getter_fn && context_key do
           value = getter_fn.(workflow, target)
-          Map.put(acc, context_key, value)
+
+          {Map.put(acc, context_key, value),
+           meta_source_facts(workflow, target, properties) ++ parents}
         else
-          acc
+          {acc, parents}
+        end
+      end)
+
+    # Ordinary Steps can declare value refs without explicit graph edges. Use
+    # their targets when no edge supplied the binding; graph bindings still win.
+    {graph_context, parents} =
+      Enum.reduce(Map.get(node, :meta_refs, []), {graph_context, parents}, fn ref,
+                                                                              {acc, parents} ->
+        if ref.kind != :context and not Map.has_key?(acc, ref.context_key) do
+          value = build_getter_fn(ref).(workflow, ref.target)
+
+          {Map.put(acc, ref.context_key, value),
+           meta_source_facts(workflow, ref.target, ref) ++ parents}
+        else
+          {acc, parents}
         end
       end)
 
@@ -667,7 +687,57 @@ defmodule Runic.Workflow.Private do
     external_context = resolve_context_refs(workflow, node)
 
     # Multigraph context overrides external (more specific wins)
-    Map.merge(external_context, graph_context)
+    parents = parents ++ gate_meta_parents(workflow, node, fact)
+    {Map.merge(external_context, graph_context), Enum.uniq_by(parents, & &1.hash)}
+  end
+
+  defp meta_source_facts(workflow, target, %{kind: :state_of}) do
+    case resolve_target_node(workflow, target) do
+      %Runic.Workflow.Accumulator{} = acc -> List.wrap(latest_state_fact(workflow, acc))
+      _ -> []
+    end
+  end
+
+  defp meta_source_facts(workflow, target, %{kind: kind})
+       when kind in [:latest_value_of, :latest_fact_of] do
+    List.wrap(build_getter_fn(%{kind: :latest_fact_of}).(workflow, target))
+  end
+
+  defp meta_source_facts(workflow, target, %{kind: kind})
+       when kind in [:all_values_of, :all_facts_of] do
+    facts = build_getter_fn(%{kind: :all_facts_of}).(workflow, target)
+    if kind == :all_values_of, do: Enum.reject(facts, &is_nil(&1.value)), else: facts
+  end
+
+  defp meta_source_facts(_, _, _), do: []
+
+  # Conditions retain their read parents on the satisfied edge. Follow only the
+  # gates on this node's route, not unrelated conditions for the same input.
+  defp gate_meta_parents(_, _, nil), do: []
+
+  defp gate_meta_parents(workflow, node, fact) do
+    gate_meta_parents(workflow.graph, node, fact, MapSet.new())
+  end
+
+  defp gate_meta_parents(graph, node, fact, visited) do
+    id = Components.vertex_id_of(node)
+
+    if MapSet.member?(visited, id) do
+      []
+    else
+      visited = MapSet.put(visited, id)
+
+      for edge <- Multigraph.in_edges(graph, node, by: :flow),
+          gate = edge.v1,
+          is_struct(gate, Runic.Workflow.Condition) or is_struct(gate, Runic.Workflow.Conjunction),
+          parent <-
+            Enum.flat_map(Multigraph.out_edges(graph, fact, by: :satisfied), fn satisfied ->
+              if satisfied.v2.hash == gate.hash,
+                do: Map.get(satisfied.properties || %{}, :meta_parents, []),
+                else: []
+            end) ++ gate_meta_parents(graph, gate, fact, visited),
+          do: parent
+    end
   end
 
   defp resolve_context_refs(%Workflow{} = workflow, node) do

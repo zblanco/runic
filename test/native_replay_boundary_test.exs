@@ -30,6 +30,7 @@ defmodule Runic.NativeReplayBoundaryTest do
       {FactProduced.new(fact, producer_label: :input), :local_scope},
       {%StateInitiated{
          init_fact_hash: common.hash,
+         init_payload_digest: fact.payload_digest,
          init_value: common.value,
          init_ancestry: common.ancestry,
          init_identity_mode: :local,
@@ -37,6 +38,7 @@ defmodule Runic.NativeReplayBoundaryTest do
        }, :init_local_scope},
       {%JoinCompleted{
          result_fact_hash: common.hash,
+         result_payload_digest: fact.payload_digest,
          result_value: common.value,
          result_ancestry: common.ancestry,
          result_identity_mode: :local,
@@ -44,12 +46,14 @@ defmodule Runic.NativeReplayBoundaryTest do
        }, :result_local_scope},
       {%FanOutFactEmitted{
          emitted_fact_hash: common.hash,
+         emitted_payload_digest: fact.payload_digest,
          emitted_value: common.value,
          emitted_identity_mode: :local,
          emitted_local_scope: common.local_scope
        }, :emitted_local_scope},
       {%FanInCompleted{
          result_fact_hash: common.hash,
+         result_payload_digest: fact.payload_digest,
          result_value: common.value,
          result_ancestry: common.ancestry,
          result_identity_mode: :local,
@@ -102,6 +106,76 @@ defmodule Runic.NativeReplayBoundaryTest do
 
       assert fact.hash == Map.fetch!(event, id_field)
     end
+  end
+
+  test "every native event rejects a swapped valid scope and a missing payload proof" do
+    scope = Runic.Workflow.LocalScope.new()
+
+    for {event, scope_key} <- native_events() do
+      swapped = Map.put(event, scope_key, scope)
+
+      error =
+        assert_raise LocalFactError, fn ->
+          Workflow.from_events([swapped], nil, allow_local: true)
+        end
+
+      assert error.reason == :local_identity_mismatch
+
+      payload_key =
+        case scope_key do
+          :local_scope -> :payload_digest
+          :init_local_scope -> :init_payload_digest
+          :emitted_local_scope -> :emitted_payload_digest
+          :result_local_scope -> :result_payload_digest
+        end
+
+      for missing <- [nil, :absent] do
+        incomplete =
+          if missing == nil,
+            do: Map.put(event, payload_key, nil),
+            else: Map.delete(event, payload_key)
+
+        error =
+          assert_raise LocalFactError, fn ->
+            Workflow.from_events([incomplete], nil, allow_local: true)
+          end
+
+        assert error.reason == :missing_local_payload
+      end
+    end
+
+    fact = Fact.local(7)
+
+    assert_raise LocalFactError, fn ->
+      Fact.new(Map.put(Map.from_struct(fact), :local_scope, scope))
+    end
+
+    assert_raise LocalFactError, fn ->
+      Fact.new(value: 7, hash: fact.hash, identity_mode: :local, local_scope: scope)
+    end
+  end
+
+  test "a correctly recomputed payload cannot change an in-graph parent's scope" do
+    producer = Runic.step(fn x -> x end, name: :producer)
+    parent = Fact.local(7)
+    child = Fact.child(parent, value: 8, ancestry: {producer.hash, parent.hash})
+    base = Workflow.new() |> Workflow.add_step(producer) |> Workflow.log_fact(parent)
+    new_scope = Runic.Workflow.LocalScope.new()
+
+    forged = %{
+      child
+      | local_scope: new_scope,
+        payload_digest: Fact.local_payload_digest(8, new_scope)
+    }
+
+    event = FactProduced.new(forged, producer_label: :produced)
+
+    error =
+      assert_raise LocalFactError, fn ->
+        Workflow.from_events([event], base, allow_local: true)
+      end
+
+    assert error.reason == :local_parent_scope_mismatch
   end
 
   test "default replay rejects local bases and explicit replay rejects foreign bases" do

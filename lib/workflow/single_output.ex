@@ -64,10 +64,7 @@ defmodule Runic.Workflow.SingleOutput do
 
   @doc false
   def prepare(node, workflow, fact) do
-    meta =
-      if Map.get(node, :meta_refs, []) != [],
-        do: Workflow.prepare_meta_context(workflow, node),
-        else: %{}
+    {meta, meta_parents} = Workflow.prepare_meta_context_with_parents(workflow, node, fact)
 
     context =
       CausalContext.new(
@@ -77,6 +74,7 @@ defmodule Runic.Workflow.SingleOutput do
         hooks: Workflow.get_hooks(workflow, node.hash),
         run_context: Workflow.get_run_context(workflow, node.name),
         meta_context: meta,
+        meta_parents: meta_parents,
         fan_out_context: collection_context(workflow, node, fact)
       )
 
@@ -102,7 +100,8 @@ defmodule Runic.Workflow.SingleOutput do
 
   @doc false
   def execute(node, %Runnable{input_fact: fact, context: context} = runnable) do
-    with {:ok, before_fns} <- HookRunner.run_before(context, node, fact) do
+    with :ok <- Fact.check_parents(CausalContext.parents(context, fact)),
+         {:ok, before_fns} <- HookRunner.run_before(context, node, fact) do
       case run_work(node, runnable) do
         %Result{status: :value} = result ->
           result_fact = child_fact(runnable, result)
@@ -119,6 +118,7 @@ defmodule Runic.Workflow.SingleOutput do
           Runnable.fail(runnable, {:invalid_single_output_result, other})
       end
     else
+      {:error, %ArgumentError{} = reason} -> Runnable.fail(runnable, reason)
       {:error, reason} -> Runnable.fail(runnable, {:hook_error, reason})
     end
   rescue
@@ -151,7 +151,7 @@ defmodule Runic.Workflow.SingleOutput do
   defp child_fact(runnable, %Result{value: value, metadata: metadata}) do
     Result.validate_metadata!(metadata)
 
-    Fact.child(runnable.input_fact,
+    Fact.child(CausalContext.parents(runnable.context, runnable.input_fact),
       value: value,
       ancestry: {runnable.node.hash, runnable.input_fact.hash},
       meta: metadata

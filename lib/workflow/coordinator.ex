@@ -13,6 +13,11 @@ defprotocol Runic.Workflow.Coordinator do
   `{workflow, derived_events}` where `derived_events` have been folded
   into the returned workflow.
 
+  For native local workflows, also implement `Runic.Workflow.CoordinatorParents`.
+  It declares the read Facts for scope checks before finalization. A coordinator
+  without that contract is supported only for portable workflows. Schedulers
+  must use `Workflow.accept_runnable/3` to observe the accepted status.
+
   Nodes that do **not** implement this protocol are assumed to need no
   coordination — `apply_runnable/2` skips the coordination step for them.
 

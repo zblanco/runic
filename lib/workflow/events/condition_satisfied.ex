@@ -9,5 +9,5 @@ defmodule Runic.Workflow.Events.ConditionSatisfied do
           weight: non_neg_integer()
         }
 
-  defstruct [:fact_hash, :condition_hash, :weight]
+  defstruct [:fact_hash, :condition_hash, :weight, meta_parents: []]
 end

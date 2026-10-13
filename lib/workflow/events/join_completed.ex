@@ -21,6 +21,7 @@ defmodule Runic.Workflow.Events.JoinCompleted do
   defstruct [
     :join_hash,
     :result_fact_hash,
+    :result_payload_digest,
     :result_value,
     :result_ancestry,
     :weight,

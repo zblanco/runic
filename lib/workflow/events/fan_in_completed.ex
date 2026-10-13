@@ -23,6 +23,7 @@ defmodule Runic.Workflow.Events.FanInCompleted do
     :fan_in_hash,
     :source_fact_hash,
     :result_fact_hash,
+    :result_payload_digest,
     :result_value,
     :result_ancestry,
     :expected_key,

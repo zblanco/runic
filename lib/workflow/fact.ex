@@ -78,6 +78,20 @@ defmodule Runic.Workflow.Fact do
 
   @doc false
   def check_parents(parents) do
+    parents = parents |> List.wrap() |> Enum.reject(&is_nil/1)
+
+    Enum.each(parents, fn parent ->
+      native? =
+        Map.get(parent, :identity_mode, :portable) == :local or
+          not is_nil(Map.get(parent, :local_scope)) or
+          Enum.any?(
+            [:id, :hash, :payload_digest, :content_digest],
+            &match?(%Identity{scheme: :local_sha256}, Map.get(parent, &1))
+          )
+
+      if native?, do: Runic.Workflow.LocalBoundary.validate_current!(parent, :parents)
+    end)
+
     scopes =
       parents
       |> List.wrap()
@@ -96,7 +110,56 @@ defmodule Runic.Workflow.Fact do
       true ->
         :ok
     end
+  rescue
+    error in Runic.Workflow.LocalFactError -> {:error, error}
   end
+
+  @doc false
+  def validate_local_payload(%{
+        identity_mode: :local,
+        payload_digest: digest,
+        value: value,
+        local_scope: scope
+      })
+      when not is_nil(digest) do
+    expected = local_payload_digest(value, scope)
+
+    if digest == expected,
+      do: :ok,
+      else:
+        {:error,
+         %Runic.Workflow.LocalFactError{
+           field: :payload_digest,
+           path: [:fact, :payload_digest],
+           reason: :local_identity_mismatch
+         }}
+  end
+
+  def validate_local_payload(_), do: :ok
+
+  @doc false
+  def local_payload_digest(value, scope),
+    do:
+      Identity.local_digest(:payload, %{
+        codec: :runic_local_etf,
+        schema_version: 1,
+        scope: scope,
+        value: value
+      })
+
+  @doc false
+  def scope_error?(%Runic.Workflow.LocalFactError{}), do: true
+
+  def scope_error?(%ArgumentError{message: message}),
+    do:
+      message in [
+        "cannot combine facts from different local scopes",
+        "local fact scope must belong to this live VM",
+        "an existing local identity requires its original local scope",
+        "child facts cannot change their parents' identity mode or scope"
+      ]
+
+  def scope_error?(_), do: false
 
   @doc false
   def input(value, opts) do
@@ -108,13 +171,15 @@ defmodule Runic.Workflow.Fact do
   end
 
   @doc false
-  def initial(parent, producer, value) do
+  def initial(parent, producer, value, meta_parents \\ []) do
+    parents = [parent | meta_parents]
+
     ancestry =
-      if Map.get(parent, :identity_mode, :portable) == :local,
+      if Enum.any?(parents, &(Map.get(&1, :identity_mode, :portable) == :local)),
         do: {producer, parent.hash},
         else: {producer, Components.fact_hash(value)}
 
-    child(parent, value: value, ancestry: ancestry)
+    child(parents, value: value, ancestry: ancestry)
   end
 
   defp put_scope(%__MODULE__{identity_mode: :portable, local_scope: nil} = fact), do: fact
@@ -137,6 +202,15 @@ defmodule Runic.Workflow.Fact do
   defp identity(_, domain, doc), do: Components.identity(domain, doc)
 
   defp put_identities(%__MODULE__{} = fact) do
+    if fact.identity_mode == :local and (not is_nil(fact.id) or not is_nil(fact.hash)) and
+         is_nil(fact.payload_digest),
+       do:
+         raise(Runic.Workflow.LocalFactError,
+           field: :payload_digest,
+           path: [:fact, :payload_digest],
+           reason: :missing_local_payload
+         )
+
     causal_ancestry = fact.causal_ancestry || FactAncestry.from_legacy(fact.ancestry)
 
     payload_digest = fact.payload_digest || payload_identity(fact)
@@ -154,6 +228,11 @@ defmodule Runic.Workflow.Fact do
     if fact.identity_mode == :local do
       validate_local_digest!(payload_digest, :payload)
       validate_local_digest!(content_digest, :fact_content)
+
+      case validate_local_payload(%{fact | payload_digest: payload_digest}) do
+        :ok -> :ok
+        {:error, error} -> raise error
+      end
     end
 
     {id, hash} =
@@ -170,12 +249,7 @@ defmodule Runic.Workflow.Fact do
   end
 
   defp payload_identity(%__MODULE__{identity_mode: :local} = fact) do
-    Identity.local_digest(:payload, %{
-      codec: :runic_local_etf,
-      schema_version: 1,
-      scope: fact.local_scope,
-      value: fact.value
-    })
+    local_payload_digest(fact.value, fact.local_scope)
   end
 
   defp payload_identity(fact) do
