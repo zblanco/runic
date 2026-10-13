@@ -3500,7 +3500,9 @@ defmodule Runic.Workflow do
   - `:max_concurrency` - Maximum parallel tasks when `async: true`. Default: `System.schedulers_online()`
   - `:timeout` - Timeout for each task when `async: true`. Default: `:infinity`
   - `:runnable_order` - `:stable` orders ready work by causal depth and activation
-    identity. Omit it to keep the existing unspecified enumeration order.
+    identity. A one-argument function supplies a consumer sort key for each
+    Runnable. Key exceptions propagate to the caller. Omit the option to keep
+    the existing unspecified enumeration order.
 
   ## Parallel Execution
 
@@ -3577,6 +3579,7 @@ defmodule Runic.Workflow do
 
   defp order_runnables(runnables, nil), do: runnables
   defp order_runnables(runnables, :stable), do: Enum.sort_by(runnables, &Runnable.order_key/1)
+  defp order_runnables(runnables, key) when is_function(key, 1), do: Enum.sort_by(runnables, key)
 
   defp execute_runnables_async(workflow, runnables, opts, execution) do
     max_concurrency = Keyword.get(opts, :max_concurrency, System.schedulers_online())
