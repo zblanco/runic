@@ -68,14 +68,14 @@ defmodule Runic.Workflow do
       end, timeout: :infinity)
 
       # Phase 3: Accept results and use the returned status for outcomes
-      workflow = Enum.reduce(executed, workflow, fn {:ok, runnable}, wrk ->
+      {accepted, workflow} = Enum.map_reduce(executed, workflow, fn {:ok, runnable}, wrk ->
         {wrk, accepted, _events} = Workflow.accept_runnable(wrk, runnable)
         # Record accepted.status and accepted.error; stop admission on failure.
-        wrk
+        {accepted, wrk}
       end)
 
       # Continue if more work is available
-      if Workflow.is_runnable?(workflow), do: # repeat...
+      if Enum.all?(accepted, &(&1.status != :failed)) and Workflow.is_runnable?(workflow), do: # repeat...
 
   Key APIs for external scheduling:
 

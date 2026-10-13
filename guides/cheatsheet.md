@@ -540,7 +540,7 @@ end)
 end)
 
 # Continue if more work
-if Workflow.is_runnable?(workflow), do: # repeat...
+if Enum.all?(accepted, &(&1.status != :failed)) and Workflow.is_runnable?(workflow), do: # repeat...
 ```
 
 ## Extracting Results

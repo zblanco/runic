@@ -143,7 +143,7 @@ executed = Workflow.execute_runnable(runnable)
 
 This isolation is the key enabler of parallelism. Because execute has no side effects on the workflow, you can run multiple executions concurrently across tasks, processes, or even remote nodes.
 
-### Phase 3: Apply
+### Phase 3: Accept
 
 After execution, accept the Runnable against the current graph:
 
@@ -251,6 +251,11 @@ However, `Task.async_stream` blocks until _all_ tasks in the batch complete befo
 
 ## Step 3: A GenServer Scheduler with Async Dispatch
 
+Each explicit new input opens a new admission window. Clear the stopped flag
+for that request and allow retained ready work in the reusable graph. Result
+callbacks do not clear the flag: after accepted failure, drain already
+dispatched work and wait for another explicit input before new admission.
+
 A GenServer gives us a stateful process that can dispatch tasks asynchronously and react to their completions individually via `handle_info`. This is where the three-phase model truly shines.
 
 ```mermaid
@@ -325,7 +330,7 @@ defmodule WorkflowScheduler do
   @impl true
   def handle_cast({:run, input}, state) do
     workflow = Workflow.plan_eagerly(state.workflow, input)
-    state = %{state | workflow: workflow}
+    state = %{state | workflow: workflow} |> Map.put(:admission_stopped?, false)
     state = dispatch_runnables(state)
     {:noreply, state}
   end
@@ -407,9 +412,9 @@ The `active_tasks` set tracks runnables currently in-flight. The `dispatched_tas
 When you call `Task.async/1` from a GenServer, the task sends its result as a message `{ref, result}` to the calling process. The GenServer's `handle_info/2` receives this message, giving you the executed runnable. The pattern is:
 
 1. **Demonitor** the task reference (we handle the result directly)
-2. **Apply** the executed runnable to the workflow
-3. **Re-plan** with `plan_eagerly/1` to discover downstream runnables
-4. **Dispatch** any newly available runnables
+2. **Accept** the attempt and record the returned Runnable's status
+3. **Re-plan** after successful acceptance when admission is open
+4. **Dispatch** newly available work only while admission is open
 
 This creates a reactive loop where the workflow advances incrementally as each task completes, maximizing throughput.
 
@@ -540,7 +545,7 @@ defmodule MyApp.WorkflowRunner do
   @impl true
   def handle_cast({:run, input}, state) do
     workflow = Workflow.plan_eagerly(state.workflow, input)
-    state = %{state | workflow: workflow}
+    state = %{state | workflow: workflow} |> Map.put(:admission_stopped?, false)
     state = dispatch_runnables(state)
     {:noreply, state}
   end

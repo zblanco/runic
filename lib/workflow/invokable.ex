@@ -221,6 +221,7 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Root do
 
   def invoke(%Root{} = root, workflow, fact) do
     Runic.Workflow.LocalBoundary.validate_current!(fact, :input)
+    Runic.Workflow.LocalBoundary.validate_event!(workflow, fact)
 
     workflow
     |> Workflow.log_fact(fact)

@@ -49,14 +49,17 @@ defmodule Runic.Workflow.LocalBoundary do
   the current VM; use `check/2` to reject local records before export.
 
   Validate incoming adapter records here before using low-level event folds.
-  For a workflow graph, use `validate_workflow!/1` to also check known parent
-  relationships. For event replay, use `Workflow.from_events/3`.
+  For a workflow graph, use `validate_workflow!/1` to check direct Fact ancestry
+  parents in that graph. For event replay, use `Workflow.from_events/3`.
   """
   @spec validate_current!(term(), term()) :: :ok
   def validate_current!(value, field), do: validate_scopes(value, [field])
 
   @doc """
-  Fully validates native workflow records and known child-parent scope links.
+  Fully validates native workflow records and each native local Fact vertex's direct
+  `ancestry` parent when it is a local Fact in the same graph.
+
+  This graph check does not prove every coordinated, meta, or FactRef relation.
 
   Independent roots can have different scopes. An ancestry link outside this
   graph is an external handoff and does not impose a scope from a missing parent.

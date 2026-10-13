@@ -98,11 +98,14 @@ Full payload verification runs at admission, explicit local replay, and
 construction with supplied digests. Propagation through a checked graph uses
 shallow profile and parent-scope checks. It does not repeatedly hash or walk
 the values. The low-level `apply_event/2` fold and internal verified-record
-constructor assume checked records; they are not import codecs. Adapters must
+constructor assume checked records; they are not import codecs. The same is
+true of direct prepare/execute/accept and non-root `Workflow.invoke/3` paths.
+Adapters must fully validate external Facts before those calls. They must
 validate incoming records with `LocalBoundary.validate_current!/2` or replay
 them with `from_events/3` before using those paths. These are public documented
-validation routes. `LocalBoundary.validate_workflow!/1` also checks known
-child-parent scope links. Independent roots may have different scopes, and
+validation routes. `LocalBoundary.validate_workflow!/1` also checks each native local Fact
+vertex's direct `ancestry` parent when that parent is a local Fact in the graph.
+It does not prove every coordinated, meta, or FactRef relation. Independent roots may have different scopes, and
 ancestry outside the graph remains an external handoff.
 
 Native local facts cannot be persisted. The Worker rejects the event batch

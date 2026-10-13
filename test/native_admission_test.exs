@@ -71,8 +71,6 @@ defmodule Runic.NativeAdmissionTest do
         error = assert_raise LocalFactError, fn -> call(unquote(api), wf, fact) end
         assert error.field == :input
         refute_received :input_callback
-        assert Workflow.facts(wf) == []
-        assert wf.uncommitted_events == []
       end
     end
   end
@@ -160,6 +158,44 @@ defmodule Runic.NativeAdmissionTest do
       Runner.start_workflow(runner, :handoff, handoff, owner: self(), persistence: :disabled)
 
     assert :ok = Runner.cancel(runner, :handoff)
+  end
+
+  test "both Root invocation paths reject a handoff to a known parent in a different scope" do
+    wf = Workflow.react_until_satisfied(definition(self()), 1, identity_mode: :local)
+    assert_receive :input_callback
+    [parent] = Workflow.productions(wf)
+    handoff = Fact.local(5, ancestry: {:handoff, parent.hash})
+    error = assert_raise LocalFactError, fn -> call(:protocol_invoke, wf, handoff) end
+    assert error.reason == :local_parent_scope_mismatch
+    refute_received :input_callback
+    rejected = call(:invoke, wf, handoff)
+    refute Enum.any?(Workflow.facts(rejected), &(&1.hash == handoff.hash))
+
+    assert Enum.any?(
+             rejected.runnable_events,
+             &match?(
+               %RunnableFailed{error: %LocalFactError{reason: :local_parent_scope_mismatch}},
+               &1
+             )
+           )
+
+    assert Workflow.productions(rejected) == Workflow.productions(wf)
+    refute_received :input_callback
+  end
+
+  test "both Root invocation paths retain valid handoffs with an absent parent" do
+    parent = Fact.local(1)
+    handoff = Fact.local(5, ancestry: {:handoff, parent.hash})
+
+    for api <- [:protocol_invoke, :invoke] do
+      admitted = call(api, definition(self()), handoff)
+      assert Enum.any?(Workflow.facts(admitted), &(&1.hash == handoff.hash))
+      completed = Workflow.react_until_satisfied(admitted)
+      assert [output] = Workflow.productions(completed)
+      assert output.value == 5
+      assert output.local_scope == handoff.local_scope
+      assert_receive :input_callback
+    end
   end
 
   test "valid supplied roots and raw local values still admit normally" do

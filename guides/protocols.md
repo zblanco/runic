@@ -41,7 +41,7 @@ All workflow execution uses a three-phase model that enables parallel execution 
 
 1. **Prepare** (`prepare/3`) - Extract minimal context from workflow into a `%Runnable{}` struct
 2. **Execute** (`execute/2`) - Run the node's work function in isolation (can be parallelized)
-3. **Apply** - The `apply_fn` on the Runnable reduces results back into the workflow
+3. **Accept** - Fold the Runnable's events and record the status returned by `accept_runnable/3`
 
 ### Protocol Functions
 
@@ -104,7 +104,7 @@ defimpl Runic.Workflow.Invokable, for: MyApp.CustomNode do
   def invoke(%MyApp.CustomNode{} = node, workflow, fact) do
     # Execute the work and produce a result
     result = node.work.(fact.value)
-    result_fact = Fact.new(value: result, ancestry: {node.hash, fact.hash})
+    result_fact = Fact.child(fact, value: result, ancestry: {node.hash, fact.hash})
 
     workflow
     |> Workflow.log_fact(result_fact)
@@ -125,17 +125,14 @@ defimpl Runic.Workflow.Invokable, for: MyApp.CustomNode do
 
   def execute(%MyApp.CustomNode{} = node, %Runnable{input_fact: fact} = runnable) do
     result = node.work.(fact.value)
-    result_fact = Fact.new(value: result, ancestry: {node.hash, fact.hash})
-
-    apply_fn = fn workflow ->
-      workflow
-      |> Workflow.log_fact(result_fact)
-      |> Workflow.draw_connection(node, result_fact, :produced)
-      |> Workflow.mark_runnable_as_ran(node, fact)
-      |> Workflow.prepare_next_runnables(node, result_fact)
-    end
-
-    Runnable.complete(runnable, result_fact, apply_fn)
+    result_fact = Fact.child(fact, value: result, ancestry: {node.hash, fact.hash})
+    events = [
+      Runic.Workflow.Events.FactProduced.new(result_fact, producer_label: :produced),
+      %Runic.Workflow.Events.ActivationConsumed{
+        fact_hash: fact.hash, node_hash: node.hash, from_label: :runnable
+      }
+    ]
+    Runnable.complete(runnable, result_fact, events)
   end
 end
 ```
@@ -161,7 +158,7 @@ end, timeout: :infinity)
 end)
 
 # Continue if more work is available
-if Workflow.is_runnable?(workflow), do: # repeat...
+if Enum.all?(accepted, &(&1.status != :failed)) and Workflow.is_runnable?(workflow), do: # repeat...
 ```
 
 ---

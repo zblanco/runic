@@ -213,7 +213,7 @@ Runic's Invokable protocol enforces a three-phase execution model designed for p
 
 1. **Prepare** - Extract minimal context from the workflow into `%Runnable{}` structs
 2. **Execute** - Run runnables containing work functions and their inputs in isolation (can be parallelized)
-3. **Apply** - Reduce results back into the workflow so next steps can be determined
+3. **Accept** - Fold returned events and record the accepted status before admitting more work
 
 ### Parallel Execution
 
@@ -231,6 +231,10 @@ workflow
 ### External Scheduler Integration
 
 For custom schedulers, worker pools, or distributed execution:
+
+Each explicit new input opens a new admission window. It clears the stopped
+flag and can run retained ready work in the reusable graph. Task-result callbacks
+keep the flag set after an accepted failure while already dispatched work drains.
 
 ```elixir
 defmodule MyApp.WorkflowScheduler do
