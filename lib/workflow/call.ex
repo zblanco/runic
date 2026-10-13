@@ -17,7 +17,9 @@ defmodule Runic.Workflow.Call do
   Execution scope quiescence reports the end of admitted work. Independent
   branch failure can coexist with output under the parent's failure policy.
   """
-  use Runic.Workflow.SingleOutput
+  @behaviour Runic.Workflow.SingleOutput
+  @doc false
+  def __runic_single_output__, do: true
 
   alias Runic.Component
   alias Runic.Workflow
@@ -64,13 +66,44 @@ defmodule Runic.Workflow.Call do
 
     case Invocation.call(invocation, call.request_step.work) do
       %ChildInvocation{} = request ->
-        ChildInvocation.graph(request)
         Result.value(request, metadata: Map.delete(context.input_metadata, :runic))
 
       other ->
         Result.failure({:invalid_child_invocation, other})
     end
   end
+
+  @doc false
+  def execute(call, runnable) do
+    Runic.Workflow.SingleOutput.execute_with(call, runnable, fn node, work ->
+      result =
+        run(node, work.input_fact.value, Runic.Workflow.SingleOutput.Context.from_runnable(work))
+
+      {result, prepare_child(result.value, work)}
+    end)
+  end
+
+  @doc false
+  def complete_value(runnable, value) do
+    prepared = prepare_child(value, runnable)
+
+    Runic.Workflow.SingleOutput.complete_value(runnable, value)
+    |> Map.put(:execution_data, prepared)
+  rescue
+    error -> Runic.Workflow.Runnable.fail(runnable, {:child_construction_failed, error})
+  catch
+    kind, reason ->
+      Runic.Workflow.Runnable.fail(runnable, {:child_construction_failed, {kind, reason}})
+  end
+
+  defp prepare_child(%ChildInvocation{} = request, runnable) do
+    Runic.Workflow.ChildInvocation.Occurrence.prepare(
+      request,
+      Runic.Workflow.Runnable.activation_id(runnable)
+    )
+  end
+
+  defp prepare_child(_, _), do: nil
 end
 
 defimpl Runic.Component, for: Runic.Workflow.Call do
@@ -103,6 +136,17 @@ defimpl Runic.Component, for: Runic.Workflow.Call do
   def outputs(call), do: [out: [type: :any, cardinality: :many, from: call.output.hash]]
 end
 
+defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Call do
+  def match_or_execute(_), do: :execute
+  defdelegate prepare(node, workflow, fact), to: Runic.Workflow.SingleOutput
+  defdelegate execute(node, runnable), to: Runic.Workflow.Call
+
+  def invoke(node, workflow, fact) do
+    {:ok, runnable} = prepare(node, workflow, fact)
+    Runic.Workflow.apply_runnable(workflow, execute(node, runnable))
+  end
+end
+
 defimpl Runic.Workflow.Activator, for: Runic.Workflow.Call do
   alias Runic.Workflow
   alias Runic.Workflow.ChildInvocation.Occurrence
@@ -114,9 +158,16 @@ defimpl Runic.Workflow.Activator, for: Runic.Workflow.Call do
         %{result: %{value: %Runic.Workflow.ChildInvocation{} = request}} = runnable
       ) do
     occurrence =
-      Occurrence.new(Runic.Workflow.Runnable.activation_id(runnable), request, call.output.hash)
+      Occurrence.new(
+        Runic.Workflow.Runnable.activation_id(runnable),
+        request.target,
+        request.output,
+        call.output.hash,
+        runnable.result.hash
+      )
 
-    {workflow, additions} = Workflow.add_with_events(workflow, occurrence, to: call.name)
+    {workflow, additions} =
+      Workflow.attach_child_occurrence(workflow, occurrence, call, runnable.execution_data)
 
     event = %RunnableActivated{
       fact_hash: runnable.result.hash,

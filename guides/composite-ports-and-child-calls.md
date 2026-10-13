@@ -64,6 +64,13 @@ or internal execution node. `from:` does not select an internal public port of
 a component with several distinct producers. For that case, bind the desired
 public port to a forwarding component and export the forwarding component.
 Runic rejects an ambiguous whole-component re-export during construction.
+Mixed explicit and implicit output mappings are also rejected: when any output
+has a compiled producer, every exported port must declare its producer.
+
+A boundary with one exported producer inherits its source's cardinality when
+`:cardinality` is omitted. An explicit `:one` requests the existing last-value
+selection; `:many` retains all values. Fact and raw result forms select the same
+public producers.
 
 Binders and Joins are compiler nodes. They do not become registered public
 components. Bindings preserve application metadata from their input Fact and
@@ -78,7 +85,11 @@ Old connection events keep all-input behavior.
 Create a Call from a one-input Step that returns `ChildInvocation.new/1`.
 The Call's public `out` port has `cardinality: :many`. It forwards each accepted
 value from the selected output producer. Connect consumers to that port with
-`connections:`. One child occurrence can return several values when the selected
+`connections:` or the whole-component `to:`/workflow pipeline form. Whole-component
+connections use the one public producer and retain the authored parent in replay.
+A Workflow used as a source must declare an output producer. Inline Workflow
+composition as a target is unchanged. Map pipelines containing Call are rejected:
+Call has no collection instance contract. Use public workflow ports outside Map. One child occurrence can return several values when the selected
 producer runs for several input Facts. This is a selected-port dataflow contract;
 it does not wait for unrelated child branches to complete.
 
@@ -112,16 +123,27 @@ Fact identities and child identities. Retrying one Call activation keeps its
 occurrence identity. Legacy content-based inputs need explicit distinct Facts
 if the caller wants repeated equal calls.
 
-A child failure uses the parent's existing retry/halt/skip policy. A failed
+A child failure uses the parent's existing retry/halt/skip policy. Suppression
+inside a child uses its activating request Fact as the local boundary. Sibling
+occurrences sharing a parent root keep their pending selected output under skip. A failed
 selected producer emits no value for its failed attempt. An independent branch
 can fail while selected output still succeeds under skip policy. Halt or cancel
-can stop pending selected-port delivery. Accepted output is not retracted.
+can stop pending selected-port delivery. Accepted output is not retracted. An all-input Join gets no synthetic missing
+value. It can complete if another occurrence supplies its required producer;
+otherwise it produces no result and keeps its partial native Join contributions.
+Such a graph can be quiescent while the Join remains incomplete. A caller that
+discards an incomplete group must make an explicit recovery decision, such as
+starting a fresh runtime from the reusable definition.
 A request-Step policy fallback can supply already interpreted output; an explicit
 ChildInvocation fallback requests a child. A new scope can reuse the graph after
 the caller makes the runtime's required recovery decision.
 
 Before request acceptance, recovery sees only the parent activation. After
-attachment, construction events describe the child occurrence and accepted
+attachment, construction events describe the target, return identity, request
+Fact coordinate, and occurrence identity; they do not contain the child input.
+The entry reads that input from its activating request Fact. Private occurrence
+additions remain in the audit build log and do not add public logical edges.
+Construction events describe the child occurrence and accepted
 runtime events describe its progress. During execution, unaccepted work remains
 uncertain and can run again. After selected output is accepted, replay restores that
 output and does not rerun accepted child callbacks. Parent cancellation stops
@@ -146,3 +168,20 @@ See `examples/child_invocation.exs` for a report service and
 `examples/jido_action/child_invocation.ex` for an ordinary Jido Action boundary.
 The design comparison and recovery decision are in
 `.docs/issue-34-child-invocation-decision.md`.
+
+## Construction work and persistence limits
+
+The request work prepares the executable occurrence graph before acceptance and
+before success hooks. It carries that graph only in transient Runnable execution
+data. The owner installs it without evaluating target source again. Ordinary
+component targets need one source reconstruction in this work path. Workflow
+request construction also performs one saved-graph check, so its bound is two
+reconstructions before attachment. Replay still needs compatible trusted source
+and rebuilds the saved occurrence once. No portable-code or cross-version
+promise is added. A fallback reconstruction error becomes a failed Runnable and
+uses normal failure/outcome accounting.
+
+Native Facts and uncommitted full-value events can still retain large values.
+Removing input from construction does not compact the graph or its warm history.
+Durable execution lifecycle envelopes also retain their existing storage format;
+this change does not redesign their value-stripping policy.

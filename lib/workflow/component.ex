@@ -288,6 +288,16 @@ defimpl Runic.Component, for: Runic.Workflow.Map do
         to,
         %Workflow{} = workflow
       ) do
+    if Enum.any?(
+         Multigraph.vertices(pipeline_workflow.graph),
+         &is_struct(&1, Runic.Workflow.Call)
+       ),
+       do:
+         raise(
+           ArgumentError,
+           "Call inside Map requires a collection instance contract; connect Call outside Map with public workflow ports"
+         )
+
     fan_out_step =
       pipeline_workflow.graph
       |> Multigraph.out_neighbors(Workflow.root())

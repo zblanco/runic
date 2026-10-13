@@ -391,7 +391,9 @@ defmodule Runic.Workflow.PolicyDriver do
 
       {:value, term} ->
         if Runic.Workflow.SingleOutput.supported?(runnable.node) do
-          Runic.Workflow.SingleOutput.complete_value(runnable, term)
+          if is_struct(runnable.node, Runic.Workflow.Call),
+            do: Runic.Workflow.Call.complete_value(runnable, term),
+            else: Runic.Workflow.SingleOutput.complete_value(runnable, term)
         else
           result_fact =
             Fact.new(value: term, ancestry: {runnable.node.hash, runnable.input_fact.hash})

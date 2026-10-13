@@ -13,8 +13,8 @@ defmodule Runic.Workflow.CallValue do
     }
   end
 
-  def run(%{mode: :input, value: value}, _, context),
-    do: Result.value(value, metadata: Map.delete(context.input_metadata, :runic))
+  def run(%{mode: :input}, %Runic.Workflow.ChildInvocation{input: input}, context),
+    do: Result.value(input, metadata: Map.delete(context.input_metadata, :runic))
 
   def run(_, input, context),
     do: Result.value(input, metadata: Map.delete(context.input_metadata, :runic))

@@ -54,4 +54,40 @@ defmodule Runic.TestSupport.ChildTargets do
     |> Runic.Workflow.add(Runic.TestSupport.OrdinaryComponent.new(:success, :add, 1))
     |> Runic.Workflow.add(Runic.TestSupport.OrdinaryComponent.new(:failure, :failure, :bad))
   end
+
+  def delayed(kind) do
+    names = if kind == :bad, do: [:s1, :s2, :s3, :s4, :s5, :s6], else: [:g1, :g2, :g3]
+
+    nodes =
+      Enum.with_index(names)
+      |> Enum.map(fn {name, index} ->
+        operation =
+          cond do
+            kind == :bad and name == :s6 -> :failure
+            index == 0 -> :add
+            true -> :data
+          end
+
+        Runic.TestSupport.OrdinaryComponent.new(
+          name,
+          operation,
+          if(operation == :add, do: 100, else: :bad)
+        )
+      end)
+
+    [first | rest] = nodes
+
+    workflow =
+      Runic.Workflow.new(
+        name: :target,
+        input_ports: [in: []],
+        output_ports: [out: [from: List.last(names)]]
+      )
+      |> Runic.Workflow.add(first)
+
+    Enum.reduce(rest, {workflow, first}, fn node, {wf, parent} ->
+      {Runic.Workflow.add(wf, node, to: parent.name), node}
+    end)
+    |> elem(0)
+  end
 end

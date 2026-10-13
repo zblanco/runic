@@ -17,6 +17,8 @@ defmodule Runic.Workflow.Runnable do
   - Minimal causal context (no full workflow reference)
   - A compact, data-only invocation plan when the node has a call contract
   - After execution: result, status, and events for reducing into workflow
+  - Optional transient execution data for native application adapters. It is not
+    included in Fact payloads, lifecycle events, or construction source.
   """
 
   alias Runic.Identity
@@ -38,6 +40,7 @@ defmodule Runic.Workflow.Runnable do
           result: term() | nil,
           events: [struct()] | nil,
           hook_apply_fns: [function()] | nil,
+          execution_data: term(),
           error: term() | nil
         }
 
@@ -54,6 +57,7 @@ defmodule Runic.Workflow.Runnable do
     :result,
     :events,
     :hook_apply_fns,
+    :execution_data,
     :error
   ]
 

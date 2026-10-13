@@ -46,10 +46,11 @@ defmodule Runic.Workflow.ChildInvocation do
     unless Keyword.has_key?(outputs, output),
       do: raise(ArgumentError, "child target has no output port #{inspect(output)}")
 
-    {_workflow, [event]} = Workflow.add_with_events(Workflow.new(), target)
+    {live, [event]} = Workflow.add_with_events(Workflow.new(), target)
+    Enum.each(Multigraph.vertices(live.graph), &validate_node!/1)
     validate_saved_graph!(target, event)
     request = %__MODULE__{target: event, input: Keyword.fetch!(opts, :input), output: output}
-    graph(request)
+    bind_output(live, target.name, output)
     request
   end
 
@@ -59,12 +60,12 @@ defmodule Runic.Workflow.ChildInvocation do
     target = Workflow.get_component!(workflow, request.target.name)
     validate_target!(target)
     Enum.each(Multigraph.vertices(workflow.graph), &validate_node!/1)
-    # The public port compiler resolves and validates the selected output.
-    collector = Runic.Workflow.CallValue.new(:collector, :output)
+    bind_output(workflow, target.name, request.output)
+  end
 
-    Workflow.add(workflow, collector,
-      connections: [[from: {target.name, request.output}, to: :in]]
-    )
+  defp bind_output(workflow, target_name, output) do
+    collector = Runic.Workflow.CallValue.new(:collector, :output)
+    Workflow.add(workflow, collector, connections: [[from: {target_name, output}, to: :in]])
   end
 
   defp validate_saved_graph!(%Workflow{} = target, event) do

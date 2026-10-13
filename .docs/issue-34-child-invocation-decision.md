@@ -153,3 +153,39 @@ component with several distinct public producers requires a forwarding node
 connected to the selected public port. `from:` has no general inner-port selector.
 Positional Rules use declared positional input order; unrelated runtime context
 must not turn a positional predicate into an input-plus-context call.
+
+## Opus review decisions
+
+Whole-component `to:` and workflow pipeline connections use the declared public
+producer. Replay records the authored parent. Source Workflows without a declared
+producer reject this form; target inline composition remains compatible. Call
+inside Map is rejected until a collection instance contract exists. It cannot
+leave an accepted request-node edge with no delivery.
+
+Mixed explicit/implicit export mappings reject at construction. Output projection
+requires a non-nil matching port index. A single-producer re-export inherits source
+cardinality unless the boundary explicitly chooses one or many. All Fact/raw
+production and result APIs select the same output ownership.
+
+Child suppression is bounded by the activating request Fact. A skipped child does
+not suppress sibling occurrences under the same root. Halt remains a parent
+admission policy and can leave ready delivery unaccepted. Downstream all-input
+Joins receive no synthetic completion. Their native partial contributions remain
+if a required producer produces no value. A caller can discard an incomplete
+runtime and reuse its definition; this change does not impose a transaction or
+new Join failure protocol.
+
+Occurrence/entry definitions contain no input. Construction keeps target/return
+identity and occurrence/request coordinates. Input stays in the request Fact,
+which the entry reads and which existing full/hybrid/lazy recovery hydrates.
+Private additions still emit audit construction events but no logical connects_to.
+
+A Call uses an internal SingleOutput work adapter to prepare its execution graph
+before native completion and success hooks. The graph travels only on transient
+Runnable.execution_data. Facts, result projection, lifecycle events, and occurrence
+source contain no compiled graph. The owner performs only graph installation.
+Fallback preparation runs in work and returns an explicit failed Runnable on
+construction faults. No process-global cache is used. Ordinary targets rebuild
+once per attempt; Workflow requests additionally perform one saved-graph check.
+Replay keeps the trusted compatible-source requirement and rebuilds each saved
+occurrence once. Native Fact/history retention remains a separate cost.

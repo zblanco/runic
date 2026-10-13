@@ -4,28 +4,43 @@ defmodule Runic.Workflow.ChildInvocation.Occurrence do
   alias Runic.Workflow
   alias Runic.Workflow.{CallValue, ChildInvocation, Components, InputBinding, Join, Root}
 
-  defstruct [:hash, :name, :request, :return_to, :entry_hash]
+  defstruct [:hash, :name, :target, :output_port, :request_fact_hash, :return_to, :entry_hash]
 
-  def new(activation_id, request, return_to) do
+  def new(activation_id, target, output_port, return_to, request_fact_hash) do
     hash = Identity.derive(:node_occurrence, [activation_id, :child])
-    entry = CallValue.new(hash, :input, request.input)
+    entry = CallValue.new(hash, :input)
 
     %__MODULE__{
       hash: hash,
       name: "__runic_child__/#{hash}",
-      request: request,
+      target: target,
+      output_port: output_port,
+      request_fact_hash: request_fact_hash,
       return_to: return_to,
       entry_hash: entry.hash
     }
   end
 
   def connect(occurrence, parent, workflow) do
-    child = ChildInvocation.graph(occurrence.request)
+    request = %ChildInvocation{
+      target: occurrence.target,
+      output: occurrence.output_port,
+      input: nil
+    }
+
+    connect_prepared(occurrence, parent, workflow, prepare(request, occurrence.hash, :occurrence))
+  end
+
+  def prepare(request, activation_id),
+    do: prepare(request, Identity.derive(:node_occurrence, [activation_id, :child]), :occurrence)
+
+  defp prepare(request, occurrence_hash, :occurrence) do
+    child = ChildInvocation.graph(request)
     # Scope graph coordinates, without changing callback code or application config.
     ids =
       Map.new(Multigraph.vertices(child.graph), fn node ->
         id = Components.vertex_id_of(node)
-        {id, Identity.derive(:node_occurrence, [occurrence.hash, id])}
+        {id, Identity.derive(:node_occurrence, [occurrence_hash, id])}
       end)
 
     scoped =
@@ -33,32 +48,44 @@ defmodule Runic.Workflow.ChildInvocation.Occurrence do
         {Components.vertex_id_of(node), scope(node, ids)}
       end)
 
-    entry = CallValue.new(occurrence.hash, :input, occurrence.request.input)
+    entry = CallValue.new(occurrence_hash, :input)
     collector = Map.fetch!(scoped, CallValue.new(:collector, :output).hash)
-    output = Map.fetch!(workflow.graph.vertices, occurrence.return_to)
 
-    workflow = Workflow.add_step(workflow, parent, entry)
-
-    graph =
-      Enum.reduce(Multigraph.edges(child.graph, by: [:flow, :meta_ref]), workflow.graph, fn edge,
-                                                                                            graph ->
+    edges =
+      Enum.map(Multigraph.edges(child.graph, by: [:flow, :meta_ref]), fn edge ->
         from =
           if is_struct(edge.v1, Root),
             do: entry,
             else: Map.fetch!(scoped, Components.vertex_id_of(edge.v1))
 
-        to = Map.fetch!(scoped, Components.vertex_id_of(edge.v2))
-        Multigraph.add_edge(graph, %{edge | v1: from, v2: to})
+        %{edge | v1: from, v2: Map.fetch!(scoped, Components.vertex_id_of(edge.v2))}
       end)
 
-    %{workflow | graph: graph}
-    |> Workflow.add_step(collector, output)
-    |> Workflow.draw_connection(occurrence, collector, :component_of,
-      properties: %{kind: :output, ports: [:out]}
-    )
-    |> Workflow.draw_connection(occurrence, entry, :compiled_for,
-      properties: %{kind: :child_input}
-    )
+    %{occurrence_hash: occurrence_hash, entry: entry, collector: collector, edges: edges}
+  end
+
+  def connect_prepared(occurrence, parent, workflow, %{occurrence_hash: hash} = prepared)
+      when hash == occurrence.hash do
+    output = Map.fetch!(workflow.graph.vertices, occurrence.return_to)
+    graph = Enum.reduce(prepared.edges, workflow.graph, &Multigraph.add_edge(&2, &1))
+
+    workflow =
+      %{workflow | graph: graph}
+      |> Workflow.add_step(parent, prepared.entry)
+      |> Workflow.add_step(prepared.collector, output)
+      |> Workflow.draw_connection(occurrence, prepared.collector, :component_of,
+        properties: %{kind: :output, ports: [:out]}
+      )
+
+    nodes =
+      [prepared.entry | Enum.flat_map(prepared.edges, &[&1.v1, &1.v2])]
+      |> Enum.uniq_by(&Components.vertex_id_of/1)
+
+    Enum.reduce(nodes, workflow, fn node, wf ->
+      Workflow.draw_connection(wf, occurrence, node, :compiled_for,
+        properties: %{kind: :child_scope}
+      )
+    end)
   end
 
   defp scope(%Root{} = node, _), do: node
