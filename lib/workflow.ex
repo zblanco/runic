@@ -3518,7 +3518,19 @@ defmodule Runic.Workflow do
         if MapSet.member?(seen, id) do
           :one
         else
-          case Component.outputs(component) do
+          compiled_ports =
+            workflow.graph
+            |> Multigraph.out_edges(component, by: :component_of)
+            |> Enum.filter(&(&1.properties[:kind] == :output))
+            |> Enum.flat_map(&Map.get(&1.properties, :ports, []))
+
+          exports =
+            Component.outputs(component)
+            |> Enum.filter(fn {port, schema} ->
+              is_list(schema) and (port in compiled_ports or Keyword.has_key?(schema, :from))
+            end)
+
+          case exports do
             [{_, schema}] when is_list(schema) ->
               Keyword.get_lazy(schema, :cardinality, fn ->
                 case Keyword.fetch(schema, :from) do
@@ -5180,14 +5192,25 @@ defmodule Runic.Workflow do
 
   defp descends_from_call_request?(_workflow, %{ancestry: {call_hash, _}}, call_hash), do: true
 
-  defp descends_from_call_request?(workflow, %{ancestry: {_, parent}}, call_hash) do
+  defp descends_from_call_request?(workflow, %{ancestry: {producer, parent}}, call_hash) do
+    case Map.get(workflow.graph.vertices, producer) do
+      %Join{} = join ->
+        call_flow_ancestor?(workflow.graph, [join], MapSet.new(), call_hash) or
+          call_request_parent?(workflow, parent, call_hash)
+
+      _ ->
+        call_request_parent?(workflow, parent, call_hash)
+    end
+  end
+
+  defp descends_from_call_request?(_, _, _), do: false
+
+  defp call_request_parent?(workflow, parent, call_hash) do
     case Map.get(workflow.graph.vertices, parent) do
       nil -> false
       fact -> descends_from_call_request?(workflow, fact, call_hash)
     end
   end
-
-  defp descends_from_call_request?(_, _, _), do: false
 
   # Only Call-containing joins acquire this input-root contract. Existing native
   # joins without a Call ancestor retain their prior producer-only selection.
@@ -5201,17 +5224,20 @@ defmodule Runic.Workflow do
     end
   end
 
-  defp call_flow_ancestor?(_graph, [], _seen), do: false
-  defp call_flow_ancestor?(_graph, [%Runic.Workflow.Call{} | _], _seen), do: true
+  defp call_flow_ancestor?(graph, nodes, seen), do: call_flow_ancestor?(graph, nodes, seen, :any)
+  defp call_flow_ancestor?(_graph, [], _seen, _call_hash), do: false
 
-  defp call_flow_ancestor?(graph, [node | rest], seen) do
+  defp call_flow_ancestor?(_graph, [%Runic.Workflow.Call{hash: hash} | _], _seen, wanted)
+       when wanted == :any or hash == wanted, do: true
+
+  defp call_flow_ancestor?(graph, [node | rest], seen, wanted) do
     id = Components.vertex_id_of(node)
 
     if MapSet.member?(seen, id) do
-      call_flow_ancestor?(graph, rest, seen)
+      call_flow_ancestor?(graph, rest, seen, wanted)
     else
       parents = Enum.map(Multigraph.in_edges(graph, node, by: :flow), & &1.v1)
-      call_flow_ancestor?(graph, parents ++ rest, MapSet.put(seen, id))
+      call_flow_ancestor?(graph, parents ++ rest, MapSet.put(seen, id), wanted)
     end
   end
 

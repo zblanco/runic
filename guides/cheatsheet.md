@@ -158,9 +158,11 @@ Call output has `:many` cardinality. A top-level re-export of Call inherits that
 cardinality; a Map export keeps last-value selection unless it declares `:many`.
 Missing or contract-only output references return `nil` (`[]` with `all: true`).
 Nested Workflows may combine `from:` exports and contract-only ports; only the
-compiled ports can be connected.
+compiled ports can be connected. Contract-only ports do not change the compiled
+export's inherited Call cardinality.
 
-Call-containing Joins pair values from one input root. A skipped occurrence or
+Call-containing Joins pair values from one input root. A completed joined result
+is Call lineage independent of which contribution arrived last. A skipped occurrence or
 request failure preserves sibling request lineages, while independent same-root
 Join contributions follow native suppression. Upstream non-Call failure retains
 native root suppression. Preserve the original unexecuted definition for fresh

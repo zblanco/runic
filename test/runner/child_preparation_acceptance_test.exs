@@ -102,4 +102,55 @@ defmodule Runic.Runner.ChildPreparationAcceptanceTest do
     assert Workflow.raw_productions(result, :call) == []
     refute Map.has_key?(result.graph.vertices, good.result.hash)
   end
+
+  test "parallel Promise results normalize invalid preparation before owner acceptance" do
+    request =
+      Runic.step(
+        fn n ->
+          ChildInvocation.new(target: Runic.step(fn x -> x + 1 end, name: :target), input: n)
+        end,
+        name: :request
+      )
+
+    base =
+      Workflow.new()
+      |> Workflow.add(Call.new(request, name: :first))
+      |> Workflow.add(Call.new(request, name: :second))
+
+    runner = :"promise_preparation_#{System.unique_integer([:positive])}"
+    start_supervised!({Runner, name: runner})
+
+    {:ok, worker} =
+      Runner.start_workflow(runner, :wf, base,
+        scheduler: TestParallelScheduler,
+        executor: ReleasingExecutor,
+        executor_opts: [test_pid: self(), outcome: :deferred]
+      )
+
+    {:ok, id} = Runner.start_execution(runner, :wf, 3)
+
+    assert_receive {:executor_result, ^worker, handle,
+                    {:promise_result, promise_id, [first, second]}},
+                   1_000
+
+    invalid =
+      case first do
+        {%Runic.Workflow.Runnable{} = result, events} -> {%{result | execution_data: nil}, events}
+        %Runic.Workflow.Runnable{} = result -> %{result | execution_data: nil}
+      end
+
+    send(worker, {handle, {:promise_result, promise_id, [invalid, second]}})
+    assert_receive {:executor_released, ^handle}, 1_000
+    {:ok, observed} = Runner.await_execution(runner, :wf, id)
+    assert Process.alive?(worker)
+    assert observed.admission == :stopped
+    assert [%{kind: :failed, error: {:child_preparation_missing, _}}] = observed.failures
+    assert Enum.count(observed.outcomes, &(&1.kind == :completed)) == 1
+    {:ok, result} = Runner.get_workflow(runner, :wf)
+
+    assert Enum.count(
+             Multigraph.vertices(result.graph),
+             &is_struct(&1, Runic.Workflow.ChildInvocation.Occurrence)
+           ) == 1
+  end
 end

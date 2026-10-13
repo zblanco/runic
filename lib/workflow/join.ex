@@ -79,15 +79,10 @@ defimpl Runic.Workflow.Coordinator, for: Runic.Workflow.Join do
       wf = Enum.reduce(derived_events, wf, fn event, w -> Workflow.apply_event(w, event) end)
       wf = Workflow.run_after_hooks(wf, join, join_fact)
 
-      # Activate downstream nodes with the join result fact
-      next = Workflow.next_steps(wf, join)
-
-      wf =
-        Enum.reduce(next, wf, fn step, w ->
-          Workflow.draw_connection(w, join_fact, step, Private.connection_for_activatable(step))
-        end)
-
-      {wf, derived_events}
+      # Record delivery as well as completion, so a checkpoint with pending
+      # consumers has the same frontier after replay.
+      {wf, activation_events} = Private.activate_downstream_with_events(wf, join, join_fact)
+      {wf, derived_events ++ activation_events}
     else
       {wf, []}
     end

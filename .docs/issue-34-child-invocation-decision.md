@@ -222,3 +222,23 @@ Old dead-edge logs that lack a public producer require an authored definition
 update; this revision does not infer an automatic migration. The Jido fixture
 covers ordinary Actions only. A consumer with unconditional downstream skipping
 must adopt scoped application before claiming the same Call isolation.
+
+## Round 3 lineage and export corrections
+
+A completed Join with a particular Call in its flow ancestry is classified as
+that Call's lineage. Root-scoped completion consumed contributions from that
+input root, so the last triggering Fact is not a complete lineage description.
+This keeps pending joined sibling output independent of contribution arrival
+order under child skip and pre-attachment request skip. Independent ordinary
+activations and incomplete Join contributions retain the documented same-root
+suppression rule. Cross-root selection remains unchanged and bounded to Call
+flow ancestry. Join completion now records its downstream activations, preserving
+checkpoint frontiers through event replay.
+
+Nested boundary cardinality considers only actual exports/compiled ports.
+Adding a contract-only audit port does not convert a one-producer Call re-export
+from many to one. Soft missing lookup and ordinary Map last-value behavior remain.
+The tests also cover invalid transient data in a parallel Promise, repeated
+managed execution roots, and a lazy FactRef-only retained contribution followed
+by new inputs. Unsupported child/collection scope and the compatible-source
+replay profile are unchanged.

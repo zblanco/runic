@@ -185,6 +185,68 @@ defmodule Runic.Workflow.ChildJoinInputScopeTest do
     end
   end
 
+  for direction <- [:forward, :reverse] do
+    test "Runner.start_execution keeps #{direction} Join roots separate across repeated inputs" do
+      runner = :"join_roots_#{System.unique_integer([:positive])}"
+      start_supervised!({Runic.Runner, name: runner})
+      original = unquote(direction)()
+      {:ok, _} = Runic.Runner.start_workflow(runner, :wf, original)
+
+      for input <- [6, 10, 20] do
+        {:ok, id} =
+          Runic.Runner.start_execution(runner, :wf, input,
+            scheduler_policies: [{:b12, %{on_failure: :skip}}]
+          )
+
+        {:ok, observed} = Runic.Runner.await_execution(runner, :wf, id)
+        assert observed.quiescent?
+      end
+
+      {:ok, result} = Runic.Runner.get_workflow(runner, :wf)
+      assert Enum.sort(Workflow.raw_productions(result, :joined)) == [{110, 10}, {120, 20}]
+    end
+  end
+
+  test "lazy FactRef-only old contribution cannot pair with a new execution root" do
+    original = reverse()
+    {first, _} = Workflow.execute(original, 6, scheduler_policies: [{:b12, %{on_failure: :skip}}])
+    runner = :"lazy_join_roots_#{System.unique_integer([:positive])}"
+    start_supervised!({Runic.Runner, name: runner, store: Runic.TestSupport.SnapshotTailStore})
+    {store, state} = Runic.Runner.get_store(runner)
+    events = Enum.reverse(first.uncommitted_events)
+
+    for %Runic.Workflow.Events.FactProduced{hash: hash, value: value} <- events,
+        do: store.save_fact(hash, value, state)
+
+    stripped =
+      Enum.map(events, fn
+        %Runic.Workflow.Events.FactProduced{} = event -> %{event | value: nil}
+        event -> event
+      end)
+
+    {:ok, _} = store.append(:wf, Workflow.build_log(original) ++ stripped, state)
+    {:ok, _} = Runic.Runner.resume(runner, :wf, rehydration: :lazy)
+    {:ok, resumed} = Runic.Runner.get_workflow(runner, :wf)
+
+    facts =
+      Enum.filter(
+        Multigraph.vertices(resumed.graph),
+        &(is_struct(&1, Runic.Workflow.Fact) or is_struct(&1, Runic.Workflow.FactRef))
+      )
+
+    assert facts != []
+    assert Enum.all?(facts, &is_struct(&1, Runic.Workflow.FactRef))
+
+    for input <- [10, 20] do
+      {:ok, id} = Runic.Runner.start_execution(runner, :wf, input)
+      {:ok, observed} = Runic.Runner.await_execution(runner, :wf, id)
+      assert observed.quiescent?
+    end
+
+    {:ok, result} = Runic.Runner.get_workflow(runner, :wf)
+    assert Enum.sort(Workflow.raw_productions(result, :joined)) == [{110, 10}, {120, 20}]
+  end
+
   defp replay(original, runtime),
     do:
       Workflow.from_events(

@@ -72,4 +72,42 @@ defmodule Runic.Workflow.ChildResultCompatibilityTest do
       end
     end
   end
+
+  test "Call many inheritance selects the compiled nested export and ignores contract-only ports" do
+    request =
+      Runic.step(
+        fn n ->
+          Runic.Workflow.ChildInvocation.new(
+            target: Runic.TestSupport.ChildTargets.many_returns(),
+            input: n
+          )
+        end,
+        name: :request
+      )
+
+    for ports <- [[out: [from: :call]], [out: [from: :call], audit: [type: :any]]] do
+      nested =
+        Workflow.new(name: :nested, input_ports: [in: []], output_ports: ports)
+        |> Workflow.add(Runic.Workflow.Call.new(request, name: :call))
+
+      original = Workflow.new(output_ports: [result: [from: :nested]]) |> Workflow.add(nested)
+
+      for base <- [
+            original,
+            Workflow.new(output_ports: original.output_ports)
+            |> Workflow.apply_events(Workflow.build_log(original))
+          ] do
+        result = Workflow.react_until_satisfied(base, 3)
+        assert Enum.sort(Workflow.results(result).result) == [4, 5]
+      end
+
+      runner = :"nested_many_#{System.unique_integer([:positive])}"
+      start_supervised!({Runner, name: runner}, id: runner)
+      {:ok, _} = Runner.start_workflow(runner, :wf, original, executor: :inline)
+      {:ok, id} = Runner.start_execution(runner, :wf, 3)
+      {:ok, _} = Runner.await_execution(runner, :wf, id)
+      {:ok, actual} = Runner.get_results(runner, :wf, format: :structured)
+      assert Enum.sort(actual.result) == [4, 5]
+    end
+  end
 end

@@ -51,6 +51,10 @@ explicitly. A merge to `main` is not a published Hex release.
 
 ### Fixed
 
+- Pending Call-containing Join output survives sibling child/request skip in
+  either contribution arrival order. Join delivery activations are recorded for
+  event replay. Nested Call re-exports retain many cardinality when contract-only
+  ports are added.
 - Missing and contract-only output references retain empty/nil result lookup.
   Nested Workflows can mix compiled exports with contract-only ports. Ordinary
   source exports, including Map, retain last-value defaults unless explicitly many.

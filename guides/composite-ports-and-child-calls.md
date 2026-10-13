@@ -65,7 +65,8 @@ a component with several distinct producers. For that case, bind the desired
 public port to a forwarding component and export the forwarding component.
 Runic rejects an ambiguous whole-component re-export during construction.
 Custom composites reject mixed explicit and implicit producer mappings. Nested
-Workflows can mix real `from:` exports and contract-only ports. Binding a
+Workflows can mix real `from:` exports and contract-only ports. Cardinality
+inheritance selects the compiled export; contract-only ports do not change it. Binding a
 contract-only nested port raises a no-compiled-producer construction error.
 
 A boundary with one exported producer inherits cardinality from Call or a nested
@@ -127,8 +128,8 @@ occurrence identity. Legacy content-based inputs need explicit distinct Facts
 if the caller wants repeated equal calls.
 
 A child failure uses the parent's existing retry/halt/skip policy. Failure inside
-an occurrence suppresses its own dependent work and independent same-root Join
-contributions. Pending output from sibling occurrences of the same Call remains
+an occurrence suppresses its own dependent work and independent same-root pending
+activations, including ordinary any-input consumers and Join contributions. Pending output from sibling occurrences of the same Call remains
 available under skip. Call request failure before attachment also preserves
 already attached sibling occurrences. Upstream non-Call failures retain native
 same-root suppression and can stop all dependent occurrences of that root.
@@ -140,6 +141,10 @@ later execution input. Selection inside one root retains native producer-order
 semantics; it is not a whole-child transaction. Independent contributions are
 cleared on child failure when the native same-root rule requires it. A protected
 sibling contribution can remain incomplete, but can only pair within that root.
+A completed Join with this Call in its flow ancestry is Call lineage, regardless
+of which contribution arrived last. Its pending sibling result is protected from
+that Call's skipped child/request failure in both arrival orders. Join completion
+records downstream activation events so replay restores the same pending frontier.
 Joins without a Call ancestor keep their existing behavior. Replay preserves
 these input boundaries without requiring Fact values to be loaded.
 A request-Step policy fallback can supply already interpreted output; an explicit
