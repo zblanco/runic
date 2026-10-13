@@ -45,11 +45,8 @@ defimpl Runic.Workflow.Coordinator, for: Runic.Workflow.Join do
     can_complete = map_size(satisfied_by_parent) >= length(join.joins)
 
     if can_complete do
-      collected_values =
-        join.joins
-        |> Enum.map(&Map.get(satisfied_by_parent, &1))
-        |> Enum.reject(&is_nil/1)
-        |> Enum.map(& &1.value)
+      contributions = Enum.map(join.joins, &Map.fetch!(satisfied_by_parent, &1))
+      collected_values = Enum.map(contributions, & &1.value)
 
       join_fact = Fact.new(value: collected_values, ancestry: {join.hash, fact.hash})
 
@@ -60,6 +57,7 @@ defimpl Runic.Workflow.Coordinator, for: Runic.Workflow.Join do
         result_fact_hash: join_fact.hash,
         result_value: join_fact.value,
         result_ancestry: join_fact.ancestry,
+        contribution_fact_hashes: Enum.map(contributions, & &1.hash),
         weight: ctx.ancestry_depth + 1
       }
 

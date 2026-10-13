@@ -110,4 +110,18 @@ defmodule Runic.TestSupport.ChildTargets do
     end)
     |> elem(0)
   end
+
+  def emit_then_fail do
+    Runic.Workflow.new(
+      name: :target,
+      input_ports: [in: []],
+      output_ports: [out: [from: :selected]]
+    )
+    |> Runic.Workflow.add(Runic.TestSupport.OrdinaryComponent.new(:left, :add, 1))
+    |> Runic.Workflow.add(Runic.TestSupport.OrdinaryComponent.new(:right, :failure, :bad))
+    |> Runic.Workflow.add(Runic.TestSupport.OrdinaryComponent.new(:selected, :data, 1),
+      connections: [[from: {:left, :out}, to: :in], [from: {:right, :out}, to: :in]],
+      input_mode: :any
+    )
+  end
 end

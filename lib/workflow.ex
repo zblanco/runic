@@ -1790,7 +1790,10 @@ defmodule Runic.Workflow do
     if join do
       wf
       |> log_fact(result_fact)
-      |> draw_connection(join, result_fact, :produced, weight: e.weight || 0)
+      |> draw_connection(join, result_fact, :produced,
+        weight: e.weight || 0,
+        properties: %{join_contribution_fact_hashes: Map.get(e, :contribution_fact_hashes)}
+      )
     else
       wf
     end
@@ -3530,14 +3533,51 @@ defmodule Runic.Workflow do
               is_list(schema) and (port in compiled_ports or Keyword.has_key?(schema, :from))
             end)
 
-          case exports do
-            [{_, schema}] when is_list(schema) ->
-              Keyword.get_lazy(schema, :cardinality, fn ->
-                case Keyword.fetch(schema, :from) do
-                  {:ok, source} -> exported_cardinality(workflow, source, MapSet.put(seen, id))
-                  :error -> :one
-                end
-              end)
+          groups =
+            Enum.group_by(exports, fn {port, schema} ->
+              case Enum.find(
+                     Multigraph.out_edges(workflow.graph, component, by: :component_of),
+                     &(&1.properties[:kind] == :output and
+                         port in Map.get(&1.properties, :ports, []))
+                   ) do
+                %{v2: producer} -> {:producer, Components.vertex_id_of(producer)}
+                _ -> {:reference, Keyword.get(schema, :from)}
+              end
+            end)
+
+          case Map.values(groups) do
+            [aliases] ->
+              overrides =
+                Enum.flat_map(aliases, fn {_, schema} ->
+                  case Keyword.fetch(schema, :cardinality) do
+                    {:ok, value} -> [value]
+                    :error -> []
+                  end
+                end)
+                |> Enum.uniq()
+
+              case overrides do
+                [value] ->
+                  value
+
+                [] ->
+                  inherited =
+                    Enum.map(aliases, fn {_, schema} ->
+                      case Keyword.fetch(schema, :from) do
+                        {:ok, source} ->
+                          exported_cardinality(workflow, source, MapSet.put(seen, id))
+
+                        :error ->
+                          :one
+                      end
+                    end)
+                    |> Enum.uniq()
+
+                  if length(inherited) == 1, do: hd(inherited), else: :one
+
+                _ ->
+                  :one
+              end
 
             _ ->
               :one
@@ -5181,10 +5221,27 @@ defmodule Runic.Workflow do
 
   defp descends_from?(_workflow, %{hash: hash}, hash), do: true
 
-  defp descends_from?(workflow, %{ancestry: {_, parent}}, hash) do
-    case Map.get(workflow.graph.vertices, parent) do
-      nil -> false
-      fact -> descends_from?(workflow, fact, hash)
+  defp descends_from?(workflow, %{ancestry: {producer, parent}} = fact, hash) do
+    case Map.get(workflow.graph.vertices, producer) do
+      %Join{} ->
+        case join_contributions(workflow, fact) do
+          {:known, inputs} ->
+            Enum.any?(inputs, &descends_from?(workflow, &1, hash))
+
+          :unknown ->
+            # Do not invent parents for an old completion. Pending work in the
+            # same root is conservatively affected by occurrence failure.
+            case Map.get(workflow.graph.vertices, hash) do
+              nil ->
+                false
+
+              request ->
+                same_local_root?(workflow, fact, local_root_ancestor_hash(workflow, request))
+            end
+        end
+
+      _ ->
+        descendant_parent?(workflow, parent, &descends_from?(workflow, &1, hash))
     end
   end
 
@@ -5192,23 +5249,49 @@ defmodule Runic.Workflow do
 
   defp descends_from_call_request?(_workflow, %{ancestry: {call_hash, _}}, call_hash), do: true
 
-  defp descends_from_call_request?(workflow, %{ancestry: {producer, parent}}, call_hash) do
+  defp descends_from_call_request?(workflow, %{ancestry: {producer, parent}} = fact, call_hash) do
     case Map.get(workflow.graph.vertices, producer) do
-      %Join{} = join ->
-        call_flow_ancestor?(workflow.graph, [join], MapSet.new(), call_hash) or
-          call_request_parent?(workflow, parent, call_hash)
+      %Join{} ->
+        case join_contributions(workflow, fact) do
+          {:known, inputs} ->
+            Enum.any?(inputs, &descends_from_call_request?(workflow, &1, call_hash))
+
+          :unknown ->
+            false
+        end
 
       _ ->
-        call_request_parent?(workflow, parent, call_hash)
+        descendant_parent?(
+          workflow,
+          parent,
+          &descends_from_call_request?(workflow, &1, call_hash)
+        )
     end
   end
 
   defp descends_from_call_request?(_, _, _), do: false
 
-  defp call_request_parent?(workflow, parent, call_hash) do
+  defp descendant_parent?(workflow, parent, predicate) do
     case Map.get(workflow.graph.vertices, parent) do
       nil -> false
-      fact -> descends_from_call_request?(workflow, fact, call_hash)
+      fact -> predicate.(fact)
+    end
+  end
+
+  @doc false
+  def join_contributions(workflow, result) do
+    edges = Multigraph.in_edges(workflow.graph, result, by: :produced)
+
+    case Enum.find(edges, &is_struct(&1.v1, Join)) do
+      %{properties: %{join_contribution_fact_hashes: ids}} when is_list(ids) and ids != [] ->
+        inputs = Enum.map(ids, &Map.get(workflow.graph.vertices, &1))
+
+        if Enum.all?(inputs, &(is_struct(&1, Fact) or is_struct(&1, FactRef))),
+          do: {:known, inputs},
+          else: :unknown
+
+      _ ->
+        :unknown
     end
   end
 

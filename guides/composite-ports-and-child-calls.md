@@ -66,7 +66,9 @@ public port to a forwarding component and export the forwarding component.
 Runic rejects an ambiguous whole-component re-export during construction.
 Custom composites reject mixed explicit and implicit producer mappings. Nested
 Workflows can mix real `from:` exports and contract-only ports. Cardinality
-inheritance selects the compiled export; contract-only ports do not change it. Binding a
+inheritance selects distinct compiled producers; aliases of one producer and
+contract-only ports do not change it. One explicit alias override is honored;
+conflicting alias overrides default to one unless the outer port overrides it. Binding a
 contract-only nested port raises a no-compiled-producer construction error.
 
 A boundary with one exported producer inherits cardinality from Call or a nested
@@ -141,9 +143,11 @@ later execution input. Selection inside one root retains native producer-order
 semantics; it is not a whole-child transaction. Independent contributions are
 cleared on child failure when the native same-root rule requires it. A protected
 sibling contribution can remain incomplete, but can only pair within that root.
-A completed Join with this Call in its flow ancestry is Call lineage, regardless
-of which contribution arrived last. Its pending sibling result is protected from
-that Call's skipped child/request failure in both arrival orders. Join completion
+A completed Join records the exact selected contribution Fact IDs. Lineage
+follows those inputs rather than the trigger or static flow ancestry. A result
+containing the failed occurrence's own contribution is suppressed. A good sibling
+result is protected; a result built only from independent values follows native
+same-root suppression. These decisions do not depend on arrival order. Join completion
 records downstream activation events so replay restores the same pending frontier.
 Joins without a Call ancestor keep their existing behavior. Replay preserves
 these input boundaries without requiring Fact values to be loaded.
@@ -224,3 +228,18 @@ The Jido example proves an ordinary Action adapter boundary. A Jido Flow engine
 that uses unconditional `skip_downstream_subgraph/2` for failure must adopt the
 scoped application contract before it can claim Call isolation. No Jido source
 or Agent state contract is changed here.
+
+## Join provenance compatibility
+
+New `JoinCompleted` events include the exact selected contribution hashes in
+producer order. Extra same-root inputs that native completion discards are not
+result parents. The graph keeps these coordinates on that result's produced
+edge, so full/ref event replay and snapshots use the same lineage without
+loading values. Accumulated `join_satisfied` edges are not a parent-history index.
+
+Older completion events without these hashes have unknown provenance. Runic does
+not reconstruct exact parents from the trigger or a same-root historical superset.
+When occurrence/request failure affects that root's pending work, unknown Join
+output is not granted Call-lineage protection and is conservatively suppressed.
+Already accepted values are not changed. Exact new guarantees require a new
+completion record from a clean compatible definition.

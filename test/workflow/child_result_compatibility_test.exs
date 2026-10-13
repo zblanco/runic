@@ -85,7 +85,12 @@ defmodule Runic.Workflow.ChildResultCompatibilityTest do
         name: :request
       )
 
-    for ports <- [[out: [from: :call]], [out: [from: :call], audit: [type: :any]]] do
+    for ports <- [
+          [out: [from: :call]],
+          [out: [from: :call], audit: [type: :any]],
+          [out: [from: :call], copy: [from: :call]],
+          [out: [from: :call], copy: [from: :call], audit: [type: :any]]
+        ] do
       nested =
         Workflow.new(name: :nested, input_ports: [in: []], output_ports: ports)
         |> Workflow.add(Runic.Workflow.Call.new(request, name: :call))
@@ -108,6 +113,52 @@ defmodule Runic.Workflow.ChildResultCompatibilityTest do
       {:ok, _} = Runner.await_execution(runner, :wf, id)
       {:ok, actual} = Runner.get_results(runner, :wf, format: :structured)
       assert Enum.sort(actual.result) == [4, 5]
+    end
+  end
+
+  test "aliases of one producer honor one explicit override or default to one on conflicting overrides" do
+    request =
+      Runic.step(
+        fn n ->
+          Runic.Workflow.ChildInvocation.new(
+            target: Runic.TestSupport.ChildTargets.many_returns(),
+            input: n
+          )
+        end,
+        name: :request
+      )
+
+    for {out_card, copy_card, expected} <- [
+          {:many, nil, :many},
+          {:one, nil, :one},
+          {:one, :many, :one},
+          {:many, :many, :many}
+        ] do
+      out_opts = [from: :call, cardinality: out_card]
+      copy_opts = if copy_card, do: [from: :call, cardinality: copy_card], else: [from: :call]
+
+      child =
+        Workflow.new(
+          name: :nested,
+          input_ports: [in: []],
+          output_ports: [out: out_opts, copy: copy_opts]
+        )
+        |> Workflow.add(Runic.Workflow.Call.new(request, name: :call))
+
+      base = Workflow.new(output_ports: [result: [from: :nested]]) |> Workflow.add(child)
+      result = Workflow.react_until_satisfied(base, 3)
+      values = Workflow.raw_productions(result, :nested)
+
+      if expected == :many,
+        do: assert(Enum.sort(Workflow.results(result).result) == [4, 5]),
+        else: assert(Workflow.results(result).result == List.last(values))
+
+      assert Enum.sort(
+               Workflow.results(%{
+                 result
+                 | output_ports: [result: [from: :nested, cardinality: :many]]
+               }).result
+             ) == [4, 5]
     end
   end
 end

@@ -31,6 +31,9 @@ explicitly. A merge to `main` is not a published Hex release.
 
 ### Added
 
+- JoinCompleted records exact selected contribution hashes, defaulting to unknown
+  for old records. Result production metadata preserves this provenance through
+  full/ref replay and snapshots. No historical parent superset is fabricated.
 - Explicit child Call output boundaries, occurrence identities, and scoped
   suppression. Call-containing Joins select contributions within one input root;
   unrelated native Joins retain their previous matching behavior.
@@ -51,6 +54,10 @@ explicitly. A merge to `main` is not a published Hex release.
 
 ### Fixed
 
+- Join failure lineage uses selected contributions in both arrival orders;
+  static Call ancestry does not protect independent values. Aliases of one
+  compiled output producer retain Call many cardinality, with explicit conflict
+  handling for alias overrides.
 - Pending Call-containing Join output survives sibling child/request skip in
   either contribution arrival order. Join delivery activations are recorded for
   event replay. Nested Call re-exports retain many cardinality when contract-only

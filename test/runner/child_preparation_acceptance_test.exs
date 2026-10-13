@@ -118,7 +118,8 @@ defmodule Runic.Runner.ChildPreparationAcceptanceTest do
       |> Workflow.add(Call.new(request, name: :second))
 
     runner = :"promise_preparation_#{System.unique_integer([:positive])}"
-    start_supervised!({Runner, name: runner})
+    start_supervised!({Runner, name: runner, store: Runic.TestSupport.SnapshotTailStore})
+    Runner.get_store(runner)
 
     {:ok, worker} =
       Runner.start_workflow(runner, :wf, base,
@@ -127,11 +128,26 @@ defmodule Runic.Runner.ChildPreparationAcceptanceTest do
         executor_opts: [test_pid: self(), outcome: :deferred]
       )
 
-    {:ok, id} = Runner.start_execution(runner, :wf, 3)
+    {:ok, id} =
+      Runner.start_execution(runner, :wf, 3,
+        scheduler_policies: [{:default, %{execution_mode: :durable}}]
+      )
 
     assert_receive {:executor_result, ^worker, handle,
                     {:promise_result, promise_id, [first, second]}},
                    1_000
+
+    rejected =
+      case first do
+        {work, _} -> work
+        work -> work
+      end
+
+    accepted =
+      case second do
+        {work, _} -> work
+        work -> work
+      end
 
     invalid =
       case first do
@@ -150,6 +166,32 @@ defmodule Runic.Runner.ChildPreparationAcceptanceTest do
 
     assert Enum.count(
              Multigraph.vertices(result.graph),
+             &is_struct(&1, Runic.Workflow.ChildInvocation.Occurrence)
+           ) == 1
+
+    :ok = Runner.checkpoint(runner, :wf)
+    {store, state} = Runner.get_store(runner)
+    {:ok, persisted} = store.stream(:wf, state)
+    persisted = Enum.to_list(persisted)
+
+    assert Enum.any?(
+             persisted,
+             &match?(%RunnableFailed{node_hash: hash} when hash == rejected.node.hash, &1)
+           )
+
+    refute Enum.any?(
+             persisted,
+             &match?(%RunnableCompleted{node_hash: hash} when hash == rejected.node.hash, &1)
+           )
+
+    :ok = Runner.stop(runner, :wf)
+    {:ok, _} = Runner.resume(runner, :wf, executor: :inline)
+    {:ok, restored} = Runner.get_workflow(runner, :wf)
+    assert Workflow.raw_productions(restored, rejected.node.name) == []
+    assert Workflow.raw_productions(restored, accepted.node.name) == [4]
+
+    assert Enum.count(
+             Multigraph.vertices(restored.graph),
              &is_struct(&1, Runic.Workflow.ChildInvocation.Occurrence)
            ) == 1
   end

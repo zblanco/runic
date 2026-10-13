@@ -776,7 +776,13 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Join do
                 |> Multigraph.update_labelled_edge(v1, v2, :joined, label: :join_satisfied)
           }
       end)
-      |> Workflow.draw_connection(join, join_bindings_fact, :produced, weight: causal_depth)
+      |> Workflow.draw_connection(join, join_bindings_fact, :produced,
+        weight: causal_depth,
+        properties: %{
+          join_contribution_fact_hashes:
+            Enum.map(join.joins, &Map.fetch!(possible_priors_by_parent, &1).hash)
+        }
+      )
       |> Workflow.run_after_hooks(join, join_bindings_fact)
     else
       Workflow.mark_runnable_as_ran(workflow, join, fact)

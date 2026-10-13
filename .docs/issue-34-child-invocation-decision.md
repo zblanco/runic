@@ -242,3 +242,33 @@ The tests also cover invalid transient data in a parallel Promise, repeated
 managed execution roots, and a lazy FactRef-only retained contribution followed
 by new inputs. Unsupported child/collection scope and the compatible-source
 replay profile are unchanged.
+
+## Round 4 exact contribution provenance
+
+Static flow ancestry and the last trigger are both insufficient for Join-result
+lineage. JoinCompleted now has an additive defaulted contribution_fact_hashes
+field. Live completion records only selected inputs, in declared producer order.
+Production-edge metadata binds those IDs to that specific result. Both direct
+Join invocation and coordination use the same exact provenance. Surplus inputs
+relabelled by native completion are discarded, not claimed as result parents.
+Repeated same-root completions have separate contribution lists; historical
+join_satisfied edges are never used as an exact parent set.
+
+Both occurrence ancestry and Call-lineage protection traverse actual contribution
+coordinates. Own failed-occurrence output is suppressed in either arrival order.
+A good sibling remains protected; purely independent values are not protected
+merely because an any-input graph has a Call ancestor. Existing cross-root Join
+selection is unchanged. Full/ref replay keeps the same provenance.
+
+Old events default to unknown provenance. No exact parent set is fabricated.
+Pending unknown Join output affected by a failure in the same root is treated
+conservatively and receives no Call-lineage exemption. Accepted historical values
+are not rewritten. Compatible source/replay and unsupported scope bounds remain.
+
+Cardinality inheritance groups real exports by distinct compiled producer. Aliases
+of a Call output do not change many inheritance. One explicit alias override is
+honored; conflicting alias overrides resolve to the existing one-value default.
+An explicit outer override still wins. Worker stream and snapshot-tail tests
+restore a pending Join consumer exactly once. Invalid Promise preparation has
+persisted failure/completion assertions and does not install the rejected child
+on resume.
