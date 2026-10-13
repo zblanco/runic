@@ -31,7 +31,8 @@ defprotocol Runic.Workflow.Invokable do
   This separation enables:
 
   - **Parallel execution** of independent nodes (Phase 2 has no workflow access)
-  - **External scheduler integration** via `prepare_for_dispatch/1` and `apply_runnable/2`
+  - **External scheduler integration** via `prepare_for_dispatch/1` and `accept_runnable/3`
+    Schedulers record the accepted status; an attempt can complete and then be rejected.
   - **Distributed execution** by dispatching Runnables to remote workers (events are serializable)
   - **Separation of concerns** between pure computation and stateful workflow updates
 
@@ -334,6 +335,9 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Condition do
           Runnable.fail(runnable, {:hook_error, reason})
       end
     else
+      {:error, %Runic.Workflow.LocalFactError{} = error} ->
+        Runnable.fail(runnable, error)
+
       {:error, %ArgumentError{} = error} ->
         Runnable.fail(runnable, error)
 
@@ -545,7 +549,7 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Accumulator do
   end
 
   def execute(%Accumulator{} = acc, %Runnable{input_fact: fact, context: ctx} = runnable) do
-    case Fact.check_parents([Map.get(ctx, :state_fact) | CausalContext.parents(ctx, fact)]) do
+    case Fact.check_parents(CausalContext.data_parents(ctx, fact)) do
       :ok -> execute_state(acc, runnable)
       {:error, error} -> Runnable.fail(runnable, error)
     end
@@ -557,7 +561,7 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Accumulator do
         next_state = run_accumulator_reducer(acc, fact.value, ctx.last_known_state, ctx)
 
         next_state_produced_fact =
-          Fact.child([Map.get(ctx, :state_fact) | CausalContext.parents(ctx, fact)],
+          Fact.child(CausalContext.data_parents(ctx, fact),
             value: next_state,
             ancestry: {acc.hash, fact.hash}
           )
@@ -774,6 +778,16 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.FanOut do
         %Workflow{} = workflow,
         %Fact{} = source_fact
       ) do
+    {_, meta_parents} = Workflow.prepare_meta_context_with_parents(workflow, fan_out, source_fact)
+    parents = [source_fact | meta_parents]
+
+    case Fact.check_parents(parents) do
+      :ok -> invoke_valid(fan_out, workflow, source_fact, parents)
+      {:error, _} -> Workflow.invoke(workflow, fan_out, source_fact)
+    end
+  end
+
+  defp invoke_valid(fan_out, workflow, source_fact, parents) do
     unless is_nil(Enumerable.impl_for(source_fact.value)) do
       is_reduced? = is_reduced?(workflow, fan_out)
 
@@ -790,7 +804,7 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.FanOut do
           )
 
         fact =
-          Fact.child(source_fact,
+          Fact.child(parents,
             value: value,
             ancestry: {fan_out.hash, source_fact.hash},
             causal_ancestry: causal_ancestry
@@ -813,11 +827,13 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.FanOut do
       {:skip, fn wf -> Workflow.mark_runnable_as_ran(wf, fan_out, fact) end}
     else
       is_reduced = is_reduced?(workflow, fan_out)
+      {_, meta_parents} = Workflow.prepare_meta_context_with_parents(workflow, fan_out, fact)
 
       context =
         CausalContext.new(
           node_hash: fan_out.hash,
           input_fact: fact,
+          meta_parents: meta_parents,
           ancestry_depth: Workflow.ancestry_depth(workflow, fact),
           fan_out_context: %{
             is_reduced: is_reduced,
@@ -830,6 +846,13 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.FanOut do
   end
 
   def execute(%FanOut{} = fan_out, %Runnable{input_fact: source_fact, context: ctx} = runnable) do
+    case Fact.check_parents(CausalContext.data_parents(ctx, source_fact)) do
+      :ok -> execute_valid(fan_out, runnable)
+      {:error, reason} -> Runnable.fail(runnable, reason)
+    end
+  end
+
+  defp execute_valid(fan_out, %Runnable{input_fact: source_fact, context: ctx} = runnable) do
     emitted_facts =
       source_fact.value
       |> Enum.with_index()
@@ -842,7 +865,7 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.FanOut do
             output_index: output_index
           )
 
-        Fact.child(source_fact,
+        Fact.child(CausalContext.data_parents(ctx, source_fact),
           value: value,
           ancestry: {fan_out.hash, source_fact.hash},
           causal_ancestry: causal_ancestry
@@ -1010,12 +1033,14 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.FanIn do
     end
   end
 
-  def prepare(%FanIn{} = fan_in, %Workflow{} = _workflow, %Fact{ancestry: nil} = fact) do
+  def prepare(%FanIn{} = fan_in, %Workflow{} = workflow, %Fact{ancestry: nil} = fact) do
+    {_, meta_parents} = Workflow.prepare_meta_context_with_parents(workflow, fan_in, fact)
     # Root fact - shouldn't happen normally but handle gracefully
     context =
       CausalContext.new(
         node_hash: fan_in.hash,
         input_fact: fact,
+        meta_parents: meta_parents,
         ancestry_depth: 0,
         hooks: {[], []},
         mergeable: fan_in.mergeable,
@@ -1065,6 +1090,9 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.FanIn do
               Runnable.fail(runnable, {:hook_error, reason})
           end
         else
+          {:error, %Runic.Workflow.LocalFactError{} = error} ->
+            Runnable.fail(runnable, error)
+
           {:error, %ArgumentError{} = error} ->
             Runnable.fail(runnable, error)
 

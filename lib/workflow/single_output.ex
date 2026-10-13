@@ -100,7 +100,7 @@ defmodule Runic.Workflow.SingleOutput do
 
   @doc false
   def execute(node, %Runnable{input_fact: fact, context: context} = runnable) do
-    with :ok <- Fact.check_parents(CausalContext.parents(context, fact)),
+    with :ok <- Fact.check_parents(CausalContext.data_parents(context, fact)),
          {:ok, before_fns} <- HookRunner.run_before(context, node, fact) do
       case run_work(node, runnable) do
         %Result{status: :value} = result ->
@@ -118,6 +118,7 @@ defmodule Runic.Workflow.SingleOutput do
           Runnable.fail(runnable, {:invalid_single_output_result, other})
       end
     else
+      {:error, %Runic.Workflow.LocalFactError{} = reason} -> Runnable.fail(runnable, reason)
       {:error, %ArgumentError{} = reason} -> Runnable.fail(runnable, reason)
       {:error, reason} -> Runnable.fail(runnable, {:hook_error, reason})
     end
@@ -151,7 +152,7 @@ defmodule Runic.Workflow.SingleOutput do
   defp child_fact(runnable, %Result{value: value, metadata: metadata}) do
     Result.validate_metadata!(metadata)
 
-    Fact.child(CausalContext.parents(runnable.context, runnable.input_fact),
+    Fact.child(CausalContext.data_parents(runnable.context, runnable.input_fact),
       value: value,
       ancestry: {runnable.node.hash, runnable.input_fact.hash},
       meta: metadata

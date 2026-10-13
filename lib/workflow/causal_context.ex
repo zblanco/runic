@@ -73,7 +73,14 @@ defmodule Runic.Workflow.CausalContext do
   end
 
   @doc "Returns the input and retained meta source Facts. Run context is not a data parent."
-  def parents(context, fact), do: [fact | Map.get(context, :meta_parents, [])]
+  def parents(%{} = context, fact), do: [fact | Map.get(context, :meta_parents, [])]
+  def parents(_, fact), do: [fact]
+
+  @doc "Returns all prepared data parents, including stored accumulator state."
+  def data_parents(%{} = context, fact),
+    do: [Map.get(context, :state_fact) | parents(context, fact)] |> Enum.reject(&is_nil/1)
+
+  def data_parents(_, fact), do: [fact]
 
   @doc """
   Builds a basic context with node hash, input fact, and ancestry depth.

@@ -45,13 +45,42 @@ defmodule Runic.Workflow.Fact do
   remotely exported, even if its eventual output is a scalar.
   """
   def new(params) do
+    build(params, true)
+  end
+
+  # Internal fold of records already constructed by the runtime or checked by replay.
+  @doc false
+  def from_verified(params), do: build(params, false)
+
+  defp build(params, verify_supplied?) do
     struct!(__MODULE__, params)
     |> put_scope()
-    |> put_identities()
+    |> put_identities(verify_supplied?)
   end
 
   @doc "Constructs a native local root without a value wrapper."
-  def local(value, opts \\ []), do: new(Keyword.merge(opts, value: value, identity_mode: :local))
+  def local(value, opts \\ []) do
+    scope = LocalScope.validate!(Keyword.get(opts, :local_scope) || LocalScope.new())
+    supplied? = not is_nil(Keyword.get(opts, :payload_digest))
+    params = Keyword.merge(opts, value: value, identity_mode: :local, local_scope: scope)
+
+    params =
+      if supplied?,
+        do: params,
+        else: Keyword.put(params, :payload_digest, local_payload_digest(value, scope))
+
+    build(params, supplied?)
+  end
+
+  @doc false
+  def native?(record) do
+    Map.get(record, :identity_mode, :portable) == :local or
+      not is_nil(Map.get(record, :local_scope)) or
+      Enum.any?(
+        [:id, :hash, :payload_digest, :content_digest],
+        &match?(%Identity{scheme: :local_sha256}, Map.get(record, &1))
+      )
+  end
 
   @doc "Constructs a child and inherits its parents' identity mode and scope."
   def child(parents, params) do
@@ -81,15 +110,7 @@ defmodule Runic.Workflow.Fact do
     parents = parents |> List.wrap() |> Enum.reject(&is_nil/1)
 
     Enum.each(parents, fn parent ->
-      native? =
-        Map.get(parent, :identity_mode, :portable) == :local or
-          not is_nil(Map.get(parent, :local_scope)) or
-          Enum.any?(
-            [:id, :hash, :payload_digest, :content_digest],
-            &match?(%Identity{scheme: :local_sha256}, Map.get(parent, &1))
-          )
-
-      if native?, do: Runic.Workflow.LocalBoundary.validate_current!(parent, :parents)
+      if native?(parent), do: Runic.Workflow.LocalBoundary.validate_profile!(parent, :parents)
     end)
 
     scopes =
@@ -201,7 +222,7 @@ defmodule Runic.Workflow.Fact do
 
   defp identity(_, domain, doc), do: Components.identity(domain, doc)
 
-  defp put_identities(%__MODULE__{} = fact) do
+  defp put_identities(%__MODULE__{} = fact, verify_supplied?) do
     if fact.identity_mode == :local and (not is_nil(fact.id) or not is_nil(fact.hash)) and
          is_nil(fact.payload_digest),
        do:
@@ -229,9 +250,11 @@ defmodule Runic.Workflow.Fact do
       validate_local_digest!(payload_digest, :payload)
       validate_local_digest!(content_digest, :fact_content)
 
-      case validate_local_payload(%{fact | payload_digest: payload_digest}) do
-        :ok -> :ok
-        {:error, error} -> raise error
+      if verify_supplied? and not is_nil(fact.payload_digest) do
+        case validate_local_payload(%{fact | payload_digest: payload_digest}) do
+          :ok -> :ok
+          {:error, error} -> raise error
+        end
       end
     end
 

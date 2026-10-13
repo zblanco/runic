@@ -91,6 +91,16 @@ defmodule Runic.NativeCoordinatorContractTest do
     end
   end
 
+  test "invalid parent contract returns become failed acceptance before finalization" do
+    for mode <- [:invalid_return, :invalid_list, :invalid_parent] do
+      {wf, attempt, events} = attempted(mode, Fact.new(value: 7))
+      {_wf, accepted, _} = Workflow.accept_runnable(wf, attempt, events)
+      assert accepted.status == :failed
+      assert %LocalFactError{reason: :invalid_coordinator_parents} = accepted.error
+      refute_received :custom_finalize
+    end
+  end
+
   for mode <- [:declared, :unsupported, :scope_error] do
     test "#{mode} failure records Worker outcomes and leaves the Worker alive" do
       mode = unquote(mode)

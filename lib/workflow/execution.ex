@@ -87,13 +87,14 @@ defmodule Runic.Workflow.Execution do
   @doc false
   @spec start(Workflow.t(), term(), keyword()) :: {t(), Fact.t()}
   def start(%Workflow{} = workflow, input, opts \\ []) do
+    Runic.Workflow.LocalBoundary.validate_current!(input, :input)
     execution_id = execution_id(workflow, Keyword.get(opts, :execution_id))
     draft = Fact.input(input, opts)
     input_id = Identity.derive(:input_command, [execution_id, draft.payload_digest])
     input_fact_id = Identity.derive(:fact_occurrence, [input_id, :root])
 
     input_fact =
-      Fact.new(
+      Fact.from_verified(
         value: input,
         id: input_fact_id,
         payload_digest: draft.payload_digest,

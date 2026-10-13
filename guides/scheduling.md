@@ -109,13 +109,13 @@ sequenceDiagram
     end
 
     T1-->>S: executed_runnable1
-    S->>W: apply_runnable(workflow, executed_runnable1)
+    S->>W: accept_runnable(workflow, executed_runnable1)
 
     T2-->>S: executed_runnable2
-    S->>W: apply_runnable(workflow, executed_runnable2)
+    S->>W: accept_runnable(workflow, executed_runnable2)
 
     T3-->>S: executed_runnable3
-    S->>W: apply_runnable(workflow, executed_runnable3)
+    S->>W: accept_runnable(workflow, executed_runnable3)
 
     S->>W: plan_eagerly(workflow)
     Note over S,W: New runnables may be available now
@@ -145,15 +145,22 @@ This isolation is the key enabler of parallelism. Because execute has no side ef
 
 ### Phase 3: Apply
 
-After execution, the completed Runnable carries an `apply_fn` — a closure that knows how to reduce the result back into the workflow graph:
+After execution, accept the Runnable against the current graph:
 
 ```elixir
-workflow = Workflow.apply_runnable(workflow, executed)
+{workflow, accepted, events} = Workflow.accept_runnable(workflow, executed)
+# Record accepted.status and accepted.error, not executed.status.
 ```
 
 This phase _must_ be sequential per workflow. The workflow is a single data structure, and apply mutates it (functionally) by adding produced facts and preparing the next generation of runnables.
 
-After applying, call `plan_eagerly/1` to discover newly available runnables downstream and repeat the cycle.
+An attempt can complete and then fail acceptance, for example on a local scope
+conflict. Stop admission on the accepted failure. Record driver lifecycle events
+with `accept_runnable/3` when the driver returns them. `apply_runnable/2` remains
+a convenience for callers that need only the workflow. Custom event applicators
+must be pure: staged coordination checks can fold their events before acceptance.
+
+After successful acceptance, call `plan_eagerly/1` to discover downstream work.
 
 ## Step 1: The Simplest Scheduler — A Spawned Process
 
@@ -172,15 +179,14 @@ defmodule SimpleScheduler do
     if Workflow.is_runnable?(workflow) do
       {workflow, runnables} = Workflow.prepare_for_dispatch(workflow)
 
-      workflow =
-        Enum.reduce(runnables, workflow, fn runnable, wrk ->
+      {workflow, stopped?} =
+        Enum.reduce_while(runnables, {workflow, false}, fn runnable, {wrk, false} ->
           executed = Workflow.execute_runnable(runnable)
-          Workflow.apply_runnable(wrk, executed)
+          {wrk, accepted, _events} = Workflow.accept_runnable(wrk, executed)
+          if accepted.status == :failed, do: {:halt, {wrk, true}}, else: {:cont, {wrk, false}}
         end)
 
-      workflow
-      |> Workflow.plan_eagerly()
-      |> loop()
+      if stopped?, do: workflow, else: loop(Workflow.plan_eagerly(workflow))
     else
       send(self(), {:workflow_complete, workflow})
       workflow
@@ -196,7 +202,7 @@ Still, notice the core pattern that every scheduler follows:
 1. **Plan** — `plan_eagerly/1` discovers what's ready
 2. **Prepare** — `prepare_for_dispatch/1` extracts runnables
 3. **Execute** — run each runnable's work function
-4. **Apply** — `apply_runnable/2` folds results back in
+4. **Accept** — `accept_runnable/3` folds results and returns the accepted status
 5. **Loop** — repeat until `is_runnable?/1` returns `false`
 
 ## Step 2: Adding Parallel Execution with Tasks
@@ -219,20 +225,19 @@ defmodule ParallelScheduler do
     if Workflow.is_runnable?(workflow) do
       {workflow, runnables} = Workflow.prepare_for_dispatch(workflow)
 
-      workflow =
+      {workflow, stopped?} =
         runnables
         |> Task.async_stream(
           fn runnable -> Workflow.execute_runnable(runnable) end,
           timeout: :infinity,
           max_concurrency: System.schedulers_online()
         )
-        |> Enum.reduce(workflow, fn {:ok, executed}, wrk ->
-          Workflow.apply_runnable(wrk, executed)
+        |> Enum.reduce({workflow, false}, fn {:ok, executed}, {wrk, stopped?} ->
+          {wrk, accepted, _events} = Workflow.accept_runnable(wrk, executed)
+          {wrk, stopped? or accepted.status == :failed}
         end)
 
-      workflow
-      |> Workflow.plan_eagerly()
-      |> loop()
+      if stopped?, do: workflow, else: loop(Workflow.plan_eagerly(workflow))
     else
       workflow
     end
@@ -339,24 +344,23 @@ defmodule WorkflowScheduler do
   def handle_info({ref, executed_runnable}, state) do
     Process.demonitor(ref, [:flush])
 
-    Logger.info("Runnable completed: #{inspect(executed_runnable.node.name)}")
-
-    workflow =
-      state.workflow
-      |> Workflow.apply_runnable(executed_runnable)
-      |> Workflow.plan_eagerly()
+    {workflow, accepted, _events} = Workflow.accept_runnable(state.workflow, executed_runnable)
+    Logger.info("Runnable #{accepted.status}: #{inspect(accepted.node.name)}")
+    stopped? = Map.get(state, :admission_stopped?, false) or accepted.status == :failed
+    workflow = if stopped?, do: workflow, else: Workflow.plan_eagerly(workflow)
 
     state = %{
       state
       | workflow: workflow,
         active_tasks: MapSet.delete(state.active_tasks, executed_runnable.id)
     }
+    state = Map.put(state, :admission_stopped?, stopped?)
 
     state =
-      if Workflow.is_runnable?(workflow) do
+      if not stopped? and Workflow.is_runnable?(workflow) do
         dispatch_runnables(state)
       else
-        Logger.info("Workflow satisfied — no more runnables")
+        Logger.info("No further admission; stopped? #{stopped?}")
         state
       end
 
@@ -557,24 +561,23 @@ defmodule MyApp.WorkflowRunner do
   def handle_info({ref, executed_runnable}, state) do
     Process.demonitor(ref, [:flush])
 
-    Logger.info("Completed: #{inspect(executed_runnable.node.name)}")
-
-    workflow =
-      state.workflow
-      |> Workflow.apply_runnable(executed_runnable)
-      |> Workflow.plan_eagerly()
+    {workflow, accepted, _events} = Workflow.accept_runnable(state.workflow, executed_runnable)
+    Logger.info("Accepted status: #{accepted.status}")
+    stopped? = Map.get(state, :admission_stopped?, false) or accepted.status == :failed
+    workflow = if stopped?, do: workflow, else: Workflow.plan_eagerly(workflow)
 
     state = %{
       state
       | workflow: workflow,
         active_tasks: MapSet.delete(state.active_tasks, executed_runnable.id)
     }
+    state = Map.put(state, :admission_stopped?, stopped?)
 
     state =
-      if Workflow.is_runnable?(workflow) do
+      if not stopped? and Workflow.is_runnable?(workflow) do
         dispatch_runnables(state)
       else
-        Logger.info("Workflow #{state.id} resolved")
+        Logger.info("No further admission for #{state.id}; stopped? #{stopped?}")
         state
       end
 
@@ -686,7 +689,7 @@ flowchart LR
         P1["plan_eagerly(input)"]
         D1["prepare_for_dispatch"]
         E1["execute: validate_order"]
-        A1["apply_runnable"]
+        A1["accept_runnable"]
     end
 
     subgraph "Cycle 2"
@@ -696,7 +699,7 @@ flowchart LR
         E2a["execute: check_inventory"]
         E2b["execute: screen_fraud"]
         E2c["execute: estimate_shipping"]
-        A2["apply_runnable × 3"]
+        A2["accept_runnable × 3"]
     end
 
     subgraph "Cycle 3"
@@ -704,7 +707,7 @@ flowchart LR
         P3["plan_eagerly"]
         D3["prepare_for_dispatch"]
         E3["execute: decide_fulfillment"]
-        A3["apply_runnable"]
+        A3["accept_runnable"]
     end
 
     A1 --> P2
@@ -742,7 +745,10 @@ Your scheduler only decides the execution strategy (tasks, pool, remote nodes). 
 
 ### Fault Isolation
 
-Using `Task.Supervisor` means a crashing task doesn't bring down the scheduler. The `handle_info({:DOWN, ...})` callback handles task failures gracefully. The `%Runnable{}` struct includes an `error` field for failed executions, and `Workflow.apply_runnable/2` handles failed runnables by logging a warning and marking them as ran.
+Using `Task.Supervisor` keeps task crashes separate from the scheduler. Handle
+task loss through `handle_info({:DOWN, ...})`. For returned attempts, use
+`Workflow.accept_runnable/3`, record the accepted status and error, and stop new
+admission on accepted failure. Drain work already dispatched before that failure.
 
 ## Failure scope and retained work
 
@@ -864,7 +870,8 @@ and combined computation and persistence state, see
 | `Workflow.plan_eagerly(workflow)` | Re-plan from existing produced facts |
 | `Workflow.prepare_for_dispatch(workflow)` | Extract `{workflow, [%Runnable{}]}` for dispatch |
 | `Workflow.execute_runnable(runnable)` | Execute a runnable in isolation |
-| `Workflow.apply_runnable(workflow, runnable)` | Fold an executed runnable back into the workflow |
+| `Workflow.accept_runnable(workflow, runnable, events)` | Fold and return the accepted Runnable and lifecycle events; record this status |
+| `Workflow.apply_runnable(workflow, runnable)` | Workflow-only convenience; does not return accepted status |
 | `Workflow.is_runnable?(workflow)` | Check if any runnables are pending |
 | `Workflow.next_runnables(workflow)` | List `{node, fact}` pairs (lower-level than `prepare_for_dispatch`) |
 | `Workflow.raw_productions(workflow)` | Extract final output values |

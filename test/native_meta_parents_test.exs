@@ -53,6 +53,18 @@ defmodule Runic.NativeMetaParentsTest do
   defp reader_node(wf, %{reaction_hash: hash}), do: Map.fetch!(wf.graph.vertices, hash)
   defp reader_node(_, node), do: node
 
+  defp add_reader(history, %Workflow.Step{} = step) do
+    wf = Workflow.add(history, step)
+
+    Enum.reduce(step.meta_refs, wf, fn ref, wf ->
+      if ref.kind == :context,
+        do: wf,
+        else: Workflow.draw_meta_ref_edge(wf, step, Workflow.get_component!(wf, ref.target), ref)
+    end)
+  end
+
+  defp add_reader(history, node), do: Workflow.add(history, node)
+
   defp outputs(wf, node),
     do:
       Enum.filter(
@@ -64,7 +76,7 @@ defmodule Runic.NativeMetaParentsTest do
     test "#{type} #{kind} retains native parents in caller-owned and persistent execution" do
       {history, source} = history(41)
       reader = reader(unquote(type), unquote(kind))
-      wf = Workflow.add(history, reader)
+      wf = add_reader(history, reader)
       node = reader_node(wf, reader)
       {completed, execution} = Workflow.execute(wf, 7)
       assert execution.failures == []
@@ -106,7 +118,7 @@ defmodule Runic.NativeMetaParentsTest do
     test "#{type} #{kind} blocks remote dispatch for local source values" do
       {history, _} = history(self())
       reader = reader(unquote(type), unquote(kind))
-      wf = Workflow.add(history, reader)
+      wf = add_reader(history, reader)
       node = reader_node(wf, reader)
       {:ok, prepared} = Invokable.prepare(node, wf, Fact.new(value: 7))
       assert prepared.context.meta_parents != []
@@ -138,7 +150,7 @@ defmodule Runic.NativeMetaParentsTest do
     test "#{type} #{kind} rejects incompatible meta scopes before hooks and callbacks" do
       {history, _} = history(41)
       reader = reader(unquote(type), unquote(kind))
-      wf = Workflow.add(history, reader)
+      wf = add_reader(history, reader)
       node = reader_node(wf, reader)
       observer = self()
 
@@ -184,7 +196,7 @@ defmodule Runic.NativeMetaParentsTest do
 
     wf =
       history
-      |> Workflow.add(step)
+      |> add_reader(step)
       |> Workflow.put_run_context(%{reader: %{offset: 2, observer: self()}})
 
     {:ok, runnable} = Invokable.prepare(step, wf, Fact.new(value: 7))
@@ -207,10 +219,10 @@ defmodule Runic.NativeMetaParentsTest do
       |> Workflow.log_fact(state)
       |> Workflow.draw_connection(source, state, :state_produced, weight: 2)
 
-    {_wf, rejected} = Workflow.execute(Workflow.add(history, reader(:step, :all_values_of)), 7)
+    {_wf, rejected} = Workflow.execute(add_reader(history, reader(:step, :all_values_of)), 7)
     assert [%{error: %ArgumentError{}}] = rejected.failures
     step = reader(:step, :latest_value_of)
-    {wf, accepted} = Workflow.execute(Workflow.add(history, step), 7)
+    {wf, accepted} = Workflow.execute(add_reader(history, step), 7)
     assert accepted.failures == []
     assert [output] = outputs(wf, step)
     assert output.value in [41, 42]

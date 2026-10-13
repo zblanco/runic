@@ -44,7 +44,7 @@ defmodule Runic.Workflow.SingleOutput.Context do
   def from_runnable(runnable) do
     local =
       runnable.context
-      |> Runic.Workflow.CausalContext.parents(runnable.input_fact)
+      |> Runic.Workflow.CausalContext.data_parents(runnable.input_fact)
       |> Enum.find(&(Map.get(&1, :identity_mode, :portable) == :local))
 
     %__MODULE__{

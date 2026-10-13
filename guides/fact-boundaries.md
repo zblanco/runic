@@ -68,8 +68,9 @@ a new portable execution, not changing a local child's marker.
 ## Persistence, replay, and remote execution
 
 Value meta references (`state_of`, `latest_value_of`, `all_values_of`, and the
-Fact-returning getters) retain their actual source Facts in the prepared
-`CausalContext.meta_parents`. The runtime checks their scopes with the input
+Fact-returning getters) retain their native-marked source Facts in the prepared
+`CausalContext.meta_parents`. Portable source Facts are not retained there or
+in satisfied-gate events. The runtime checks scopes with the input
 before hooks or application callbacks. Outputs inherit from these parents.
 Condition read parents also reach the reaction through satisfied gates. Count
 and presence getters and unrelated run context do not become value parents.
@@ -88,7 +89,18 @@ An attempt can complete and then fail current-graph acceptance. The convenience
 for a scheduler that records the accepted status and lifecycle events.
 Low-level Invokable implementations that read meta values must use
 `prepare_meta_context_with_parents/3`, retain `meta_parents` in the causal
-context, and use those parents for scope checks and `Fact.child/2`.
+context, and use those parents for scope checks and `Fact.child/2`. This also
+applies to nodes that follow a gate, including FanOut. Steps need authored
+`:meta_ref` edges for graph reads; this prototype preserves the prior nil
+result when no such edge exists. Run context resolution is unchanged.
+
+Full payload verification runs at admission, explicit local replay, and
+construction with supplied digests. Propagation through a checked graph uses
+shallow profile and parent-scope checks. It does not repeatedly hash or walk
+the values. The low-level `apply_event/2` fold and internal verified-record
+constructor assume checked records; they are not import codecs. Adapters must
+validate incoming records with `LocalBoundary.validate_current!/2` or replay
+them with `from_events/3` before using those paths.
 
 Native local facts cannot be persisted. The Worker rejects the event batch
 before `save_fact/3`, `save_payload/3`, or append/save callbacks. Built-in ETS
@@ -127,8 +139,10 @@ their original mode, scope, and identities. Replay does not create a new scope
 for an existing identity. The option applies to both the events and the base
 workflow. Replay does not call accepted callbacks again.
 
-An existing local identity also requires its original payload digest. Local
-payload verification binds the value to its declared scope. Native state,
+Replayed local identities require their original payload digest. The new-root
+`Fact.local/2` constructor computes a proof for a caller-chosen local occurrence
+ID and scope. General `Fact.new/1` with an existing ID requires supplied proof.
+Local payload verification binds the value to its declared scope. Native state,
 Join, and FanIn events now retain that digest. Replay also checks known
 in-graph parent scopes. Swapping a valid same-VM scope is rejected. Portable
 records keep their prior defaults and identity bytes.

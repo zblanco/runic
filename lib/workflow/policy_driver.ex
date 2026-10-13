@@ -374,8 +374,23 @@ defmodule Runic.Workflow.PolicyDriver do
   defp handle_fallback(
          %Runnable{} = runnable,
          error,
-         %SchedulerPolicy{fallback: fallback} = policy,
+         %SchedulerPolicy{} = policy,
          opts
+       ) do
+    parents = Runic.Workflow.CausalContext.data_parents(runnable.context, runnable.input_fact)
+
+    case Fact.check_parents(parents) do
+      :ok -> apply_fallback(runnable, error, policy, opts, parents)
+      {:error, reason} -> Runnable.fail(runnable, reason)
+    end
+  end
+
+  defp apply_fallback(
+         runnable,
+         error,
+         %SchedulerPolicy{fallback: fallback} = policy,
+         opts,
+         parents
        ) do
     case fallback.(runnable, error) do
       %Runnable{} = modified ->
@@ -394,7 +409,7 @@ defmodule Runic.Workflow.PolicyDriver do
           Runic.Workflow.SingleOutput.complete_value(runnable, term)
         else
           result_fact =
-            Fact.child(runnable.input_fact,
+            Fact.child(parents,
               value: term,
               ancestry: {runnable.node.hash, runnable.input_fact.hash}
             )
@@ -404,7 +419,11 @@ defmodule Runic.Workflow.PolicyDriver do
           events = [
             FactProduced.new(result_fact,
               producer_label: :produced,
-              weight: (runnable.context.ancestry_depth || 0) + 1
+              weight:
+                if(is_map(runnable.context),
+                  do: Map.get(runnable.context, :ancestry_depth, 0),
+                  else: 0
+                ) + 1
             ),
             %ActivationConsumed{
               fact_hash: runnable.input_fact.hash,
@@ -413,7 +432,7 @@ defmodule Runic.Workflow.PolicyDriver do
             }
           ]
 
-          Runnable.complete(runnable, result_fact, events)
+          Runnable.complete(%{runnable | error: nil}, result_fact, events)
         end
 
       other ->

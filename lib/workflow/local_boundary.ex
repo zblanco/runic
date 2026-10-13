@@ -45,12 +45,40 @@ defmodule Runic.Workflow.LocalBoundary do
   def validate_current!(value, field), do: validate_scopes(value, [field])
 
   @doc false
+  def validate_profile!(%module{} = record, field) when is_map_key(@scope_records, module),
+    do: validate_record(record, [field], false)
+
+  def validate_profile!(_, _), do: :ok
+
+  @doc false
+  def validate_profiles!(value, field), do: validate_profiles(value, [field])
+
+  defp validate_profiles(%module{} = record, path) when is_map_key(@scope_records, module),
+    do: validate_record(record, path, false)
+
+  defp validate_profiles(%LocalScope{} = scope, path), do: validate_scopes(scope, path)
+
+  defp validate_profiles(value, path) when is_map(value) do
+    Enum.each(Map.to_list(value), fn {key, item} -> validate_profiles(item, path ++ [key]) end)
+  end
+
+  defp validate_profiles(value, path) when is_list(value),
+    do:
+      value
+      |> Enum.with_index()
+      |> Enum.each(fn {item, index} -> validate_profiles(item, path ++ [index]) end)
+
+  defp validate_profiles(value, path) when is_tuple(value),
+    do: value |> Tuple.to_list() |> validate_profiles(path)
+
+  defp validate_profiles(_, _), do: :ok
+
+  @doc false
   def validate_event!(workflow, %module{} = event) when is_map_key(@scope_records, module) do
     {mode_key, scope_key, _} = Map.fetch!(@scope_records, module)
+    validate_profile!(event, :event)
 
     if Map.get(event, mode_key, :portable) == :local do
-      validate_current!(event, :event)
-
       ancestry =
         Map.get(event, :ancestry) || Map.get(event, :init_ancestry) ||
           Map.get(event, :result_ancestry) || Map.get(event, :emitted_ancestry)
@@ -107,6 +135,19 @@ defmodule Runic.Workflow.LocalBoundary do
   end
 
   defp validate_scopes(%module{} = record, path) when is_map_key(@scope_records, module) do
+    validate_record(record, path, true)
+    validate_scope_fields(record, path)
+  end
+
+  defp validate_scopes(value, path) when is_map(value), do: validate_scope_fields(value, path)
+
+  defp validate_scopes(value, path) when is_tuple(value),
+    do: value |> Tuple.to_list() |> validate_scopes(path)
+
+  defp validate_scopes(value, path) when is_list(value), do: validate_scope_list(value, path, 0)
+  defp validate_scopes(_, _), do: :ok
+
+  defp validate_record(%module{} = record, path, verify_payload?) do
     {mode_key, scope_key, identities} = Map.fetch!(@scope_records, module)
 
     native? =
@@ -157,7 +198,20 @@ defmodule Runic.Workflow.LocalBoundary do
             reason: :missing_local_payload
           )
 
-      if payload_key && Map.get(record, payload_key) &&
+      if payload_key &&
+           not match?(
+             %Identity{scheme: :local_sha256, domain: :payload, version: 1, digest: digest}
+             when is_binary(digest) and byte_size(digest) == 32,
+             Map.get(record, payload_key)
+           ),
+         do:
+           raise(LocalFactError,
+             field: hd(path),
+             path: path ++ [payload_key],
+             reason: :invalid_local_profile
+           )
+
+      if verify_payload? && payload_key && Map.get(record, payload_key) &&
            Map.get(record, payload_key) !=
              Fact.local_payload_digest(Map.get(record, value_key), Map.get(record, scope_key)),
          do:
@@ -168,16 +222,8 @@ defmodule Runic.Workflow.LocalBoundary do
            )
     end
 
-    validate_scope_fields(record, path)
+    :ok
   end
-
-  defp validate_scopes(value, path) when is_map(value), do: validate_scope_fields(value, path)
-
-  defp validate_scopes(value, path) when is_tuple(value),
-    do: value |> Tuple.to_list() |> validate_scopes(path)
-
-  defp validate_scopes(value, path) when is_list(value), do: validate_scope_list(value, path, 0)
-  defp validate_scopes(_, _), do: :ok
 
   defp validate_scope_list([], _, _), do: :ok
 

@@ -668,27 +668,13 @@ defmodule Runic.Workflow.Private do
         end
       end)
 
-    # Ordinary Steps can declare value refs without explicit graph edges. Use
-    # their targets when no edge supplied the binding; graph bindings still win.
-    {graph_context, parents} =
-      Enum.reduce(Map.get(node, :meta_refs, []), {graph_context, parents}, fn ref,
-                                                                              {acc, parents} ->
-        if ref.kind != :context and not Map.has_key?(acc, ref.context_key) do
-          value = build_getter_fn(ref).(workflow, ref.target)
-
-          {Map.put(acc, ref.context_key, value),
-           meta_source_facts(workflow, ref.target, ref) ++ parents}
-        else
-          {acc, parents}
-        end
-      end)
-
     # Resolve :context-kind refs from run_context
     external_context = resolve_context_refs(workflow, node)
 
     # Multigraph context overrides external (more specific wins)
     parents = parents ++ gate_meta_parents(workflow, node, fact)
-    {Map.merge(external_context, graph_context), Enum.uniq_by(parents, & &1.hash)}
+    native_parents = parents |> Enum.filter(&Fact.native?/1) |> Enum.uniq_by(& &1.hash)
+    {Map.merge(external_context, graph_context), native_parents}
   end
 
   defp meta_source_facts(workflow, target, %{kind: :state_of}) do

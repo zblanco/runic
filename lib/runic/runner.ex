@@ -128,6 +128,8 @@ defmodule Runic.Runner do
   `{:error, {:persistence_failed, reason}}` without starting a Worker.
   """
   def start_workflow(runner, workflow_id, workflow, opts \\ []) do
+    Runic.Workflow.LocalBoundary.validate_current!(workflow, :workflow)
+
     with :ok <-
            if(Keyword.get(opts, :resumed, false),
              do: Runic.Workflow.LocalBoundary.check(workflow, :workflow),
@@ -146,6 +148,8 @@ defmodule Runic.Runner do
         worker_spec
       )
     end
+  rescue
+    error in Runic.Workflow.LocalFactError -> {:error, error}
   end
 
   @doc """
@@ -164,12 +168,13 @@ defmodule Runic.Runner do
         {:error, :not_found}
 
       pid ->
+        Runic.Workflow.LocalBoundary.validate_current!(input, :input)
+
         fact =
           if is_struct(input, Runic.Workflow.Fact),
             do: input,
             else: Runic.Workflow.Fact.input(input, opts)
 
-        Runic.Workflow.LocalBoundary.validate_current!(fact, :input)
         GenServer.cast(pid, {:run, fact, opts})
     end
   rescue

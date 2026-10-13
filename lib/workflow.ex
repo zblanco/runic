@@ -67,9 +67,11 @@ defmodule Runic.Workflow do
         Runic.Workflow.Invokable.execute(runnable.node, runnable)
       end, timeout: :infinity)
 
-      # Phase 3: Apply results back to workflow
+      # Phase 3: Accept results and use the returned status for outcomes
       workflow = Enum.reduce(executed, workflow, fn {:ok, runnable}, wrk ->
-        Workflow.apply_runnable(wrk, runnable)
+        {wrk, accepted, _events} = Workflow.accept_runnable(wrk, runnable)
+        # Record accepted.status and accepted.error; stop admission on failure.
+        wrk
       end)
 
       # Continue if more work is available
@@ -78,7 +80,8 @@ defmodule Runic.Workflow do
   Key APIs for external scheduling:
 
   - `prepare_for_dispatch/1` - Returns `{workflow, [%Runnable{}]}` for dispatch
-  - `apply_runnable/2` - Applies a completed runnable back to the workflow
+  - `accept_runnable/3` - Returns the workflow, accepted Runnable, and lifecycle events
+  - `apply_runnable/2` - Convenience for callers that need only the workflow
   - `Invokable.execute/2` - Executes a runnable in isolation (no workflow access)
 
   ## Runtime Context
@@ -1460,7 +1463,7 @@ defmodule Runic.Workflow do
     Runic.Workflow.LocalBoundary.validate_event!(wf, e)
 
     fact =
-      Fact.new(
+      Fact.from_verified(
         hash: e.hash,
         content_digest: e.content_digest,
         payload_digest: e.payload_digest,
@@ -1563,7 +1566,7 @@ defmodule Runic.Workflow do
     Runic.Workflow.LocalBoundary.validate_event!(wf, e)
 
     init_fact =
-      Fact.new(
+      Fact.from_verified(
         hash: e.init_fact_hash,
         payload_digest: Map.get(e, :init_payload_digest),
         value: e.init_value,
@@ -1599,7 +1602,7 @@ defmodule Runic.Workflow do
     join = Map.get(wf.graph.vertices, e.join_hash)
 
     result_fact =
-      Fact.new(
+      Fact.from_verified(
         hash: e.result_fact_hash,
         payload_digest: Map.get(e, :result_payload_digest),
         value: e.result_value,
@@ -1635,7 +1638,7 @@ defmodule Runic.Workflow do
     Runic.Workflow.LocalBoundary.validate_event!(wf, e)
 
     fact =
-      Fact.new(
+      Fact.from_verified(
         hash: e.emitted_fact_hash,
         content_digest: e.emitted_content_digest,
         payload_digest: e.emitted_payload_digest,
@@ -1668,7 +1671,7 @@ defmodule Runic.Workflow do
     fan_in = Map.get(wf.graph.vertices, e.fan_in_hash)
 
     result_fact =
-      Fact.new(
+      Fact.from_verified(
         hash: e.result_fact_hash,
         payload_digest: Map.get(e, :result_payload_digest),
         value: e.result_value,
@@ -4536,7 +4539,7 @@ defmodule Runic.Workflow do
 
   1. **Prepare** - This function calls `Invokable.prepare/3` for each pending node
   2. **Execute** - Call `Invokable.execute/2` on each runnable (can be parallelized)
-  3. **Apply** - Call `Workflow.apply_runnable(workflow, runnable)` to fold events back
+  3. **Accept** - Call `Workflow.accept_runnable(workflow, runnable)` and record its returned status
 
   ## Returns
 
@@ -4548,7 +4551,10 @@ defmodule Runic.Workflow do
 
       runnables = Workflow.prepared_runnables(workflow)
       executed = Enum.map(runnables, &Invokable.execute(&1.node, &1))
-      workflow = Enum.reduce(executed, workflow, &Workflow.apply_runnable(&2, &1))
+      {accepted, workflow} = Enum.map_reduce(executed, workflow, fn attempt, wf ->
+        {wf, runnable, _events} = Workflow.accept_runnable(wf, attempt)
+        {runnable, wf}
+      end)
   """
   @spec prepared_runnables(t()) :: [Runnable.t()]
   def prepared_runnables(%__MODULE__{graph: graph} = workflow) do
@@ -4726,7 +4732,8 @@ defmodule Runic.Workflow do
   @doc """
   Applies a completed runnable back to the workflow.
 
-  Called by schedulers after receiving execution results.
+  Convenience for callers that need only the workflow. Schedulers that record
+  outcomes must use `accept_runnable/3` and the accepted Runnable's status.
 
   Events from the runnable are folded via `apply_event/2`, hook apply_fns
   are run, and downstream nodes are activated.
@@ -4808,17 +4815,21 @@ defmodule Runic.Workflow do
            Fact.check_parents(
              Runic.Workflow.CausalContext.parents(runnable.context, runnable.input_fact)
            ) do
-      Runic.Workflow.LocalBoundary.validate_current!(runnable.events, :events)
+      Runic.Workflow.LocalBoundary.validate_profiles!(runnable.events, :events)
 
       if Runic.Workflow.Coordinator.impl_for(runnable.node) do
         staged = Enum.reduce(runnable.events || [], workflow, &apply_event(&2, &1))
 
         case Runic.Workflow.CoordinatorParents.parents(runnable.node, staged, runnable) do
-          {:ok, parents} ->
-            Fact.check_parents(
-              parents ++
-                Runic.Workflow.CausalContext.parents(runnable.context, runnable.input_fact)
-            )
+          {:ok, parents} when is_list(parents) ->
+            if Enum.all?(parents, &(is_nil(&1) or is_struct(&1, Fact) or is_struct(&1, FactRef))) do
+              Fact.check_parents(
+                parents ++
+                  Runic.Workflow.CausalContext.data_parents(runnable.context, runnable.input_fact)
+              )
+            else
+              invalid_coordinator_parents()
+            end
 
           :unsupported ->
             case Runic.Workflow.LocalBoundary.check(
@@ -4836,6 +4847,9 @@ defmodule Runic.Workflow do
                    reason: :unsupported_local_coordinator
                  }}
             end
+
+          _ ->
+            invalid_coordinator_parents()
         end
       else
         :ok
@@ -4847,6 +4861,15 @@ defmodule Runic.Workflow do
   end
 
   defp validate_acceptance(_, _), do: :ok
+
+  defp invalid_coordinator_parents,
+    do:
+      {:error,
+       %Runic.Workflow.LocalFactError{
+         field: :coordination,
+         path: [:coordination, :parents],
+         reason: :invalid_coordinator_parents
+       }}
 
   defp rejection_events(events, runnable) do
     failed = %RunnableFailed{
@@ -5240,6 +5263,7 @@ defmodule Runic.Workflow do
   def prepare_meta_context(workflow, node), do: Private.prepare_meta_context(workflow, node)
 
   @doc "Returns meta values and the source Facts that supply those values."
+  @spec prepare_meta_context_with_parents(t(), struct(), Fact.t() | nil) :: {map(), [Fact.t()]}
   def prepare_meta_context_with_parents(workflow, node, fact \\ nil),
     do: Private.prepare_meta_context_with_parents(workflow, node, fact)
 

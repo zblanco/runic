@@ -6,7 +6,8 @@ defmodule Runic.Workflow.Events.ConditionSatisfied do
   @type t :: %__MODULE__{
           fact_hash: term(),
           condition_hash: term(),
-          weight: non_neg_integer()
+          weight: non_neg_integer(),
+          meta_parents: [Runic.Workflow.Fact.t()]
         }
 
   defstruct [:fact_hash, :condition_hash, :weight, meta_parents: []]

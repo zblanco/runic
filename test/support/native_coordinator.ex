@@ -15,6 +15,9 @@ end
 
 defimpl Runic.Workflow.CoordinatorParents, for: Runic.TestSupport.NativeCoordinator do
   def parents(%{mode: :unsupported}, _, _), do: :unsupported
+  def parents(%{mode: :invalid_return}, _, _), do: :bad_contract_return
+  def parents(%{mode: :invalid_list}, _, _), do: {:ok, :bad_contract_list}
+  def parents(%{mode: :invalid_parent}, _, _), do: {:ok, [42]}
 
   def parents(%{mode: :declared}, workflow, _),
     do: {:ok, List.wrap(Map.get(workflow.mapped, :native_coord_parent))}
