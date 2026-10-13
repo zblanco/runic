@@ -4,20 +4,30 @@ unless Code.ensure_loaded?(Runic.Examples.Batch.Adjustment) do
   Code.require_file("adjustment_component.ex", __DIR__)
 end
 
+require Runic
 alias Runic.Workflow
 alias Runic.Workflow.Batch
 
-batch = Runic.batch(Runic.Examples.Batch.Adjustment.new(:price), name: :prices)
 parent = Map.new(1..1000, &{&1, &1}) |> Map.put(:adjustment, 3)
+custom = Runic.Examples.Batch.Adjustment.new(:price)
+step = Runic.step(fn price -> price + context(:batch).parent.adjustment end, name: :price_step)
 
-workflow =
-  Workflow.new()
-  |> Workflow.add(batch)
-  |> Workflow.plan_eagerly(Batch.input([10, 20, 30], parent))
-  |> Workflow.react()
+prepare = fn member ->
+  batch = Runic.batch(member, name: :prices)
 
-{_, runnables} = Workflow.prepare_for_dispatch(workflow)
-items = Workflow.facts(workflow) |> Enum.filter(&Map.has_key?(&1.meta, :runic_batch))
+  workflow =
+    Workflow.new()
+    |> Workflow.add(batch)
+    |> Workflow.plan_eagerly(Batch.input([10, 20, 30], parent))
+    |> Workflow.react()
+
+  {_, runnables} = Workflow.prepare_for_dispatch(workflow)
+  items = Workflow.facts(workflow) |> Enum.filter(&Map.has_key?(&1.meta, :runic_batch))
+  {runnables, items}
+end
+
+{runnables, items} = prepare.(custom)
+{step_runnables, _} = prepare.(step)
 owner = self()
 
 # Keep the received context live while measuring its destination process.
@@ -49,6 +59,17 @@ end
 
 baseline = process_bytes.(%{})
 workers = Enum.map(runnables, &process_bytes.(&1.context))
+step_workers = Enum.map(step_runnables, &process_bytes.(&1.context))
+parent_words = :erts_debug.flat_size(parent)
+
+parent_delta = fn runnable ->
+  context = runnable.context
+  absent = %{context | batch: Map.put(context.batch, :parent, nil)}
+  :erts_debug.flat_size(context) - :erts_debug.flat_size(absent)
+end
+
+copies = Enum.map(runnables ++ step_runnables, &div(parent_delta.(&1), parent_words))
+if Enum.any?(copies, &(&1 != 1)), do: raise("prepared context has more than one parent copy")
 
 IO.inspect(
   %{
@@ -56,7 +77,10 @@ IO.inspect(
     item_facts_etf_bytes: :erlang.external_size(items),
     destination_baseline_bytes: elem(baseline, 0),
     destination_worker_bytes: Enum.map(workers, &elem(&1, 0)),
-    destination_context_flat_words: Enum.map(workers, &elem(&1, 1))
+    destination_context_flat_words: Enum.map(workers, &elem(&1, 1)),
+    step_destination_worker_bytes: Enum.map(step_workers, &elem(&1, 0)),
+    step_context_flat_words: Enum.map(step_workers, &elem(&1, 1)),
+    prepared_parent_copies: copies
   },
   label: "Stored item data and worker context transfer"
 )

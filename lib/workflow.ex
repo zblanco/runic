@@ -2003,6 +2003,7 @@ defmodule Runic.Workflow do
     {build_events, runtime_events} =
       Enum.split_with(events, fn event ->
         is_struct(event, ComponentAdded) or
+          is_struct(event, ComponentRemoved) or
           is_struct(event, ReactionOccurred) or
           is_struct(event, RunnableDispatched) or
           is_struct(event, RunnableCompleted) or
@@ -2477,7 +2478,12 @@ defmodule Runic.Workflow do
     if is_nil(component) do
       workflow
     else
-      do_remove_component(workflow, component, component_name)
+      Runic.Workflow.Batch.assert_removable!(workflow, component)
+
+      case component do
+        %Runic.Workflow.Batch{} -> Runic.Workflow.Batch.remove(workflow, component)
+        _ -> do_remove_component(workflow, component, component_name)
+      end
     end
   end
 
@@ -4876,7 +4882,7 @@ defmodule Runic.Workflow do
          failed_fact
        )
        when is_struct(failed_fact, Fact) or is_struct(failed_fact, FactRef) do
-    case Runic.Workflow.Batch.item_scope(workflow, failed_fact) do
+    case Runic.Workflow.Batch.item_scope(workflow, failed_node, failed_fact) do
       nil ->
         failed_root_hash = local_root_ancestor_hash(workflow, failed_fact)
 

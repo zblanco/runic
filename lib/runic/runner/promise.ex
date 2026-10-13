@@ -43,6 +43,10 @@ defmodule Runic.Runner.Promise do
   Scheduler completion and telemetry retain the original dispatch descriptor;
   the Worker keeps the unresolved frontier separately for progress and loss.
 
+  A Condition also ends the unit because its result is readiness rather than
+  a Fact. The Worker prepares its Rule reaction as a later unit. This deliberate
+  split adds a dispatch and Task spawn; frontier authorization remains unchanged.
+
   Each report copies one result and its prepared frontier to the Worker and
   can trigger the configured checkpoint strategy. Chain batching still saves
   Task spawns, but it no longer saves all per-member messages or checkpoints.

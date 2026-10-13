@@ -124,22 +124,28 @@ defmodule Runic.Workflow.Batch do
   end
 
   @doc false
-  def context(%{mapped: mapped}, _fact) when not is_map_key(mapped, :batch_sources), do: nil
+  def context(workflow, node, fact) do
+    case lookup_item(workflow, node, fact) do
+      {source, _fan_out, _item, coordinates} ->
+        Map.put(coordinates, :parent, parent(workflow.graph.vertices[source].value))
 
-  def context(workflow, fact) do
-    case FanOut.origin(workflow, fact) do
-      {source, fan_out, item} ->
-        if Map.get(workflow.graph.vertices[fan_out], :batch) do
-          source_fact = workflow.graph.vertices[source]
-          item_fact = workflow.graph.vertices[item]
-          coordinates = item_fact.meta.runic_batch
-          Map.put(coordinates, :parent, parent(source_fact.value))
-        end
+      nil ->
+        nil
+    end
+  end
+
+  defp lookup_item(workflow, node, %{ancestry: {producer, source}, hash: item, meta: meta}) do
+    case {Map.get(Map.get(workflow.mapped, :batch_members, %{}), node.hash),
+          Map.get(meta, :runic_batch)} do
+      {%{fan_out: ^producer}, %{source_fact_id: ^source, item_id: ^item} = coordinates} ->
+        {source, producer, item, coordinates}
 
       _ ->
         nil
     end
   end
+
+  defp lookup_item(_workflow, _node, _fact), do: nil
 
   @doc "Lists locally accepted batch invocation identities."
   def invocations(workflow, batch) do
@@ -240,9 +246,9 @@ defmodule Runic.Workflow.Batch do
   end
 
   @doc false
-  def item_scope(workflow, fact) do
-    case FanOut.origin(workflow, fact) do
-      {_source, fan_out, item} -> if Map.get(workflow.graph.vertices[fan_out], :batch), do: item
+  def item_scope(workflow, node, fact) do
+    case lookup_item(workflow, node, fact) do
+      {_source, _fan_out, item, _coordinates} -> item
       _ -> nil
     end
   end
@@ -264,18 +270,134 @@ defmodule Runic.Workflow.Batch do
         Map.get(other.mapped, :batch_definitions, %{})
       )
 
-    if map_size(definitions) == 0,
-      do: workflow,
-      else: %{
-        workflow
-        | mapped:
-            workflow.mapped
-            |> Map.put(:batch_definitions, definitions)
-            |> Map.put(:batch_sources, true)
-      }
+    put_definitions(workflow, definitions)
   end
 
   def merge_definitions(workflow, _other), do: workflow
+
+  defp put_definitions(workflow, definitions) when map_size(definitions) == 0 do
+    %{
+      workflow
+      | mapped: Map.drop(workflow.mapped, [:batch_definitions, :batch_members, :batch_sources])
+    }
+  end
+
+  defp put_definitions(workflow, definitions) do
+    members =
+      Enum.reduce(definitions, %{}, fn {_hash, batch}, index ->
+        entry = %{owner: batch.hash, fan_out: batch.fan_out.hash}
+        index = Map.put(index, batch.component.hash, entry)
+
+        case batch.component do
+          %__MODULE__{} = nested -> Map.put(index, nested.fan_out.hash, entry)
+          _ -> index
+        end
+      end)
+
+    %{
+      workflow
+      | mapped:
+          workflow.mapped
+          |> Map.put(:batch_definitions, definitions)
+          |> Map.put(:batch_members, members)
+          |> Map.put(:batch_sources, true)
+    }
+  end
+
+  @doc false
+  def present?(workflow), do: map_size(Map.get(workflow.mapped, :batch_definitions, %{})) > 0
+
+  @doc false
+  def assert_removable!(workflow, components) when is_list(components),
+    do: Enum.each(components, &assert_removable!(workflow, &1))
+
+  def assert_removable!(workflow, component) do
+    definitions = Map.get(workflow.mapped, :batch_definitions, %{})
+
+    owner =
+      Enum.find_value(definitions, fn {_hash, batch} ->
+        if batch.component.hash == component.hash or
+             (batch.hash != component.hash and
+                component.hash in [batch.fan_out.hash, batch.fan_in.hash]),
+           do: batch
+      end)
+
+    if owner do
+      root = root_owner(definitions, owner)
+
+      raise ArgumentError,
+            "remove owning Batch #{inspect(root.name)} instead of owned member #{inspect(component.name)}"
+    end
+
+    :ok
+  end
+
+  defp root_owner(definitions, batch) do
+    case Enum.find_value(definitions, fn {_hash, parent} ->
+           if parent.component.hash == batch.hash, do: parent
+         end) do
+      nil -> batch
+      owner -> root_owner(definitions, owner)
+    end
+  end
+
+  @doc false
+  def remove(workflow, batch) do
+    hashes = owned_hashes(batch) |> MapSet.new()
+    parents = Multigraph.in_edges(workflow.graph, batch.fan_out, by: :flow) |> Enum.map(& &1.v1)
+    children = Multigraph.out_edges(workflow.graph, batch.fan_in, by: :flow) |> Enum.map(& &1.v2)
+
+    graph =
+      Enum.reduce(parents, workflow.graph, fn parent, graph ->
+        Enum.reduce(children, graph, fn child, graph ->
+          Multigraph.add_edge(graph, parent, child, label: :flow)
+        end)
+      end)
+      |> Multigraph.delete_vertices(Enum.map(hashes, &workflow.graph.vertices[&1]))
+
+    definitions =
+      Map.get(workflow.mapped, :batch_definitions, %{})
+      |> Map.reject(fn {hash, _} -> MapSet.member?(hashes, hash) end)
+
+    mapped =
+      Map.reject(workflow.mapped, fn
+        {{:fan_out_for_batch, _}, fan_out} -> MapSet.member?(hashes, fan_out)
+        {key, _} when is_tuple(key) -> Enum.any?(Tuple.to_list(key), &MapSet.member?(hashes, &1))
+        _ -> false
+      end)
+
+    mapped = Map.update(mapped, :mapped_paths, MapSet.new(), &MapSet.difference(&1, hashes))
+
+    components =
+      Map.reject(workflow.components, fn {_name, value} ->
+        hash = if is_map(value) and Map.has_key?(value, :hash), do: value.hash, else: value
+        MapSet.member?(hashes, hash)
+      end)
+
+    event = %Workflow.ComponentRemoved{name: batch.name, hash: batch.hash}
+
+    %{
+      workflow
+      | graph: graph,
+        components: components,
+        mapped: mapped,
+        before_hooks: Map.drop(workflow.before_hooks, MapSet.to_list(hashes)),
+        after_hooks: Map.drop(workflow.after_hooks, MapSet.to_list(hashes)),
+        build_log: [event | workflow.build_log]
+    }
+    |> put_definitions(definitions)
+    |> validate!()
+  end
+
+  defp owned_hashes(batch) do
+    member =
+      case batch.component do
+        %__MODULE__{} = nested -> owned_hashes(nested)
+        node -> [node.hash]
+      end
+
+    [batch.hash, batch.fan_out.hash, batch.fan_in.hash | member]
+  end
 
   @doc false
   def validate!(workflow) do
@@ -306,7 +428,7 @@ defmodule Runic.Workflow.Batch do
       end
     end)
 
-    workflow
+    put_definitions(workflow, definitions)
   end
 
   @doc false
@@ -317,13 +439,7 @@ defmodule Runic.Workflow.Batch do
 
     definitions = Map.get(workflow.mapped, :batch_definitions, %{}) |> Map.put(batch.hash, batch)
 
-    workflow = %{
-      workflow
-      | mapped:
-          workflow.mapped
-          |> Map.put(:batch_sources, true)
-          |> Map.put(:batch_definitions, definitions)
-    }
+    workflow = put_definitions(workflow, definitions)
 
     workflow =
       workflow
@@ -337,7 +453,11 @@ defmodule Runic.Workflow.Batch do
       )
       |> Workflow.draw_connection(batch, batch.fan_in, :component_of, properties: %{kind: :leaf})
 
-    workflow = Component.connect(batch.component, batch.fan_out, workflow)
+    workflow =
+      Component.connect(batch.component, batch.fan_out, workflow)
+      |> Workflow.draw_connection(batch, batch.component, :component_of,
+        properties: %{kind: :member}
+      )
 
     leaf =
       case batch.component do
@@ -368,16 +488,20 @@ defmodule Runic.Workflow.Batch do
           do: collector
 
     Enum.reduce(collectors, workflow, fn collector, wf ->
-      case FanOut.origin(wf, fact) do
-        {source, fan_out, item} when fan_out == collector.batch ->
-          metadata = wf.graph.vertices[item].meta.runic_batch
-
+      case lookup_item(wf, node, fact) do
+        {source, fan_out, item, metadata} when fan_out == collector.batch ->
           outcome = %Outcome{
             id: item,
             batch_id: metadata.id,
             index: metadata.index,
             status: runnable.status,
-            error: runnable.error
+            error: runnable.error,
+            activation_id: Runnable.activation_id(runnable),
+            attempt_id:
+              Identity.derive(:attempt, [
+                Runnable.activation_id(runnable),
+                runnable.attempt_number || 0
+              ])
           }
 
           event = %Terminal{source: source, step: boundary.hash, item: item, outcome: outcome}

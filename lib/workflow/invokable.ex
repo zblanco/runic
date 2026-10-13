@@ -1006,7 +1006,10 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.FanOut do
 
     Runnable.complete(runnable, emitted_facts, events)
   rescue
-    exception -> Runnable.fail(runnable, exception)
+    exception ->
+      if fan_out.batch,
+        do: Runnable.fail(runnable, exception),
+        else: reraise(exception, __STACKTRACE__)
   end
 
   defp maybe_prepare_map_reduce(workflow, true, fan_out, fan_out_fact, source_fact) do

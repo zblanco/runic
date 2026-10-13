@@ -878,3 +878,10 @@ This guide covered building schedulers for in-memory, single-node execution. Fro
 
 - **[Durable Execution and Persistence](durable-execution.html)** — persisting workflow state, crash recovery, event sourcing, and checkpointing
 - **[Execution Strategies](execution-strategies.html)** — pluggable executors (Task, inline, GenStage), schedulers (ChainBatching, FlowBatch), parallel promise execution via Flow, and per-component execution overrides
+
+A Condition is also a sequential Promise boundary. It produces readiness rather
+than an output Fact. The Task ends that unit, then the Worker prepares the Rule
+reaction and its tail as another unit. This adds a dispatch and Task spawn for
+such a chain. It preserves the verified frontier authorization rule: a reported
+next member must consume the accepted result Fact. No broader coordinator
+continuation or remote progress contract is added by this boundary.

@@ -717,12 +717,10 @@ defmodule Runic.Runner do
     case store_mod.stream(workflow_id, store_state, after_cursor: cursor) do
       {:ok, event_stream} ->
         events = Enum.to_list(event_stream)
-        {workflow, resolver} = resume_from_events(events, rehydration, store, base_workflow)
-        {:ok, workflow, resolver}
+        resume_from_events(events, rehydration, store, base_workflow)
 
       {:error, :not_found} ->
-        {workflow, resolver} = resume_from_events([], rehydration, store, base_workflow)
-        {:ok, workflow, resolver}
+        resume_from_events([], rehydration, store, base_workflow)
 
       {:error, _} = error ->
         error
@@ -733,8 +731,7 @@ defmodule Runic.Runner do
     case store_mod.stream(workflow_id, store_state) do
       {:ok, event_stream} ->
         events = Enum.to_list(event_stream)
-        {workflow, resolver} = resume_from_events(events, rehydration, store)
-        {:ok, workflow, resolver}
+        resume_from_events(events, rehydration, store)
 
       {:error, _} = error ->
         error
@@ -743,7 +740,30 @@ defmodule Runic.Runner do
 
   defp resume_from_events(events, rehydration, store, base_workflow \\ nil)
 
-  defp resume_from_events(events, :full, store, base_workflow) do
+  defp resume_from_events(events, rehydration, store, base_workflow) do
+    structure =
+      if rehydration in [:lazy, :hybrid] do
+        if base_workflow,
+          do: base_workflow,
+          else:
+            Workflow.from_log(
+              Enum.filter(
+                events,
+                &(is_struct(&1, Workflow.ComponentAdded) or
+                    is_struct(&1, Workflow.ComponentRemoved))
+              )
+            )
+      end
+
+    if structure && Runic.Workflow.Batch.present?(structure) do
+      {:error, {:unsupported_batch_rehydration, rehydration}}
+    else
+      {workflow, resolver} = do_resume_from_events(events, rehydration, store, base_workflow)
+      {:ok, workflow, resolver}
+    end
+  end
+
+  defp do_resume_from_events(events, :full, store, base_workflow) do
     # Check if any FactProduced events have been stripped of values
     has_stripped =
       Enum.any?(events, fn
@@ -771,7 +791,7 @@ defmodule Runic.Runner do
     end
   end
 
-  defp resume_from_events(events, :hybrid, store, base_workflow) do
+  defp do_resume_from_events(events, :hybrid, store, base_workflow) do
     workflow = Workflow.from_events(events, base_workflow, fact_mode: :ref)
     %{hot: hot} = Workflow.Rehydration.classify(workflow)
     resolver = Workflow.FactResolver.new(store)
@@ -779,7 +799,7 @@ defmodule Runic.Runner do
     {workflow, resolver}
   end
 
-  defp resume_from_events(events, :lazy, store, base_workflow) do
+  defp do_resume_from_events(events, :lazy, store, base_workflow) do
     workflow = Workflow.from_events(events, base_workflow, fact_mode: :ref)
     {workflow, Workflow.FactResolver.new(store)}
   end
@@ -788,7 +808,11 @@ defmodule Runic.Runner do
     case store_mod.load(workflow_id, store_state) do
       {:ok, log} ->
         workflow = Runic.Workflow.from_events(log)
-        start_workflow(runner, workflow_id, workflow, Keyword.put(opts, :resumed, true))
+        mode = Keyword.get(opts, :rehydration, :full)
+
+        if mode in [:lazy, :hybrid] and Runic.Workflow.Batch.present?(workflow),
+          do: {:error, {:unsupported_batch_rehydration, mode}},
+          else: start_workflow(runner, workflow_id, workflow, Keyword.put(opts, :resumed, true))
 
       {:error, _} = error ->
         error

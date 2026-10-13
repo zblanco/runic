@@ -46,6 +46,19 @@ defmodule Runic.Workflow.Invocation do
     arguments = prepare_arguments(contract, value)
     effective_context = merge_context(causal_context.meta_context, causal_context.run_context)
 
+    effective_context =
+      if causal_context.batch do
+        Enum.reduce(contract.binding_refs, effective_context, fn
+          %{kind: :context, target: :batch, context_key: key}, context ->
+            Map.put(context, key, causal_context.batch)
+
+          _, context ->
+            context
+        end)
+      else
+        effective_context
+      end
+
     %__MODULE__{
       value: value,
       arguments: arguments,

@@ -33,7 +33,8 @@ Fact ancestry inspection, or consumer event construction.
 
 The Batch parent measurement distinguishes stored item data from copied worker
 context. A source parent is not copied into stored item Facts. It still enters
-each prepared worker context and the completed Result. This replaces the
+each prepared worker context once and the completed Result. Step batch bindings
+are materialized during execution; runtime and meta context do not add a view. This replaces the
 first-item storage convention; it does not promise lower worker copy cost.
 
 Measured with Elixir 1.20.4 / OTP 28, three items, and a 1,001-entry parent map:
@@ -43,10 +44,18 @@ Measured with Elixir 1.20.4 / OTP 28, three items, and a 1,001-entry parent map:
 | Parent ETF bytes | 8,490 |
 | Three stored item Facts, ETF bytes | 5,902 |
 | Empty destination process baseline, bytes | 2,696 |
-| Destination process with each prepared context, bytes | 88,496 |
-| Flat words in each prepared context | 8,015 |
+| Destination process with each custom or Step context, bytes | 34,312 |
+| Flat words in each custom or Step prepared context | 4,223 |
+| Parent copies in each prepared context | 1 |
 
 Command: `MIX_ENV=test mix run examples/batch/measure.exs`. The source Fact and
 completed Result also store the parent. The item number is separate from those
 stores. Destination process memory includes heap allocation overhead. These
 numbers describe this local fixture; they are not a scheduler benchmark.
+
+The earlier fixture had 8,015 flat words and 88,496 receiving-process bytes for a
+custom component because it copied the parent into both batch and runtime views.
+That duplicate view was removed. The Step fixture now uses `context(:batch)` and
+has the same prepared size as the custom component. The measurement script
+checks that removing the parent changes flat size by exactly one parent value.
+User runtime keys remain in their own view.

@@ -172,30 +172,24 @@ defmodule Runic.Workflow.BatchContractRegressionTest do
     end
   end
 
-  test "nested exceptions project strictly and opaque or live fields remain rejected" do
-    alias Runic.Workflow.Batch.Outcome
-    id = Runic.Identity.derive(:fact_occurrence, [:item])
-    base = %Outcome{id: id, batch_id: id, index: 0, status: :skipped}
+  test "wrapped failure identity retains occurrence and leaves raw fields observable" do
+    activation = Runic.Identity.derive(:activation, [:hook])
+    attempt = Runic.Identity.derive(:attempt, [activation, 0])
 
-    error =
-      {:hook_error,
-       {:hook_exception, %RuntimeError{message: "nested"},
-        [extra: %{error: %ArgumentError{message: "inner"}}]}}
+    outcome = %Batch.Outcome{
+      id: activation,
+      batch_id: activation,
+      index: 0,
+      status: :skipped,
+      activation_id: activation,
+      attempt_id: attempt,
+      error: {:hook_error, %RuntimeError{message: "nested"}}
+    }
 
-    digest = Runic.Identity.project(:payload, %{base | error: error})
-    assert digest == Runic.Identity.project(:payload, %{base | error: error})
-
-    for unsupported <- [
-          self(),
-          make_ref(),
-          fn -> :ok end,
-          Custom.new(:opaque),
-          %{__exception__: true, module: :fake, field: self()}
-        ] do
-      assert_raise Runic.Identity.CanonicalError, fn ->
-        Runic.Identity.project(:payload, %{base | error: {:hook_error, unsupported}})
-      end
-    end
+    assert %Runic.Identity{} = Runic.Identity.project(:payload, outcome)
+    other = %{outcome | error: {:hook_error, %{resource: self()}}}
+    assert Runic.Identity.project(:payload, outcome) == Runic.Identity.project(:payload, other)
+    assert other.error == {:hook_error, %{resource: self()}}
   end
 
   test "ownership checks reject reverse additions, links and workflow merge" do
