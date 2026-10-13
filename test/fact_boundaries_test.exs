@@ -294,6 +294,7 @@ defmodule Runic.FactBoundariesTest do
   end
 
   test "Rule condition validation uses the Rule name but runtime requires global context" do
+    # Known limitation; update with the owner-name fix in .docs/rule-context-owner-follow-up.md.
     rule =
       Runic.rule name: :gated do
         given(val: v)
@@ -320,6 +321,7 @@ defmodule Runic.FactBoundariesTest do
   end
 
   test "Rule reactions use a generated Step name and accept global resources" do
+    # Known limitation; update with the owner-name fix in .docs/rule-context-owner-follow-up.md.
     rule =
       Runic.rule name: :tagged do
         given(val: v)

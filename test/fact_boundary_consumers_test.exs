@@ -9,6 +9,9 @@ defmodule Runic.FactBoundaryConsumersTest do
   alias Runic.Workflow.Execution
 
   test "a Store data gate rejects local facts before the backend write" do
+    Code.ensure_loaded!(FactBoundaryStore)
+    refute function_exported?(FactBoundaryStore, :save_fact, 3)
+    refute function_exported?(FactBoundaryStore, :save_payload, 3)
     backend = start_supervised!(FailingStore)
     runner = :"fact_store_#{System.unique_integer([:positive])}"
 
@@ -43,57 +46,73 @@ defmodule Runic.FactBoundaryConsumersTest do
     assert :ok = Runner.cancel(runner, :local)
   end
 
-  test "a consumer validates fresh keys and live resources before Runner resume" do
-    runner = :"fact_resume_#{System.unique_integer([:positive])}"
-    start_supervised!({Runner, name: runner})
+  for context_source <- [:global, :component_override] do
+    test "a consumer validates #{context_source} context and resources before Runner resume" do
+      runner = :"fact_resume_#{System.unique_integer([:positive])}"
+      start_supervised!({Runner, name: runner})
 
-    lookup =
-      Runic.step(fn key -> Agent.get(context(:cache), &Map.fetch!(&1, key)) end, name: :lookup)
+      lookup =
+        Runic.step(fn key -> Agent.get(context(:cache), &Map.fetch!(&1, key)) end, name: :lookup)
 
-    workflow = Runic.workflow(steps: [lookup])
+      workflow = Runic.workflow(steps: [lookup])
 
-    assert {:ok, _worker} =
-             Runner.start_workflow(runner, :lookup, workflow,
-               owner: self(),
-               dispatch_mode: :manual
-             )
+      assert {:ok, worker} =
+               Runner.start_workflow(runner, :lookup, workflow,
+                 owner: self(),
+                 dispatch_mode: :manual
+               )
 
-    assert :ok = Runner.run(runner, :lookup, "key")
-    assert :ok = Runner.stop(runner, :lookup)
+      assert :ok = Runner.run(runner, :lookup, "key")
+      worker_ref = Process.monitor(worker)
+      assert :ok = Runner.stop(runner, :lookup)
+      assert_receive {:DOWN, ^worker_ref, :process, ^worker, _}, 1_000
 
-    {store, state} = Runner.get_store(runner)
-    assert {:ok, events} = store.stream(:lookup, state)
-    restored = Workflow.from_events(Enum.to_list(events))
-    assert restored.run_context == %{}
-    observer = self()
+      {store, state} = Runner.get_store(runner)
+      assert {:ok, events} = store.stream(:lookup, state)
+      restored = Workflow.from_events(Enum.to_list(events))
+      assert restored.run_context == %{}
+      observer = self()
 
-    resume = fn fresh ->
-      with :ok <- Workflow.validate_run_context(restored, fresh),
-           cache <- Map.get(Map.get(fresh, :lookup, %{}), :cache),
-           true <- is_pid(cache) and Process.alive?(cache) do
-        Runner.resume(runner, :lookup,
-          owner: observer,
-          run_context: fresh,
-          hooks: [on_idle: fn _ -> send(observer, :resumed_idle) end]
-        )
-      else
-        false -> {:error, :cache_unavailable}
-        error -> error
+      resume = fn fresh ->
+        with :ok <- Workflow.validate_run_context(restored, fresh),
+             resolved <-
+               restored |> Workflow.put_run_context(fresh) |> Workflow.get_run_context(:lookup),
+             cache <- Map.get(resolved, :cache),
+             true <- is_pid(cache) and Process.alive?(cache) do
+          Runner.resume(runner, :lookup,
+            owner: observer,
+            run_context: fresh,
+            hooks: [on_idle: fn _ -> send(observer, :resumed_idle) end]
+          )
+        else
+          false -> {:error, :cache_unavailable}
+          error -> error
+        end
       end
+
+      assert {:error, %{lookup: [:cache]}} = resume.(%{})
+      assert {:error, :cache_unavailable} = resume.(%{lookup: %{cache: nil}})
+      dead = spawn(fn -> :ok end)
+      ref = Process.monitor(dead)
+      assert_receive {:DOWN, ^ref, :process, ^dead, _}
+      assert {:error, :cache_unavailable} = resume.(%{lookup: %{cache: dead}})
+      assert Runner.lookup(runner, :lookup) == nil
+
+      cache = start_supervised!({Agent, fn -> %{"key" => %{found: true}} end})
+
+      assert {:error, :cache_unavailable} =
+               resume.(%{_global: %{cache: cache}, lookup: %{cache: dead}})
+
+      fresh =
+        case unquote(context_source) do
+          :global -> %{_global: %{cache: cache}}
+          :component_override -> %{_global: %{cache: dead}, lookup: %{cache: cache}}
+        end
+
+      assert {:ok, _worker} = resume.(fresh)
+      assert_receive :resumed_idle, 1_000
+      assert {:ok, [%{found: true}]} = Runner.get_results(runner, :lookup)
     end
-
-    assert {:error, %{lookup: [:cache]}} = resume.(%{})
-    assert {:error, :cache_unavailable} = resume.(%{lookup: %{cache: nil}})
-    dead = spawn(fn -> :ok end)
-    ref = Process.monitor(dead)
-    assert_receive {:DOWN, ^ref, :process, ^dead, _}
-    assert {:error, :cache_unavailable} = resume.(%{lookup: %{cache: dead}})
-    assert Runner.lookup(runner, :lookup) == nil
-
-    cache = start_supervised!({Agent, fn -> %{"key" => %{found: true}} end})
-    assert {:ok, _worker} = resume.(%{lookup: %{cache: cache}})
-    assert_receive :resumed_idle, 1_000
-    assert {:ok, [%{found: true}]} = Runner.get_results(runner, :lookup)
   end
 
   test "a SingleOutput callback validates resources not declared as context references" do

@@ -169,13 +169,15 @@ resolves like an absent key: to `nil` or the default. Non-nil defaults are
 optional; `default: nil` counts as required. Validate that supplied resources
 and selected defaults are usable for the operation.
 
-Rules have an existing name mismatch between validation and runtime. A Rule
-condition can validate keys under the Rule name, but an anonymous condition
-reads context under `nil`. Its reaction Step uses a generated name. Put Rule
-condition and reaction resources in `:_global`, then check their keys and
-resource validity. A successful check of `%{rule_name: %{...}}` does not prove
-that the Rule will read those resources. This branch records that core defect
-for a separate change; it does not change Rule runtime behavior.
+Rules have a known core name mismatch between validation and runtime.
+Validation lists an anonymous Rule condition's keys under the Rule name.
+At runtime, the condition resolves context with a `nil` name. Its reaction
+Step uses a generated name. Runic does not yet resolve Rule condition or
+reaction context by the Rule name. Put those resources in `:_global`, then
+check their keys and resource validity. `:_global` makes each resource
+available to all components. A successful check of `%{rule_name: %{...}}`
+does not prove that the Rule will read those resources. See the
+[Rule context owner follow-up](../.docs/rule-context-owner-follow-up.md).
 
 `SingleOutput` callbacks must also validate resources that they use directly
 from `Context.runtime` without declared context references.
@@ -239,6 +241,11 @@ snapshots, accepted replay, and cancellation. Consumer tests check rejection
 before Store data writes and validate fresh keys and live resources before
 `Runner.resume/3`. The test Store checks `FactProduced` values and metadata;
 it is a narrow data profile, not a complete workflow portability adapter.
+It exports neither `save_fact/3` nor `save_payload/3`. A Store that exports
+these optional callbacks must validate raw fact values and encoded payload
+contents before those writes. The Worker writes values there before
+`append/3` and can strip values from the appended `FactProduced` events.
+Checking only the append batch is insufficient for that Store profile.
 
 Reconsider a native mode when a consumer needs live values through arbitrary
 native producers and demonstrates a material total adapter reduction. Require

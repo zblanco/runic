@@ -1,5 +1,12 @@
 defmodule Runic.TestSupport.FactBoundaryStore do
-  @moduledoc "A test Store profile for FactProduced data; not a full workflow portability gate."
+  @moduledoc """
+  A test Store profile for FactProduced data; not a full workflow portability gate.
+
+  It exports neither save_fact/3 nor save_payload/3. Stores that export these
+  callbacks must also check raw fact values and encoded payload contents before
+  writing them. The Worker calls them before append/3 and can remove values
+  from the appended FactProduced events.
+  """
   @behaviour Runic.Runner.Store
 
   alias Runic.Examples.FactBoundary

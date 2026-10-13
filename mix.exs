@@ -33,6 +33,7 @@ defmodule Runic.MixProject do
         "guides/custom-components.md",
         "guides/execution-observation.md",
         "guides/fact-boundaries.md",
+        ".docs/rule-context-owner-follow-up.md",
         "guides/scheduling.md",
         "guides/durable-execution.md",
         "guides/execution-strategies.md",
