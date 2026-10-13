@@ -149,6 +149,70 @@ defmodule Runic.Workflow.BatchTest do
     assert_raise ArgumentError, fn -> Workflow.add(workflow, Runic.batch(item, name: :second)) end
   end
 
+  for name <- [:shared, "shared"] do
+    @tag name: name
+    test "batch construction rejects a member name conflict with #{inspect(name)}", %{name: name} do
+      step = Runic.step(fn value -> value end, name: name)
+
+      for member <- [step, Custom.new(name, :data)] do
+        assert_raise ArgumentError,
+                     "batch name #{inspect(name)} conflicts with an owned member",
+                     fn -> Runic.batch(member, name: name) end
+      end
+    end
+  end
+
+  test "batch construction rejects names from the entire nested member tree" do
+    inner = Runic.batch(Custom.new(:item, :data), name: :inner)
+    middle = Runic.batch(inner, name: :middle)
+
+    for member <- [inner, middle],
+        name <- [:item, :inner, inner.fan_out.name, inner.fan_in.name] do
+      assert_raise ArgumentError,
+                   "batch name #{inspect(name)} conflicts with an owned member",
+                   fn -> Runic.batch(member, name: name) end
+    end
+
+    assert_raise ArgumentError, fn -> Runic.batch(middle, name: :middle) end
+  end
+
+  test "default batch names also reject a nested member name conflict" do
+    inner = Runic.batch(Custom.new("inner_batch", :data), name: "inner")
+
+    assert_raise ArgumentError,
+                 "batch name \"inner_batch\" conflicts with an owned member",
+                 fn -> Runic.batch(inner) end
+  end
+
+  test "distinct atom and string batch names retain public lookup and connections after replay" do
+    for {member_name, batch_name} <- [{:shared, "shared"}, {"shared", :shared}] do
+      inner = Runic.batch(Custom.new(member_name, :data), name: :inner)
+      batch = Runic.batch(inner, name: batch_name)
+      consumer = Custom.new(:output, :data)
+      template = Workflow.new() |> Workflow.add(batch)
+
+      for workflow <- [
+            template,
+            Workflow.from_log(Workflow.build_log(template)),
+            Workflow.from_events(Workflow.build_log(template))
+          ] do
+        assert %Batch{hash: hash} = Workflow.get_component(workflow, batch_name)
+        assert hash == batch.hash
+        assert Workflow.get_component(workflow, member_name).hash == inner.component.hash
+        connected = Workflow.add(workflow, consumer, to: batch_name)
+        {completed, _execution} = Workflow.execute(connected, [[1], [2]])
+
+        assert [%Result{outcomes: outcomes}] = Workflow.raw_productions(completed, :output)
+        assert Enum.map(outcomes, &hd(&1.value.outcomes).value) == [1, 2]
+
+        removed = Workflow.remove_component(connected, batch_name)
+        assert Workflow.get_component(removed, batch_name) == nil
+        assert Workflow.get_component(removed, member_name) == nil
+        assert Workflow.get_component(removed, :output).hash == consumer.hash
+      end
+    end
+  end
+
   test "build log and accepted event replay restore a custom batch and its parent" do
     batch = Runic.batch(Custom.new(:item, :add, 4), name: :batch)
 

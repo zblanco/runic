@@ -60,6 +60,9 @@ and binary sharing affect those numbers. Stored bytes do not prove worker
 copy cost.
 
 Batch members must have separate component definitions within one workflow.
+The Batch name must differ from all owned member names. This includes nested
+Batch names and their generated FanOut and FanIn names. Construction raises
+`ArgumentError` on a conflict. Atom and string names are separate registry keys.
 Runic checks ownership on addition and workflow merge, and before dispatch.
 A member cannot acquire additional incoming or outgoing structural links outside
 its Batch. Low-level graph edits are rejected at dispatch if they violate this

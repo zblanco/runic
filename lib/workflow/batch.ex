@@ -34,7 +34,12 @@ defmodule Runic.Workflow.Batch do
 
   defstruct [:hash, :name, :component, :fan_out, :fan_in]
 
-  @doc "Constructs a batch for one supported component."
+  @doc """
+  Constructs a batch for one supported component.
+
+  The batch name must differ from all owned member names, including nested
+  batch, FanOut, and FanIn names. A name conflict raises `ArgumentError`.
+  """
   def new(component, opts \\ []) do
     unless match?(%__MODULE__{}, component) or SingleOutput.supported?(component) do
       raise ArgumentError, "batch members must use SingleOutput or be nested batches"
@@ -48,6 +53,9 @@ defmodule Runic.Workflow.Batch do
     unless is_atom(name) or is_binary(name),
       do: raise(ArgumentError, "batch name must be an atom or string")
 
+    if name in owned_names(component),
+      do: raise(ArgumentError, "batch name #{inspect(name)} conflicts with an owned member")
+
     hash = Identity.derive(:component_definition, [:batch, name, component.hash])
     fan_out_hash = Identity.derive(:component_definition, [hash, :fan_out])
     fan_in_hash = Identity.derive(:component_definition, [hash, :fan_in])
@@ -60,6 +68,12 @@ defmodule Runic.Workflow.Batch do
       fan_in: %FanIn{hash: fan_in_hash, name: "#{name}.fan_in", batch: fan_out_hash}
     }
   end
+
+  defp owned_names(%__MODULE__{} = batch) do
+    [batch.name, batch.fan_out.name, batch.fan_in.name | owned_names(batch.component)]
+  end
+
+  defp owned_names(component), do: [component.name]
 
   @doc false
   def definition_source(batch) do
