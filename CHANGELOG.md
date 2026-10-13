@@ -31,6 +31,13 @@ explicitly. A merge to `main` is not a published Hex release.
 
 ### Added
 
+- Explicit child Call output boundaries, occurrence identities, and scoped
+  suppression. Call-containing Joins select contributions within one input root;
+  unrelated native Joins retain their previous matching behavior.
+- Completed Call result acceptance checks transient preparation data before
+  owner completion events or hooks. Invalid data records a failed activation
+  while the Worker remains alive.
+
 - `Runic.Identity` digest, derivation, verification, and textual representation
   APIs, plus the `Runic.Identity.Projectable` protocol for explicit projections.
 - Explicit Fact occurrence IDs through `Fact.new(id: identity, value: value)`;
@@ -43,6 +50,13 @@ explicitly. A merge to `main` is not a published Hex release.
   `:upstream_failed`, so full and lean replay preserve those changes.
 
 ### Fixed
+
+- Missing and contract-only output references retain empty/nil result lookup.
+  Nested Workflows can mix compiled exports with contract-only ports. Ordinary
+  source exports, including Map, retain last-value defaults unless explicitly many.
+- Whole-component Call wiring uses the public producer. Old logs that recorded
+  dead source Workflow edges without an output producer need an authored
+  definition update; no omitted producer is inferred during replay.
 
 - Distinct Facts no longer silently alias due to the reported 32-bit hash
   collision, through either `Step.new` or `Runic.step` construction.

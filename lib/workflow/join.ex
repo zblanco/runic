@@ -28,6 +28,7 @@ defimpl Runic.Workflow.Coordinator, for: Runic.Workflow.Join do
       wf.graph
       |> Multigraph.in_edges(join)
       |> Enum.filter(&(&1.label == :joined))
+      |> Enum.filter(Workflow.join_input_filter(wf, join, fact))
 
     satisfied_by_parent =
       joined_edges

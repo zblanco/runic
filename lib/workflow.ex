@@ -1416,6 +1416,8 @@ defmodule Runic.Workflow do
     |> validate_exported_ports!(child)
   end
 
+  defp validate_exported_ports!(workflow, %__MODULE__{}), do: workflow
+
   defp validate_exported_ports!(workflow, component) do
     edges =
       Multigraph.out_edges(workflow.graph, component, by: :component_of)
@@ -3506,30 +3508,38 @@ defmodule Runic.Workflow do
   end
 
   defp exported_cardinality(workflow, reference, seen) do
-    component = resolve_component_ref!(workflow, reference)
-    id = Components.vertex_id_of(component)
+    case soft_component_ref(workflow, reference) do
+      %Runic.Workflow.Call{} ->
+        :many
 
-    if MapSet.member?(seen, id) do
-      :one
-    else
-      case Component.outputs(component) do
-        [{_, schema}] when is_list(schema) ->
-          case Keyword.fetch(schema, :cardinality) do
-            {:ok, cardinality} ->
-              cardinality
+      %__MODULE__{} = component ->
+        id = Components.vertex_id_of(component)
 
-            :error ->
-              case Keyword.fetch(schema, :from) do
-                {:ok, source} -> exported_cardinality(workflow, source, MapSet.put(seen, id))
-                :error -> :one
-              end
-          end
-
-        _ ->
+        if MapSet.member?(seen, id) do
           :one
-      end
+        else
+          case Component.outputs(component) do
+            [{_, schema}] when is_list(schema) ->
+              Keyword.get_lazy(schema, :cardinality, fn ->
+                case Keyword.fetch(schema, :from) do
+                  {:ok, source} -> exported_cardinality(workflow, source, MapSet.put(seen, id))
+                  :error -> :one
+                end
+              end)
+
+            _ ->
+              :one
+          end
+        end
+
+      _ ->
+        :one
     end
   end
+
+  defp soft_component_ref(workflow, %Runic.Identity{} = hash), do: get_by_hash(workflow, hash)
+  defp soft_component_ref(workflow, hash) when is_integer(hash), do: get_by_hash(workflow, hash)
+  defp soft_component_ref(workflow, reference), do: get_component(workflow, reference)
 
   defp extract_productions(workflow, component_name, return_facts) do
     case get_component(workflow, component_name) do
@@ -4904,11 +4914,41 @@ defmodule Runic.Workflow do
   """
   @spec apply_runnable(t(), Runnable.t()) :: t()
 
-  def apply_runnable(
-        %__MODULE__{} = workflow,
-        %Runnable{status: :completed, events: events} = runnable
-      )
-      when is_list(events) and events != [] do
+  def apply_runnable(%__MODULE__{} = workflow, %Runnable{} = runnable) do
+    do_apply_runnable(workflow, validate_runnable(runnable))
+  end
+
+  @doc false
+  def validate_runnable(runnable), do: Runic.Workflow.Call.validate_preparation(runnable)
+
+  @doc false
+  def validate_runnable_result(runnable, events) do
+    checked = validate_runnable(runnable)
+
+    if checked.status != runnable.status do
+      lifecycle = %RunnableFailed{
+        runnable_id: checked.id,
+        activation_id: Runnable.activation_id(checked),
+        attempt_id: checked.attempt_id,
+        node_hash: checked.node.hash,
+        order_key: Runnable.order_key(checked),
+        error: checked.error,
+        failed_at: System.monotonic_time(:millisecond),
+        attempts: (checked.attempt_number || 0) + 1,
+        failure_action: :halt
+      }
+
+      {checked, Enum.reject(events, &is_struct(&1, RunnableCompleted)) ++ [lifecycle]}
+    else
+      {checked, events}
+    end
+  end
+
+  defp do_apply_runnable(
+         %__MODULE__{} = workflow,
+         %Runnable{status: :completed, events: events} = runnable
+       )
+       when is_list(events) and events != [] do
     # 1. Fold core events
     wf = Enum.reduce(events, workflow, fn event, wf -> apply_event(wf, event) end)
 
@@ -4953,11 +4993,11 @@ defmodule Runic.Workflow do
 
   # Skipped runnable: fold events (marks activation as consumed),
   # then suppress downstream work for the same input.
-  def apply_runnable(
-        %__MODULE__{} = workflow,
-        %Runnable{status: :skipped, events: events, node: node, input_fact: fact}
-      )
-      when is_list(events) and events != [] do
+  defp do_apply_runnable(
+         %__MODULE__{} = workflow,
+         %Runnable{status: :skipped, events: events, node: node, input_fact: fact}
+       )
+       when is_list(events) and events != [] do
     wf = Enum.reduce(events, workflow, fn event, wf -> apply_event(wf, event) end)
 
     wf =
@@ -4970,11 +5010,11 @@ defmodule Runic.Workflow do
     suppress_downstream_for_input(wf, node, fact)
   end
 
-  def apply_runnable(%__MODULE__{} = workflow, %Runnable{status: :failed} = runnable) do
+  defp do_apply_runnable(%__MODULE__{} = workflow, %Runnable{status: :failed} = runnable) do
     handle_failed_runnable(workflow, runnable)
   end
 
-  def apply_runnable(%__MODULE__{} = workflow, %Runnable{status: :pending}) do
+  defp do_apply_runnable(%__MODULE__{} = workflow, %Runnable{status: :pending}) do
     workflow
   end
 
@@ -5085,25 +5125,28 @@ defmodule Runic.Workflow do
          failed_fact
        )
        when is_struct(failed_fact, Fact) or is_struct(failed_fact, FactRef) do
-    case child_request_boundary(workflow, failed_node) do
-      nil ->
-        failed_root_hash = local_root_ancestor_hash(workflow, failed_fact)
+    failed_root = local_root_ancestor_hash(workflow, failed_fact)
 
-        do_skip_downstream_subgraph(
-          workflow,
-          graph,
-          failed_node,
-          &same_local_root?(workflow, &1.v1, failed_root_hash)
-        )
+    predicate =
+      case child_request_boundary(workflow, failed_node) do
+        nil when is_struct(failed_node, Runic.Workflow.Call) ->
+          fn edge ->
+            same_local_root?(workflow, edge.v1, failed_root) and
+              not descends_from_call_request?(workflow, edge.v1, failed_node.hash)
+          end
 
-      request_hash ->
-        do_skip_downstream_subgraph(
-          workflow,
-          graph,
-          failed_node,
-          &descends_from?(workflow, &1.v1, request_hash)
-        )
-    end
+        nil ->
+          &same_local_root?(workflow, &1.v1, failed_root)
+
+        {request_hash, call_hash} ->
+          fn edge ->
+            descends_from?(workflow, edge.v1, request_hash) or
+              (same_local_root?(workflow, edge.v1, failed_root) and
+                 not descends_from_call_request?(workflow, edge.v1, call_hash))
+          end
+      end
+
+    do_skip_downstream_subgraph(workflow, graph, failed_node, predicate)
   end
 
   defp child_request_boundary(workflow, node) do
@@ -5114,7 +5157,10 @@ defmodule Runic.Workflow do
         v1: %Runic.Workflow.ChildInvocation.Occurrence{request_fact_hash: hash},
         properties: %{kind: :child_scope}
       } ->
-        hash
+        case Map.get(workflow.graph.vertices, hash) do
+          %{ancestry: {call_hash, _}} -> {hash, call_hash}
+          _ -> nil
+        end
 
       _ ->
         nil
@@ -5131,6 +5177,43 @@ defmodule Runic.Workflow do
   end
 
   defp descends_from?(_, _, _), do: false
+
+  defp descends_from_call_request?(_workflow, %{ancestry: {call_hash, _}}, call_hash), do: true
+
+  defp descends_from_call_request?(workflow, %{ancestry: {_, parent}}, call_hash) do
+    case Map.get(workflow.graph.vertices, parent) do
+      nil -> false
+      fact -> descends_from_call_request?(workflow, fact, call_hash)
+    end
+  end
+
+  defp descends_from_call_request?(_, _, _), do: false
+
+  # Only Call-containing joins acquire this input-root contract. Existing native
+  # joins without a Call ancestor retain their prior producer-only selection.
+  @doc false
+  def join_input_filter(workflow, join, fact) do
+    if call_flow_ancestor?(workflow.graph, [join], MapSet.new()) do
+      root = local_root_ancestor_hash(workflow, fact)
+      &same_local_root?(workflow, &1.v1, root)
+    else
+      fn _ -> true end
+    end
+  end
+
+  defp call_flow_ancestor?(_graph, [], _seen), do: false
+  defp call_flow_ancestor?(_graph, [%Runic.Workflow.Call{} | _], _seen), do: true
+
+  defp call_flow_ancestor?(graph, [node | rest], seen) do
+    id = Components.vertex_id_of(node)
+
+    if MapSet.member?(seen, id) do
+      call_flow_ancestor?(graph, rest, seen)
+    else
+      parents = Enum.map(Multigraph.in_edges(graph, node, by: :flow), & &1.v1)
+      call_flow_ancestor?(graph, parents ++ rest, MapSet.put(seen, id))
+    end
+  end
 
   defp do_skip_downstream_subgraph(workflow, graph, failed_node, suppress_edge?) do
     downstream_nodes = reachable_via_flow(graph, failed_node) -- [failed_node]

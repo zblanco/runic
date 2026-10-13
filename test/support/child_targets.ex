@@ -90,4 +90,24 @@ defmodule Runic.TestSupport.ChildTargets do
     end)
     |> elem(0)
   end
+
+  def long_failure do
+    names = [:b1, :b2, :b3, :b4, :b5, :b6, :b7, :b8, :b9, :b10, :b11, :b12]
+
+    workflow =
+      Runic.Workflow.new(name: :target, input_ports: [in: []], output_ports: [out: [from: :b12]])
+
+    Enum.reduce(names, {workflow, nil}, fn name, {wf, parent} ->
+      node =
+        Runic.TestSupport.OrdinaryComponent.new(
+          name,
+          if(name == :b12, do: :failure, else: :data),
+          :bad
+        )
+
+      opts = if parent, do: [to: parent], else: []
+      {Runic.Workflow.add(wf, node, opts), name}
+    end)
+    |> elem(0)
+  end
 end

@@ -61,7 +61,14 @@ defmodule Runic.Workflow.ChildInvocation.Occurrence do
         %{edge | v1: from, v2: Map.fetch!(scoped, Components.vertex_id_of(edge.v2))}
       end)
 
-    %{occurrence_hash: occurrence_hash, entry: entry, collector: collector, edges: edges}
+    %{
+      occurrence_hash: occurrence_hash,
+      target_hash: request.target.hash,
+      output_port: request.output,
+      entry: entry,
+      collector: collector,
+      edges: edges
+    }
   end
 
   def connect_prepared(occurrence, parent, workflow, %{occurrence_hash: hash} = prepared)

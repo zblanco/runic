@@ -732,6 +732,7 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Join do
       workflow.graph
       |> Multigraph.in_edges(join)
       |> Enum.filter(&(&1.label == :joined))
+      |> Enum.filter(Workflow.join_input_filter(workflow, join, fact))
 
     possible_priors_by_parent =
       joined_edges
@@ -762,6 +763,7 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Join do
       workflow.graph
       |> Multigraph.in_edges(join)
       |> Enum.filter(&(&1.label in [:runnable, :joined]))
+      |> Enum.filter(Workflow.join_input_filter(workflow, join, fact))
       |> Enum.reduce(workflow, fn
         %{v1: v1, label: :runnable}, %Workflow{} = wrk ->
           Workflow.mark_runnable_as_ran(wrk, join, v1)
@@ -792,6 +794,7 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Join do
       workflow.graph
       |> Multigraph.in_edges(join)
       |> Enum.filter(&(&1.label == :joined))
+      |> Enum.filter(Workflow.join_input_filter(workflow, join, fact))
 
     # Collect satisfied facts by parent
     satisfied_by_parent =

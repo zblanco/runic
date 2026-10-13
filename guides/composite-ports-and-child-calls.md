@@ -64,11 +64,14 @@ or internal execution node. `from:` does not select an internal public port of
 a component with several distinct producers. For that case, bind the desired
 public port to a forwarding component and export the forwarding component.
 Runic rejects an ambiguous whole-component re-export during construction.
-Mixed explicit and implicit output mappings are also rejected: when any output
-has a compiled producer, every exported port must declare its producer.
+Custom composites reject mixed explicit and implicit producer mappings. Nested
+Workflows can mix real `from:` exports and contract-only ports. Binding a
+contract-only nested port raises a no-compiled-producer construction error.
 
-A boundary with one exported producer inherits its source's cardinality when
-`:cardinality` is omitted. An explicit `:one` requests the existing last-value
+A boundary with one exported producer inherits cardinality from Call or a nested
+Call re-export when `:cardinality` is omitted. Ordinary sources, including Map,
+keep the existing last-value default. Missing and contract-only output references
+return `nil`, or `[]` with `all: true`, in result lookup. An explicit `:one` requests the existing last-value
 selection; `:many` retains all values. Fact and raw result forms select the same
 public producers.
 
@@ -123,17 +126,22 @@ Fact identities and child identities. Retrying one Call activation keeps its
 occurrence identity. Legacy content-based inputs need explicit distinct Facts
 if the caller wants repeated equal calls.
 
-A child failure uses the parent's existing retry/halt/skip policy. Suppression
-inside a child uses its activating request Fact as the local boundary. Sibling
-occurrences sharing a parent root keep their pending selected output under skip. A failed
-selected producer emits no value for its failed attempt. An independent branch
-can fail while selected output still succeeds under skip policy. Halt or cancel
-can stop pending selected-port delivery. Accepted output is not retracted. An all-input Join gets no synthetic missing
-value. It can complete if another occurrence supplies its required producer;
-otherwise it produces no result and keeps its partial native Join contributions.
-Such a graph can be quiescent while the Join remains incomplete. A caller that
-discards an incomplete group must make an explicit recovery decision, such as
-starting a fresh runtime from the reusable definition.
+A child failure uses the parent's existing retry/halt/skip policy. Failure inside
+an occurrence suppresses its own dependent work and independent same-root Join
+contributions. Pending output from sibling occurrences of the same Call remains
+available under skip. Call request failure before attachment also preserves
+already attached sibling occurrences. Upstream non-Call failures retain native
+same-root suppression and can stop all dependent occurrences of that root.
+Halt or cancel can stop pending delivery. Accepted output is not retracted.
+
+A Join with a Call in its flow ancestry pairs contributions from the same local
+input root. Old independent or surviving Call contributions cannot pair with a
+later execution input. Selection inside one root retains native producer-order
+semantics; it is not a whole-child transaction. Independent contributions are
+cleared on child failure when the native same-root rule requires it. A protected
+sibling contribution can remain incomplete, but can only pair within that root.
+Joins without a Call ancestor keep their existing behavior. Replay preserves
+these input boundaries without requiring Fact values to be loaded.
 A request-Step policy fallback can supply already interpreted output; an explicit
 ChildInvocation fallback requests a child. A new scope can reuse the graph after
 the caller makes the runtime's required recovery decision.
@@ -185,3 +193,29 @@ Native Facts and uncommitted full-value events can still retain large values.
 Removing input from construction does not compact the graph or its warm history.
 Durable execution lifecycle envelopes also retain their existing storage format;
 this change does not redesign their value-stripping policy.
+
+## Reuse and owner acceptance
+
+Keep the original, unexecuted definition, or its original build log, as the
+source for a fresh runtime. `build_log(executed_runtime)` includes dynamic child
+audit additions. Rebuilding that audit log as a clean definition reinstalls its
+old occurrences. Restore an existing runtime with its accepted event stream;
+use the original definition when starting fresh.
+
+Completed ChildInvocation Call results must retain matching transient prepared
+data from the native work function. The owner validates it before applying
+completion events or deferred hooks. Missing, stale, or mismatched data becomes
+`{:child_preparation_missing, activation_id}` in a failed local acceptance
+outcome. The Worker remains alive. Plain fallback values do not need a child
+graph. This failure does not prove that external computation or effects did not
+occur.
+
+Old logs that recorded an accepted dead whole-component edge to a source
+Workflow with no output producer now fail reconstruction with construction
+guidance. Recompile the original authored definition with explicit output ports;
+no automatic migration can infer the omitted producer.
+
+The Jido example proves an ordinary Action adapter boundary. A Jido Flow engine
+that uses unconditional `skip_downstream_subgraph/2` for failure must adopt the
+scoped application contract before it can claim Call isolation. No Jido source
+or Agent state contract is changed here.

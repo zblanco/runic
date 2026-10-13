@@ -96,6 +96,58 @@ defmodule Runic.Workflow.Call do
       Runic.Workflow.Runnable.fail(runnable, {:child_construction_failed, {kind, reason}})
   end
 
+  @doc false
+  def validate_preparation(
+        %Runic.Workflow.Runnable{
+          status: :completed,
+          node: %__MODULE__{},
+          result: %{value: %ChildInvocation{} = request}
+        } = runnable
+      ) do
+    activation_id = Runic.Workflow.Runnable.activation_id(runnable)
+    expected = Runic.Identity.derive(:node_occurrence, [activation_id, :child])
+
+    valid =
+      case Map.get(runnable, :execution_data) do
+        %{
+          occurrence_hash: ^expected,
+          target_hash: target_hash,
+          output_port: port,
+          entry: %CallValue{hash: entry_hash, mode: :input},
+          collector: %CallValue{hash: collector_hash, mode: :output},
+          edges: edges
+        }
+        when is_list(edges) ->
+          target_hash == request.target.hash and port == request.output and
+            entry_hash == CallValue.new(expected, :input).hash and
+            collector_hash ==
+              Runic.Identity.derive(:node_occurrence, [
+                expected,
+                CallValue.new(:collector, :output).hash
+              ]) and
+            edges != [] and
+            Enum.all?(edges, &match?(%Multigraph.Edge{v1: %{hash: _}, v2: %{hash: _}}, &1))
+
+        _ ->
+          false
+      end
+
+    if valid do
+      runnable
+    else
+      Map.merge(runnable, %{
+        status: :failed,
+        error: {:child_preparation_missing, activation_id},
+        result: nil,
+        events: nil,
+        hook_apply_fns: nil,
+        execution_data: nil
+      })
+    end
+  end
+
+  def validate_preparation(runnable), do: runnable
+
   defp prepare_child(%ChildInvocation{} = request, runnable) do
     Runic.Workflow.ChildInvocation.Occurrence.prepare(
       request,

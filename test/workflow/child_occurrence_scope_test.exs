@@ -99,7 +99,8 @@ defmodule Runic.Workflow.ChildOccurrenceScopeTest do
 
     assert execution.quiescent?
     assert Workflow.raw_productions(wf, :joined) == []
-    assert Multigraph.edges(wf.graph, by: :joined) != []
+    assert Multigraph.edges(wf.graph, by: :joined) == []
+    assert Multigraph.edges(wf.graph, by: :upstream_failed) != []
 
     restored =
       Workflow.from_events(Workflow.build_log(original) ++ Enum.reverse(wf.uncommitted_events))

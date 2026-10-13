@@ -20,6 +20,12 @@ defmodule Runic.Runner.Executor do
   completion identifiers; an executor may forward notifications from its own
   monitors rather than creating a monitor in the Worker.
 
+  A successful result must preserve the native Runnable returned by `work_fn`,
+  including transient `execution_data`. Call uses that data to install a prepared
+  child graph. It is not a durable dispatch envelope. Missing or mismatched Call
+  preparation data fails local acceptance before completion events or owner hooks
+  are applied; the Worker remains alive. Plain fallback values need no child graph.
+
   ## Built-in Executors
 
     - `Runic.Runner.Executor.Task` — default, owns supervised native tasks

@@ -189,3 +189,36 @@ construction faults. No process-global cache is used. Ordinary targets rebuild
 once per attempt; Workflow requests additionally perform one saved-graph check.
 Replay keeps the trusted compatible-source requirement and rebuilds each saved
 occurrence once. Native Fact/history retention remains a separate cost.
+
+## Focused re-review corrections
+
+Joins that have Call flow ancestry now select and consume joined contributions
+only from the incoming Fact's local input root. This applies in preparation,
+coordination, and direct invocation. Other native Joins are unchanged. The rule
+prevents both stale-independent/new-Call and stale-Call/new-independent pairing.
+Sibling Call contributions in one root remain eligible under native producer
+selection; incomplete protected contributions can remain but cannot contaminate
+later inputs. Replay uses ancestry coordinates, including FactRefs.
+
+Occurrence failures also use same-root suppression for independent contributions,
+while protecting other request Fact lineages from the same Call. A failed Call
+request preserves already attached sibling lineages. Upstream non-Call failure
+retains native root suppression. Halt still controls parent admission.
+
+Cardinality lookup is soft for missing/contract references. Inheritance is limited
+to Call and nested boundary re-exports. Map and ordinary source exports retain
+last-value defaults. Custom composites keep mixed-mapping rejection; nested
+Workflows can retain contract-only ports alongside real exports.
+
+The owner validates completed ChildInvocation results before completion events
+and deferred hooks. Missing or stale transient data fails the activation with
+child_preparation_missing; the Worker's outcome and lifecycle record are failed,
+not completed. Plain fallback values are unchanged. This is a local acceptance
+failure, not proof that external work did not happen.
+
+Fresh runtime reuse must start from the original unexecuted definition or its
+original build log. An executed audit build log includes old occurrence additions.
+Old dead-edge logs that lack a public producer require an authored definition
+update; this revision does not infer an automatic migration. The Jido fixture
+covers ordinary Actions only. A consumer with unconditional downstream skipping
+must adopt scoped application before claiming the same Call isolation.
