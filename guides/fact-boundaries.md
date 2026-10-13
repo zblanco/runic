@@ -57,7 +57,9 @@ node. The digest does not describe the changing contents of a resource.
 The consumer must retain the wrapper through each local child, including a
 child whose value has become an integer. Native containers preserve wrappers
 as values; they do not propagate a mode to new raw outputs. The Jido adapter
-uses its local metadata and detection of nested wrappers for this purpose.
+uses its local metadata and detection of wrappers in lists, tuples, and maps
+for this purpose. Its wrapper detection does not inspect arbitrary struct
+fields; the example rejection gate checks raw struct fields separately.
 A native scalar child can lose that metadata. Therefore, consumers must gate
 the whole local execution before persistence or remote dispatch. Checking
 only its last scalar output is insufficient.
@@ -91,9 +93,23 @@ must identify the field and nested path. For example:
 {:error, %{
   field: :input,
   path: [:input, :requests, 0, :reply_to],
-  reason: {:unsupported, :pid}
+  reason: {:unsupported, :pid},
+  retry: false
 }}
 ```
+
+This path is for `FactBoundary.check/2` called on raw input data. The Jido
+fact gate checks an envelope: its paths include `:value` or `:meta`, such as
+`[:output, :meta, :reply_to]`. Both example gates return the same field-error
+map with `field`, `path`, `reason`, and `retry: false`. Wrapper and local-marker
+errors use `{:unsupported, :local_identity}`. An unrecognized execution marker
+uses `{:unsupported, :unknown_identity_mode}`.
+
+The example raw walker and Jido wrapper scanner use `{:map_key, index}` for a
+map-key path segment, to distinguish it from a value under the literal `:key`
+key. The index follows that map's iteration order; it is diagnostic data, not
+an identity. Paths from Jido's existing raw validator retain its `:key` segment
+for compatibility. That legacy segment can also be a literal value key.
 
 `Runic.Examples.FactBoundary.check/2` shows a small data gate. It checks raw
 fields before canonical projection and rejects the example local wrapper,
@@ -144,12 +160,23 @@ context key resolves to `nil`, or to the supplied `context/2` default. The
 component determines the result; it can successfully return `nil`. Runic does
 not automatically enforce required context when it executes pending work.
 
-When resources are required, call `Workflow.validate_run_context/2` with the
-workflow and fresh context before dispatch or `Runner.resume/3`. Continue only
-after that check and the application's resource checks pass. The validation
-checks key presence for declared context references, not resource validity.
-An explicit `nil` counts as present. Keys with defaults are optional. Validate
-that supplied resources and selected defaults are usable for the operation.
+For named Steps and components whose runtime resolves context by their own
+name, call `Workflow.validate_run_context/2` with the workflow and fresh context
+before dispatch or `Runner.resume/3`. Continue only after that check and the
+application's resource checks pass. Validation checks declared key presence,
+not resource validity. An explicit `nil` passes key-presence validation but
+resolves like an absent key: to `nil` or the default. Non-nil defaults are
+optional; `default: nil` counts as required. Validate that supplied resources
+and selected defaults are usable for the operation.
+
+Rules have an existing name mismatch between validation and runtime. A Rule
+condition can validate keys under the Rule name, but an anonymous condition
+reads context under `nil`. Its reaction Step uses a generated name. Put Rule
+condition and reaction resources in `:_global`, then check their keys and
+resource validity. A successful check of `%{rule_name: %{...}}` does not prove
+that the Rule will read those resources. This branch records that core defect
+for a separate change; it does not change Rule runtime behavior.
+
 `SingleOutput` callbacks must also validate resources that they use directly
 from `Context.runtime` without declared context references.
 
@@ -167,7 +194,7 @@ Run the non-Jido cache example and wrapper/root comparison from the Runic root:
 
 ```sh
 MIX_ENV=test mix run examples/fact_modes/check.exs
-mix test test/fact_boundaries_test.exs
+mix test test/fact_boundaries_test.exs test/fact_boundary_consumers_test.exs
 ```
 
 The cache example puts a live lookup callback in run context. Its request is
@@ -204,10 +231,14 @@ MIX_INSTALL_DIR="$PWD/_build/fact_modes_install" \
 
 It tests the real Jido wrapper, native containers, full fact fields, local
 scalar inheritance, whole-execution rejection, explicit portable admission,
-and field errors. The default Runic tests also check raw fields hidden by a
+and field errors. A simulated remote transport callback runs only after the
+consumer gate passes. The default Runic tests also check raw fields hidden by a
 general identity projection, repeated and nested execution, graph reuse after
 failure, context replacement, pending-work replay with missing keys or defaults,
-snapshots, accepted replay, and cancellation.
+snapshots, accepted replay, and cancellation. Consumer tests check rejection
+before Store data writes and validate fresh keys and live resources before
+`Runner.resume/3`. The test Store checks `FactProduced` values and metadata;
+it is a narrow data profile, not a complete workflow portability adapter.
 
 Reconsider a native mode when a consumer needs live values through arbitrary
 native producers and demonstrates a material total adapter reduction. Require

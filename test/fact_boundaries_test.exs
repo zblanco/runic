@@ -54,7 +54,8 @@ defmodule Runic.FactBoundariesTest do
           {%{reply_to: self()}, [:input, :reply_to], :pid},
           {{:ok, [make_ref()]}, [:input, 1, 0], :reference},
           {%{callback: fn -> :ok end}, [:input, :callback], :function},
-          {%{self() => :value}, [:input, :key], :pid},
+          {%{self() => :value}, [:input, {:map_key, 0}], :pid},
+          {%{key: self()}, [:input, :key], :pid},
           {[1 | make_ref()], [:input, :tail], :reference},
           {[1 | 2], [:input, :tail], :improper_list},
           {%{payload: URI.parse("/local")}, [:input, :payload], URI}
@@ -117,7 +118,7 @@ defmodule Runic.FactBoundariesTest do
     assert roots |> Enum.map(& &1.payload_digest) |> Enum.uniq() |> length() == 1
   end
 
-  test "a nested execution passes wrappers explicitly and reuses native task scope" do
+  test "a nested execution receives wrappers explicitly" do
     inner =
       Runic.workflow(
         steps: [Runic.step(fn input -> LocalValue.map(input, &Map.put(&1, :inner, true)) end)]
@@ -271,6 +272,79 @@ defmodule Runic.FactBoundariesTest do
 
     assert [%Fact{value: :fallback}] =
              restored |> Workflow.react_until_satisfied() |> Workflow.productions(:lookup)
+
+    explicit_nil = %{lookup: %{resource: nil}}
+    assert :ok = Workflow.validate_run_context(restored, explicit_nil)
+
+    assert [%Fact{value: :fallback}] =
+             restored
+             |> Workflow.put_run_context(explicit_nil)
+             |> Workflow.react_until_satisfied()
+             |> Workflow.productions(:lookup)
+  end
+
+  test "a nil context default is required for validation and resolves to nil" do
+    step = Runic.step(fn _ -> context(:resource, default: nil) end, name: :lookup)
+    definition = Runic.workflow(steps: [step])
+    assert {:error, %{lookup: [:resource]}} = Workflow.validate_run_context(definition, %{})
+    assert :ok = Workflow.validate_run_context(definition, %{lookup: %{resource: nil}})
+
+    assert [%Fact{value: nil}] =
+             definition |> Workflow.react_until_satisfied("key") |> Workflow.productions(:lookup)
+  end
+
+  test "Rule condition validation uses the Rule name but runtime requires global context" do
+    rule =
+      Runic.rule name: :gated do
+        given(val: v)
+        where(v > context(:threshold))
+        then(fn %{val: v} -> {:ok, v} end)
+      end
+
+    definition = Runic.workflow(rules: [rule])
+    scoped = %{gated: %{threshold: 1}}
+    assert :ok = Workflow.validate_run_context(definition, scoped)
+
+    assert [] ==
+             definition
+             |> Workflow.react_until_satisfied(5, run_context: scoped)
+             |> Workflow.raw_productions()
+
+    global = %{_global: %{threshold: 1}}
+    assert :ok = Workflow.validate_run_context(definition, global)
+
+    assert [{:ok, 5}] ==
+             definition
+             |> Workflow.react_until_satisfied(5, run_context: global)
+             |> Workflow.raw_productions()
+  end
+
+  test "Rule reactions use a generated Step name and accept global resources" do
+    rule =
+      Runic.rule name: :tagged do
+        given(val: v)
+        where(v > 1)
+        then(fn %{val: v} -> {context(:tag), v} end)
+      end
+
+    definition = Runic.workflow(rules: [rule])
+    scoped = %{tagged: %{tag: :done}}
+    assert {:error, missing} = Workflow.validate_run_context(definition, scoped)
+    refute Map.has_key?(missing, :tagged)
+    assert Map.values(missing) == [[:tag]]
+
+    assert [{nil, 5}] ==
+             definition
+             |> Workflow.react_until_satisfied(5, run_context: scoped)
+             |> Workflow.raw_productions()
+
+    global = %{_global: %{tag: :done}}
+    assert :ok = Workflow.validate_run_context(definition, global)
+
+    assert [{:done, 5}] ==
+             definition
+             |> Workflow.react_until_satisfied(5, run_context: global)
+             |> Workflow.raw_productions()
   end
 
   test "cancellation stops native work that uses a transient local callback" do

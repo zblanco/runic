@@ -11,28 +11,34 @@ defmodule Runic.Examples.JidoFactBoundary do
   alias Jido.Exec.Fact.LocalValue
 
   def check(%{meta: %{jido: %{identity_mode: :local}}}, field) do
-    {:error, %{field: field, path: [field], reason: :local_identity, retry: false}}
+    reject([field], :local_identity)
   end
 
   def check(fact, field) do
     with :ok <- check_wrappers(fact, [field]) do
-      Jido.Exec.Portable.validate(fact, field)
+      case Jido.Exec.Portable.validate(fact, field) do
+        :ok -> :ok
+        {:error, %{details: %{path: path, type: type}}} -> reject(path, type)
+      end
     end
   end
 
   def check_execution(%{identity_mode: :local}, _fact, field) do
-    {:error, %{field: field, path: [field], reason: :local_identity, retry: false}}
+    reject([field], :local_identity)
   end
 
   def check_execution(%{identity_mode: :portable}, fact, field), do: check(fact, field)
 
-  defp check_wrappers(%LocalValue{}, [field | _] = path) do
-    {:error, %{field: field, path: path, reason: :local_identity, retry: false}}
-  end
+  def check_execution(_marker, _fact, field), do: reject([field], :unknown_identity_mode)
+
+  defp check_wrappers(%LocalValue{}, path), do: reject(path, :local_identity)
 
   defp check_wrappers(value, path) when is_map(value) do
-    Enum.reduce_while(Map.to_list(value), :ok, fn {key, item}, :ok ->
-      with :ok <- check_wrappers(key, path ++ [:key]),
+    value
+    |> Map.to_list()
+    |> Enum.with_index()
+    |> Enum.reduce_while(:ok, fn {{key, item}, index}, :ok ->
+      with :ok <- check_wrappers(key, path ++ [{:map_key, index}]),
            :ok <- check_wrappers(item, path ++ [key]) do
         {:cont, :ok}
       else
@@ -56,5 +62,9 @@ defmodule Runic.Examples.JidoFactBoundary do
         do: check_list(rest, path, index + 1),
         else: check_wrappers(rest, path ++ [:tail])
     end
+  end
+
+  defp reject([field | _] = path, type) do
+    {:error, %{field: field, path: path, reason: {:unsupported, type}, retry: false}}
   end
 end

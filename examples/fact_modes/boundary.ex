@@ -20,7 +20,7 @@ defmodule Runic.Examples.FactBoundary do
     end
   rescue
     error in CanonicalError ->
-      {:error, %{field: field, path: [field | error.path], reason: error.reason}}
+      {:error, %{field: field, path: [field | error.path], reason: error.reason, retry: false}}
   end
 
   defp walk(%LocalValue{}, path), do: reject(path, :local_identity)
@@ -30,8 +30,11 @@ defmodule Runic.Examples.FactBoundary do
   defp walk(value, path) when is_function(value), do: reject(path, :function)
 
   defp walk(value, path) when is_map(value) do
-    Enum.reduce_while(Map.to_list(value), :ok, fn {key, item}, :ok ->
-      with :ok <- walk(key, path ++ [:key]),
+    value
+    |> Map.to_list()
+    |> Enum.with_index()
+    |> Enum.reduce_while(:ok, fn {{key, item}, index}, :ok ->
+      with :ok <- walk(key, path ++ [{:map_key, index}]),
            :ok <- walk(item, path ++ [key]) do
         {:cont, :ok}
       else
@@ -62,6 +65,6 @@ defmodule Runic.Examples.FactBoundary do
   end
 
   defp reject([field | _] = path, type) do
-    {:error, %{field: field, path: path, reason: {:unsupported, type}}}
+    {:error, %{field: field, path: path, reason: {:unsupported, type}, retry: false}}
   end
 end

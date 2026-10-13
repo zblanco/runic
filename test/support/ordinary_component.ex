@@ -20,6 +20,13 @@ defmodule Runic.TestSupport.OrdinaryComponent do
     if pid = context.runtime[:observer], do: send(pid, {:work, node.name, context})
 
     case node.operation do
+      :cache ->
+        cache = Map.get(context.runtime, :cache)
+
+        if is_pid(cache) and Process.alive?(cache),
+          do: Result.value(Agent.get(cache, &Map.fetch!(&1, value))),
+          else: Result.failure(:cache_unavailable)
+
       :add ->
         Result.value(value + node.config + Map.get(context.runtime, :offset, 0))
 
