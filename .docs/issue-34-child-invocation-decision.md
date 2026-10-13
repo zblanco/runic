@@ -32,7 +32,7 @@ Jido still chooses dependencies, order, and the explicit Flow output.
 
 `ChildInvocation.new(target: component, input: value, output: port)` is data.
 A `Call` has a request-producing Step. The request is private coordination data.
-Its public `out` endpoint produces only a completed child value. Steps still
+Its public `out` endpoint forwards accepted values from the selected producer. Steps still
 return tuples and other data unchanged. No tuple implicitly means failure.
 SingleOutput custom targets keep their explicit Result conversion.
 
@@ -54,7 +54,9 @@ hooks, stateful components, and collection coordination need their own instance
 contract. Do not silently copy them.
 
 Child failure uses the parent's existing halt/skip policy and accepted failure
-observation. Only a completed child activates public return wiring. Other input
+observation. A selected producer failure emits no value for that attempt. An
+independent branch failure can coexist with selected output under skip policy.
+Accepted selected output is not retracted. Other input
 occurrences and reusable graph structure remain available. All child tasks are
 normal parent executor units. Parent cancel/deadline/shutdown applies the
 merged owned-task contract. No separate executor or detached child process is
@@ -121,5 +123,33 @@ An explicit ChildInvocation fallback uses the same dynamic construction path.
 No new durable event type or second task owner is added.
 
 Execution observation includes the Call's accepted request computation and the
-child's later work. A completed request Runnable is not completed child output.
+child's later work. A completed request Runnable is not accepted selected-port output.
 Use the Call's declared output port/component results for that boundary.
+
+## Astra review contract corrections
+
+Call forwards each accepted value from one selected producer. Producer identity
+is unambiguous, but output cardinality is not limited to one value. The public
+port therefore declares `:many`. There is no whole-child success barrier.
+Execution scope quiescence remains the observation for the end of admitted work.
+Independent sibling failure can coexist with selected output; halt and cancel
+still control pending admission. This decision retains native graph behavior.
+
+Snapshot-tail replay now applies all construction, lifecycle, and runtime events
+to the supplied snapshot in order. Grouped public construction records its Join
+with `ComponentAdded.join_parents`; missing/false markers retain the earlier
+connection behavior. New explicit grouped records do not undergo legacy group
+coalescing. Lost wiring in an old or manually edited target definition cannot
+be inferred safely. Request construction rejects a saved graph that does not
+preserve the original graph coordinates and declarative edge data.
+
+Custom Activator/Coordinator nodes have no general occurrence contract and are
+rejected, including when they appear inside a Workflow. Native Join and binding
+references remain the only explicit address fields that occurrence lowering
+changes. Application config values are not treated as graph addresses.
+
+A static boundary can export a Call's one public producer. Re-exporting a
+component with several distinct public producers requires a forwarding node
+connected to the selected public port. `from:` has no general inner-port selector.
+Positional Rules use declared positional input order; unrelated runtime context
+must not turn a positional predicate into an input-plus-context call.

@@ -64,6 +64,20 @@ defmodule Runic.Workflow.CompositePortsTest do
     workflow = Workflow.add(workflow, sink, connections: connections, input_mode: :any)
 
     for candidate <- [workflow, Workflow.from_log(Workflow.build_log(workflow))] do
+      [edge] =
+        Multigraph.out_edges(
+          Workflow.component_graph(candidate),
+          Workflow.get_component!(candidate, :pair),
+          by: :connects_to
+        )
+
+      assert Enum.map(edge.properties.connections, & &1.source_port) == [:left, :right]
+
+      assert Enum.map(edge.properties.connections, &{&1.source, &1.target}) == [
+               {:pair, :sink},
+               {:pair, :sink}
+             ]
+
       assert candidate
              |> Workflow.react_until_satisfied(3)
              |> Workflow.raw_productions(:sink)
@@ -162,5 +176,42 @@ defmodule Runic.Workflow.CompositePortsTest do
 
     legacy = :erlang.binary_to_term(:erlang.term_to_binary(Map.delete(binding, :input_shape)))
     assert Runic.Workflow.InputBinding.bind(legacy, 3) == 3
+  end
+
+  test "bound arity-two Rules receive declared positional inputs live and after replay" do
+    producer =
+      Runic.step(fn n -> %{left: n, right: n + 1} end,
+        name: :producer,
+        outputs: [left: [], right: []]
+      )
+
+    rule =
+      Runic.rule(fn a, b when is_integer(a) and is_integer(b) -> a + b end,
+        name: :sum,
+        inputs: [a: [], b: []]
+      )
+
+    assert Runic.Workflow.Rule.run(rule, [3, 4]) == 7
+
+    workflow =
+      Workflow.new()
+      |> Workflow.add(producer)
+      |> Workflow.add(rule,
+        connections: [[from: {:producer, :right}, to: :b], [from: {:producer, :left}, to: :a]]
+      )
+
+    for candidate <- [workflow, Workflow.from_log(Workflow.build_log(workflow))] do
+      assert candidate |> Workflow.react_until_satisfied(3) |> Workflow.raw_productions(:sum) == [
+               7
+             ]
+    end
+
+    invalid = %{rule | inputs: [in: []]}
+
+    assert_raise ArgumentError, ~r/2 positional input ports/, fn ->
+      Workflow.add(Workflow.new() |> Workflow.add(producer), invalid,
+        connections: [[from: {:producer, :left}, to: :in]]
+      )
+    end
   end
 end

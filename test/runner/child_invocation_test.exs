@@ -358,6 +358,69 @@ defmodule Runic.Runner.ChildInvocationTest do
     refute Workflow.is_runnable?(restored)
   end
 
+  test "request retry creates one occurrence with a stable activation identity", %{runner: runner} do
+    request =
+      Runic.step(
+        fn input ->
+          count = :atomics.add_get(context(:attempts), 1, 1)
+          send(context(:observer), {:request_attempt, count})
+          if count == 1, do: raise("retry request")
+          ChildInvocation.new(target: OrdinaryComponent.new(:target, :add, 1), input: input)
+        end,
+        name: :request
+      )
+
+    base =
+      Workflow.new()
+      |> Workflow.add(Call.new(request, name: :call))
+      |> Workflow.put_run_context(%{call: %{observer: self(), attempts: :atomics.new(1, [])}})
+
+    {:ok, _} = Runner.start_workflow(runner, :wf, base)
+
+    {:ok, id} =
+      Runner.start_execution(runner, :wf, 3, scheduler_policies: [{:call, %{max_retries: 1}}])
+
+    {:ok, execution} = Runner.await_execution(runner, :wf, id)
+    assert_receive {:request_attempt, 1}
+    assert_receive {:request_attempt, 2}
+    {:ok, result} = Runner.get_workflow(runner, :wf)
+    assert Workflow.raw_productions(result, :call) == [4]
+    [child] = Enum.filter(Multigraph.vertices(result.graph), &is_struct(&1, Occurrence))
+    outcome = Enum.find(execution.outcomes, &(&1.node_name == :call))
+    assert outcome.attempt_id == Runic.Identity.derive(:attempt, [outcome.activation_id, 1])
+    assert child.hash == Runic.Identity.derive(:node_occurrence, [outcome.activation_id, :child])
+  end
+
+  test "a ChildInvocation-valued request fallback has the same replayable attachment path", %{
+    runner: runner
+  } do
+    request = Runic.step(fn _ -> raise "request failed" end, name: :request)
+    base = Workflow.new() |> Workflow.add(Call.new(request, name: :call))
+    {:ok, _} = Runner.start_workflow(runner, :wf, base)
+
+    fallback = fn runnable, _ ->
+      {:value,
+       ChildInvocation.new(
+         target: OrdinaryComponent.new(:target, :add, 1),
+         input: runnable.input_fact.value
+       )}
+    end
+
+    {:ok, id} =
+      Runner.start_execution(runner, :wf, 3, scheduler_policies: [{:call, %{fallback: fallback}}])
+
+    {:ok, completed} = Runner.await_execution(runner, :wf, id)
+    assert completed.quiescent?
+    {:ok, result} = Runner.get_workflow(runner, :wf)
+    assert Workflow.raw_productions(result, :call) == [4]
+    assert :ok = Runner.stop(runner, :wf)
+    {:ok, _} = Runner.resume(runner, :wf)
+    {:ok, restored} = Runner.get_workflow(runner, :wf)
+    assert Workflow.raw_productions(restored, :call) == [4]
+    assert Enum.count(Multigraph.vertices(restored.graph), &is_struct(&1, Occurrence)) == 1
+    assert not Workflow.is_runnable?(restored)
+  end
+
   defp accept_next(worker) do
     assert_receive {:executor_result, ^worker, handle, result}, 1_000
     send(worker, {handle, result})

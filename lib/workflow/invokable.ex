@@ -307,7 +307,8 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Condition do
       effective_context = merge_effective_context(ctx.meta_context, ctx.run_context)
 
       satisfied =
-        if effective_context != %{} and condition.arity == 2 do
+        if Condition.has_meta_refs?(condition) and effective_context != %{} and
+             condition.arity == 2 do
           Condition.check_with_meta_context(condition, fact, effective_context)
         else
           Condition.check(condition, fact)

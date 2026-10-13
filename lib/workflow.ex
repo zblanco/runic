@@ -671,7 +671,8 @@ defmodule Runic.Workflow do
   `:input_mode` is `:all` by default: all source producers must supply their
   values. With `:any`, each source producer binds all required target inputs
   separately. This mode is saved for replay and does not depend on value shape.
-  Multi-port non-Step components receive a map keyed by declared input names.
+  Positional Rules receive a list in declared input order. Other multi-port
+  non-Step components receive a map keyed by declared input names.
   Custom output schemas can select internal producers with `from: name_or_identity`.
 
   `:connections` and `:to` are mutually exclusive. Connections are validated as
@@ -814,7 +815,9 @@ defmodule Runic.Workflow do
     Enum.each(groups, &validate_connection_group!(component, &1, opts))
     validate_bound_call_contract!(component)
 
-    workflow = Enum.reduce(groups, workflow, &lower_connection_group(&2, component, &1))
+    workflow =
+      Enum.reduce(groups, workflow, &lower_connection_group(&2, component, &1))
+      |> draw_logical_connections(component, resolved)
 
     if Keyword.get(opts, :log, true) do
       events =
@@ -858,11 +861,7 @@ defmodule Runic.Workflow do
         source_order: source_order,
         bindings: bindings,
         input_ports: Component.inputs(component),
-        input_shape:
-          if(is_struct(component, Step) or length(Component.inputs(component)) == 1,
-            do: :positional,
-            else: :named
-          )
+        input_shape: bound_input_shape(component)
       )
 
     {workflow, binding_parent} = connect_binding_sources(workflow, source_nodes)
@@ -877,9 +876,17 @@ defmodule Runic.Workflow do
           connection_ids: Enum.map(connections, & &1.id)
         }
       )
-      |> draw_logical_connections(component, resolved)
 
     workflow
+  end
+
+  defp bound_input_shape(%Step{}), do: :positional
+
+  defp bound_input_shape(%Rule{arity: arity}) when is_integer(arity) and arity > 1,
+    do: :positional
+
+  defp bound_input_shape(component) do
+    if length(Component.inputs(component)) == 1, do: :positional, else: :named
   end
 
   defp ensure_component(%__MODULE__{hash: nil} = workflow) do
@@ -1000,10 +1007,24 @@ defmodule Runic.Workflow do
   defp output_node!(_workflow, %Runic.Workflow.Reduce{fan_in: fan_in}), do: fan_in
 
   defp output_node!(workflow, component) do
-    if Components.invokable?(component) do
-      component
-    else
-      output_node_from_ownership!(workflow, component)
+    outputs =
+      workflow.graph
+      |> Multigraph.out_edges(component, by: :component_of)
+      |> Enum.filter(&(&1.properties[:kind] == :output))
+      |> Enum.uniq_by(&Components.vertex_id_of(&1.v2))
+
+    case outputs do
+      [%{v2: node}] ->
+        node
+
+      [] ->
+        if Components.invokable?(component),
+          do: component,
+          else: output_node_from_ownership!(workflow, component)
+
+      _ ->
+        raise ArgumentError,
+              "component #{inspect(component_name(component))} has multiple public output producers; re-export through an explicit forwarding component"
     end
   end
 
@@ -1184,9 +1205,40 @@ defmodule Runic.Workflow do
     end
   end
 
+  defp validate_bound_call_contract!(%Rule{arity: arity} = rule)
+       when is_integer(arity) and arity > 1 do
+    if length(Component.inputs(rule)) != arity do
+      raise ArgumentError,
+            "port-bound rule #{inspect(rule.name)} must declare #{arity} positional input ports"
+    end
+  end
+
   defp validate_bound_call_contract!(_component), do: :ok
 
-  defp do_add_component(%__MODULE__{} = workflow, component, parent, opts) do
+  defp do_add_component(workflow, component, parents, opts) when is_list(parents) do
+    if Keyword.get(opts, :join_parents, false) do
+      validate_ports(component, parents, opts)
+      join = Join.new(Enum.map(parents, &Components.vertex_id_of/1))
+      workflow = add_step(workflow, parents, join)
+
+      workflow =
+        do_add_component_unjoined(workflow, component, join, Keyword.put(opts, :log, false))
+
+      if Keyword.get(opts, :log, true) do
+        events = Enum.map(build_events(component, parents, nil), &%{&1 | join_parents: true})
+        append_build_log(workflow, events)
+      else
+        workflow
+      end
+    else
+      do_add_component_unjoined(workflow, component, parents, opts)
+    end
+  end
+
+  defp do_add_component(workflow, component, parent, opts),
+    do: do_add_component_unjoined(workflow, component, parent, opts)
+
+  defp do_add_component_unjoined(%__MODULE__{} = workflow, component, parent, opts) do
     should_log = Keyword.get(opts, :log, true)
 
     case {component, parent} do
@@ -1403,7 +1455,11 @@ defmodule Runic.Workflow do
 
     events =
       Enum.map(build_events(component, to, connections), fn event ->
-        %{event | input_mode: Keyword.get(opts, :input_mode, :all)}
+        %{
+          event
+          | input_mode: Keyword.get(opts, :input_mode, :all),
+            join_parents: Keyword.get(opts, :join_parents, false)
+        }
       end)
 
     workflow =
@@ -1828,6 +1884,7 @@ defmodule Runic.Workflow do
   defp legacy_group_member?(%ComponentAdded{} = previous, %ComponentAdded{} = event) do
     not is_nil(previous.to) and not is_nil(event.to) and
       is_nil(Map.get(previous, :connections)) and is_nil(Map.get(event, :connections)) and
+      Map.get(previous, :join_parents) != true and Map.get(event, :join_parents) != true and
       component_event_identity(previous) == component_event_identity(event) and
       event.to not in List.wrap(previous.to)
   end
@@ -1848,7 +1905,7 @@ defmodule Runic.Workflow do
         )
 
       _ ->
-        add(workflow, component, to: event.to)
+        add(workflow, component, to: event.to, join_parents: Map.get(event, :join_parents, false))
     end
   end
 
@@ -1964,60 +2021,67 @@ defmodule Runic.Workflow do
   def from_log(events) do
     events
     |> normalize_legacy_component_groups()
-    |> Enum.reduce(new(), fn
-      %ComponentAdded{} = event, wrk ->
-        component = component_from_added(event)
+    |> Enum.reduce(new(), &apply_log_event(&2, &1))
+  end
 
-        add_component_event(wrk, component, event)
+  defp apply_log_event(wrk, %ComponentAdded{} = event) do
+    component = component_from_added(event)
 
-      %ReactionOccurred{reaction: :generation}, wrk ->
-        # Skip legacy generation edges - generation counters removed
-        wrk
+    add_component_event(wrk, component, event)
+  end
 
-      %ReactionOccurred{} = ro, %__MODULE__{} = wrk ->
-        # Rebuild getter_fn for :meta_ref edges during restoration
-        properties = restore_meta_ref_properties(ro.reaction, ro.properties)
+  defp apply_log_event(wrk, %ReactionOccurred{reaction: :generation}) do
+    # Skip legacy generation edges - generation counters removed
+    wrk
+  end
 
-        reaction_edge =
-          Multigraph.Edge.new(
-            ro.from,
-            ro.to,
-            label: ro.reaction,
-            weight: ro.weight,
-            properties: properties
-          )
+  defp apply_log_event(%__MODULE__{} = wrk, %ReactionOccurred{} = ro) do
+    # Rebuild getter_fn for :meta_ref edges during restoration
+    properties = restore_meta_ref_properties(ro.reaction, ro.properties)
 
-        %__MODULE__{
-          wrk
-          | graph: Multigraph.add_edge(wrk.graph, reaction_edge)
-        }
+    reaction_edge =
+      Multigraph.Edge.new(
+        ro.from,
+        ro.to,
+        label: ro.reaction,
+        weight: ro.weight,
+        properties: properties
+      )
 
-      %RunnableDispatched{} = event, wrk ->
-        %{wrk | runnable_events: wrk.runnable_events ++ [event]}
+    %__MODULE__{
+      wrk
+      | graph: Multigraph.add_edge(wrk.graph, reaction_edge)
+    }
+  end
 
-      %RunnableCompleted{} = event, wrk ->
-        %{wrk | runnable_events: wrk.runnable_events ++ [event]}
+  defp apply_log_event(wrk, %RunnableDispatched{} = event) do
+    %{wrk | runnable_events: wrk.runnable_events ++ [event]}
+  end
 
-      %RunnableFailed{} = event, wrk ->
-        %{wrk | runnable_events: wrk.runnable_events ++ [event]}
+  defp apply_log_event(wrk, %RunnableCompleted{} = event) do
+    %{wrk | runnable_events: wrk.runnable_events ++ [event]}
+  end
 
-      %ExecutionUncertain{} = event, wrk ->
-        %{wrk | runnable_events: wrk.runnable_events ++ [event]}
+  defp apply_log_event(wrk, %RunnableFailed{} = event) do
+    %{wrk | runnable_events: wrk.runnable_events ++ [event]}
+  end
 
-      %ComponentRemoved{name: name}, wrk ->
-        remove_component(wrk, name)
-    end)
+  defp apply_log_event(wrk, %ExecutionUncertain{} = event) do
+    %{wrk | runnable_events: wrk.runnable_events ++ [event]}
+  end
+
+  defp apply_log_event(wrk, %ComponentRemoved{name: name}) do
+    remove_component(wrk, name)
   end
 
   @doc """
   Rebuilds a workflow from a mixed stream of build and runtime events.
 
-  Separates `%ComponentAdded{}` events (workflow structure) from runtime events
-  (e.g. `%FactProduced{}`, `%ActivationConsumed{}`), rebuilds the workflow
-  structure via `from_log/1`, then replays runtime events via `apply_event/2`.
+  Applies construction, lifecycle, and runtime events in their recorded order.
+  Construction must precede the activations that use it.
 
-  When a `base_workflow` is provided, skips structure reconstruction and
-  replays only runtime events on top of the base.
+  When a `base_workflow` is provided, applies the complete event tail to that
+  graph. This preserves structure and accepted progress from the snapshot.
 
   This is the primary recovery path for event-sourced stores using
   `append/3` and `stream/2`.
@@ -2058,39 +2122,28 @@ defmodule Runic.Workflow do
   defp do_from_events(events, base_workflow, opts) do
     fact_mode = Keyword.get(opts, :fact_mode, :full)
 
-    {build_events, runtime_events} =
-      Enum.split_with(events, fn event ->
-        is_struct(event, ComponentAdded) or
-          is_struct(event, ReactionOccurred) or
-          is_struct(event, RunnableDispatched) or
-          is_struct(event, RunnableCompleted) or
-          is_struct(event, RunnableFailed) or
-          is_struct(event, ExecutionUncertain)
-      end)
+    events
+    |> Enum.to_list()
+    |> normalize_legacy_component_groups()
+    |> Enum.reduce(base_workflow || new(), fn event, workflow ->
+      case event do
+        %{__struct__: module}
+        when module in [
+               ComponentAdded,
+               ComponentRemoved,
+               ReactionOccurred,
+               RunnableDispatched,
+               RunnableCompleted,
+               RunnableFailed,
+               ExecutionUncertain
+             ] ->
+          apply_log_event(workflow, event)
 
-    base =
-      if base_workflow do
-        # Replay only structural/lifecycle events that from_log handles
-        if build_events != [] do
-          from_log(build_events)
-          |> then(fn rebuilt ->
-            # Merge runnable_events from rebuilt onto base if base is provided
-            %{
-              base_workflow
-              | runnable_events: base_workflow.runnable_events ++ rebuilt.runnable_events
-            }
-          end)
-        else
-          base_workflow
-        end
-      else
-        from_log(build_events)
-      end
+        %FactProduced{} when fact_mode == :ref ->
+          apply_event_lean(workflow, event)
 
-    Enum.reduce(runtime_events, base, fn event, wf ->
-      case {fact_mode, event} do
-        {:ref, %FactProduced{}} -> apply_event_lean(wf, event)
-        _ -> apply_event(wf, event)
+        _ ->
+          apply_event(workflow, event)
       end
     end)
   end
@@ -2740,14 +2793,7 @@ defmodule Runic.Workflow do
             add(wrk, step)
           end)
 
-        join =
-          parent_steps
-          |> Enum.map(& &1.hash)
-          |> Join.new()
-
-        wrk = add_step(wrk, parent_steps, join)
-
-        add_dependent_steps(wrk, {join, dependent_steps})
+        add_dependent_steps(wrk, {parent_steps, dependent_steps})
 
       {step, _dependent_steps} = pipeline, wrk ->
         wrk = add(wrk, step)

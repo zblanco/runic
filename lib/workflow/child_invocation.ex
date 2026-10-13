@@ -9,7 +9,9 @@ defmodule Runic.Workflow.ChildInvocation do
 
   Targets can be Steps, SingleOutput custom components, or declared stateless
   workflows built from these nodes, input bindings, and joins. The selected
-  output must have one producer. Stateful and collection components need a
+  output must have one producer; that producer can emit several values. Call
+  forwards each accepted selected-port value. An independent branch failure
+  does not retract accepted output. Stateful and collection components need a
   separate instance contract and are rejected. Target hooks and live runtime
   context must be supplied by the parent and are not copied into a definition.
 
@@ -45,6 +47,7 @@ defmodule Runic.Workflow.ChildInvocation do
       do: raise(ArgumentError, "child target has no output port #{inspect(output)}")
 
     {_workflow, [event]} = Workflow.add_with_events(Workflow.new(), target)
+    validate_saved_graph!(target, event)
     request = %__MODULE__{target: event, input: Keyword.fetch!(opts, :input), output: output}
     graph(request)
     request
@@ -62,6 +65,45 @@ defmodule Runic.Workflow.ChildInvocation do
     Workflow.add(workflow, collector,
       connections: [[from: {target.name, request.output}, to: :in]]
     )
+  end
+
+  defp validate_saved_graph!(%Workflow{} = target, event) do
+    rebuilt = Runic.Workflow.Definition.rebuild(event.workflow_definition)
+
+    unless graph_shape(target) == graph_shape(rebuilt),
+      do:
+        raise(
+          ArgumentError,
+          "child target build log does not preserve its graph; use recorded public construction"
+        )
+  rescue
+    error in [KeyError, FunctionClauseError] ->
+      raise ArgumentError,
+            "child target build log cannot reconstruct its graph: #{Exception.message(error)}"
+  end
+
+  defp validate_saved_graph!(_, _), do: :ok
+
+  # Compare graph coordinates and declarative edge data. Callback code remains
+  # under the existing trusted source/closure compatibility contract.
+  defp graph_shape(workflow) do
+    vertices =
+      workflow.graph
+      |> Multigraph.vertices()
+      |> Enum.map(&{Runic.Workflow.Components.vertex_id_of(&1), &1.__struct__})
+      |> Enum.sort()
+
+    edges =
+      workflow.graph
+      |> Multigraph.edges()
+      |> Enum.map(fn edge ->
+        {Runic.Workflow.Components.vertex_id_of(edge.v1),
+         Runic.Workflow.Components.vertex_id_of(edge.v2), edge.label, edge.weight,
+         Map.delete(edge.properties || %{}, :getter_fn)}
+      end)
+      |> Enum.sort()
+
+    {vertices, edges}
   end
 
   defp validate_target!(%Workflow{} = target) do
@@ -99,6 +141,14 @@ defmodule Runic.Workflow.ChildInvocation do
           ArgumentError,
           "unsupported child node #{inspect(node.__struct__)}; child invocation requires stateless SingleOutput nodes"
         )
+
+    if Runic.Workflow.Activator.impl_for(node) != nil or
+         Runic.Workflow.Coordinator.impl_for(node) != nil,
+       do:
+         raise(
+           ArgumentError,
+           "custom child activation or coordination needs an instance contract"
+         )
 
     if Enum.any?(Map.get(node, :meta_refs, []), &(&1.kind != :context)),
       do: raise(ArgumentError, "child graph metadata references need an instance contract")

@@ -32,8 +32,9 @@ Workflow.add(workflow, nested_flow,
 )
 ```
 
-A multi-arity Step receives a list in declared input-port order. Other components
-with several input ports receive a map with the declared port names as keys.
+A multi-arity Step or positional Rule receives a list in declared input-port
+order. Other supported components with several input ports receive a map with
+the declared port names as keys.
 A component with one input port receives that port's whole value.
 
 Missing ports, missing required inputs, incompatible whole-port types, and
@@ -57,6 +58,13 @@ positional projection from that producer's value, as in the existing port API.
 Custom components can also supply `:component_of` edges with `kind: :output` and
 `ports: [...]`. Legacy unambiguous ownership remains supported.
 
+A boundary can re-export a Call or another component with one public output
+producer. Public output ownership takes precedence over the component's request
+or internal execution node. `from:` does not select an internal public port of
+a component with several distinct producers. For that case, bind the desired
+public port to a forwarding component and export the forwarding component.
+Runic rejects an ambiguous whole-component re-export during construction.
+
 Binders and Joins are compiler nodes. They do not become registered public
 components. Bindings preserve application metadata from their input Fact and
 replace the native `:runic` input-binding annotation. An all-input Join does not
@@ -68,8 +76,11 @@ Old connection events keep all-input behavior.
 ## Child requests
 
 Create a Call from a one-input Step that returns `ChildInvocation.new/1`.
-The Call's public `out` port becomes ready only when its child completes.
-Connect consumers to that port with `connections:`.
+The Call's public `out` port has `cardinality: :many`. It forwards each accepted
+value from the selected output producer. Connect consumers to that port with
+`connections:`. One child occurrence can return several values when the selected
+producer runs for several input Facts. This is a selected-port dataflow contract;
+it does not wait for unrelated child branches to complete.
 
 ```elixir
 request = Runic.step(fn input ->
@@ -84,11 +95,16 @@ workflow = Workflow.new() |> Workflow.add(call)
 For targets with several outputs, select `output: :port_name`. The target must
 have a reconstructable source. The first version supports ordinary Steps,
 SingleOutput custom nodes, and declared stateless workflows built from these
-nodes, InputBinding, and Join. It rejects stateful nodes, collection coordination,
-nested dynamic Calls, graph metadata references, and targets with attached hooks,
-policies, or live runtime context. `input:` is the target's complete native input
-value; it is not interpreted as an implicit set of bindings. Runtime context and policies still use the target's
-authored node name. Different occurrences have different node hashes.
+nodes, InputBinding, and Join. The saved construction must preserve the target
+graph. Use `Workflow.add/3`, `add_steps/2`, or `Runic.workflow/1` for recorded
+construction. Unrecorded graph edits are rejected. Grouped constructors record
+their shared Join in a `ComponentAdded` parent-group marker.
+
+It rejects stateful nodes, collection coordination, custom Activator/Coordinator
+implementations, nested dynamic Calls, graph metadata references, and targets
+with attached hooks, policies, or live runtime context. `input:` is the target's complete native input
+value; it is not interpreted as an implicit set of bindings. Runtime context and
+policies still use the target's authored node name. Different occurrences have different node hashes.
 
 The parent owns each child as ordinary graph work. Equal calls in separate
 `Workflow.execute/3` or `Runner.start_execution/4` scopes have different input
@@ -96,23 +112,27 @@ Fact identities and child identities. Retrying one Call activation keeps its
 occurrence identity. Legacy content-based inputs need explicit distinct Facts
 if the caller wants repeated equal calls.
 
-A child failure uses the parent's existing retry/halt/skip policy. The Call
-produces no completed output for that occurrence. A request-Step policy fallback
-can supply already interpreted output; an explicit ChildInvocation fallback
-requests a child. A new scope can reuse the
-graph after the caller makes the runtime's required recovery decision.
+A child failure uses the parent's existing retry/halt/skip policy. A failed
+selected producer emits no value for its failed attempt. An independent branch
+can fail while selected output still succeeds under skip policy. Halt or cancel
+can stop pending selected-port delivery. Accepted output is not retracted.
+A request-Step policy fallback can supply already interpreted output; an explicit
+ChildInvocation fallback requests a child. A new scope can reuse the graph after
+the caller makes the runtime's required recovery decision.
 
 Before request acceptance, recovery sees only the parent activation. After
 attachment, construction events describe the child occurrence and accepted
 runtime events describe its progress. During execution, unaccepted work remains
-uncertain and can run again. After completion, replay restores the accepted
+uncertain and can run again. After selected output is accepted, replay restores that
 output and does not rerun accepted child callbacks. Parent cancellation stops
 native child tasks through the same task owner, including tasks that trap exits.
 
 The Call's own Runnable completion records request computation and acceptance.
-Its public output port records child completion. Execution observation includes
-internal computation outcomes; use component results to read the completed Call
-output. These are different boundaries.
+Its public output port records each selected producer result. Scope quiescence
+reports that admitted work has ended. Execution observation includes
+internal computation outcomes. Use `raw_productions(workflow, :call)` or
+`results(workflow, [:call], all: true)` to read all selected Call values. Explicit
+component selection without `all: true` keeps the existing last-value behavior. These are different boundaries.
 
 The public Call Fact retains the child's application metadata. Runic does not
 interpret Jido effects or commit Agent state. Local result acceptance, executor

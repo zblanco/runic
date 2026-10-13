@@ -89,28 +89,21 @@ defmodule Runic.Workflow.Private do
       {[_step | _] = parent_steps, dependent_steps}, wrk ->
         wrk =
           Enum.reduce(parent_steps, wrk, fn step, wrk ->
-            Workflow.add(wrk, step, to: parent_step)
+            Workflow.add(wrk, step, to: parent_step, join_parents: is_list(parent_step))
           end)
 
-        join =
-          parent_steps
-          |> Enum.map(& &1.hash)
-          |> Join.new()
-
-        wrk = add_step(wrk, parent_steps, join)
-
-        add_dependent_steps(wrk, {join, dependent_steps})
+        add_dependent_steps(wrk, {parent_steps, dependent_steps})
 
       {%Join{} = step, _dependent_steps} = parent_and_children, wrk ->
         wrk = add_step(wrk, parent_step, step)
         add_dependent_steps(wrk, parent_and_children)
 
       {step, _dependent_steps} = parent_and_children, wrk ->
-        wrk = Workflow.add(wrk, step, to: parent_step)
+        wrk = Workflow.add(wrk, step, to: parent_step, join_parents: is_list(parent_step))
         add_dependent_steps(wrk, parent_and_children)
 
       step, wrk ->
-        Workflow.add(wrk, step, to: parent_step)
+        Workflow.add(wrk, step, to: parent_step, join_parents: is_list(parent_step))
     end)
   end
 

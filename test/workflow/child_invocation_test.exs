@@ -199,4 +199,183 @@ defmodule Runic.Workflow.ChildInvocationTest do
       )
     end
   end
+
+  test "a static nested boundary exports the Call completion producer live and through replay" do
+    nested =
+      Workflow.new(name: :nested, input_ports: [in: []], output_ports: [out: [from: :call]])
+      |> Workflow.add(call())
+
+    parent =
+      Workflow.new()
+      |> Workflow.add(nested)
+      |> Workflow.add(Runic.step(fn n -> n + 1 end, name: :after_nested),
+        connections: [[from: {:nested, :out}, to: :in]]
+      )
+
+    for candidate <- [parent, Workflow.from_log(Workflow.build_log(parent))] do
+      completed =
+        candidate |> Workflow.enable_event_emission() |> Workflow.react_until_satisfied(4)
+
+      replayed =
+        Workflow.from_events(
+          Workflow.build_log(candidate) ++ Enum.reverse(completed.uncommitted_events)
+        )
+
+      for result <- [completed, replayed] do
+        assert Workflow.raw_productions(result, :nested) == [8]
+        assert Workflow.raw_productions(result, :after_nested) == [9]
+
+        refute Enum.any?(
+                 Workflow.raw_productions(result, :nested),
+                 &is_struct(&1, ChildInvocation)
+               )
+      end
+    end
+  end
+
+  test "grouped public constructors preserve their Join in child definitions" do
+    child = Runic.TestSupport.ChildTargets.grouped()
+
+    rebuilt =
+      Workflow.new(
+        name: child.name,
+        input_ports: child.input_ports,
+        output_ports: child.output_ports
+      )
+      |> Workflow.apply_events(Workflow.build_log(child))
+
+    assert Enum.map(
+             Multigraph.edges(child.graph, by: :flow),
+             &{Runic.Workflow.Components.vertex_id_of(&1.v1),
+              Runic.Workflow.Components.vertex_id_of(&1.v2)}
+           )
+           |> Enum.sort() ==
+             Enum.map(
+               Multigraph.edges(rebuilt.graph, by: :flow),
+               &{Runic.Workflow.Components.vertex_id_of(&1.v1),
+                Runic.Workflow.Components.vertex_id_of(&1.v2)}
+             )
+             |> Enum.sort()
+
+    for target <- [child, rebuilt] do
+      assert target |> Workflow.react_until_satisfied(3) |> Workflow.raw_productions(:sum) == [10]
+      ChildInvocation.new(target: target, input: 3)
+    end
+
+    request =
+      Runic.step(
+        fn n ->
+          ChildInvocation.new(target: Runic.TestSupport.ChildTargets.grouped(), input: n)
+        end,
+        name: :request
+      )
+
+    workflow = Workflow.new() |> Workflow.add(Call.new(request, name: :call))
+
+    for candidate <- [workflow, Workflow.from_log(Workflow.build_log(workflow))] do
+      assert candidate |> Workflow.react_until_satisfied(3) |> Workflow.raw_productions(:call) ==
+               [10]
+    end
+  end
+
+  test "custom activation and coordination are rejected before child attachment" do
+    alias Runic.TestSupport.{CustomChildActivation, CustomChildCoordination}
+    wrapper = CustomChildActivation.new()
+
+    assert Workflow.new()
+           |> Workflow.add(wrapper)
+           |> Workflow.react_until_satisfied(3)
+           |> Workflow.raw_productions(:wrapper) == [6]
+
+    assert Workflow.new()
+           |> Workflow.add(CustomChildCoordination.new())
+           |> Workflow.react_until_satisfied(3)
+           |> Workflow.raw_productions(:custom) == [3]
+
+    for node <- [wrapper, CustomChildCoordination.new()] do
+      assert_raise ArgumentError, ~r/custom child activation or coordination/, fn ->
+        ChildInvocation.new(target: node, input: 3)
+      end
+
+      target =
+        Workflow.new(name: :target, input_ports: [in: []], output_ports: [out: [from: node.name]])
+        |> Workflow.add(node)
+
+      assert_raise ArgumentError, ~r/custom child activation or coordination/, fn ->
+        ChildInvocation.new(target: target, input: 3)
+      end
+    end
+  end
+
+  test "one child occurrence forwards all accepted values of the selected producer" do
+    request =
+      Runic.step(
+        fn n ->
+          ChildInvocation.new(target: Runic.TestSupport.ChildTargets.many_returns(), input: n)
+        end,
+        name: :request
+      )
+
+    base =
+      Workflow.new()
+      |> Workflow.add(Call.new(request, name: :call))
+      |> Workflow.enable_event_emission()
+
+    result = Workflow.react_until_satisfied(base, 3)
+
+    replayed =
+      Workflow.from_events(Workflow.build_log(base) ++ Enum.reverse(result.uncommitted_events))
+
+    for candidate <- [result, replayed] do
+      assert candidate |> Workflow.raw_productions(:call) |> Enum.sort() == [4, 5]
+
+      assert candidate
+             |> Workflow.results([:call], all: true)
+             |> Map.fetch!(:call)
+             |> Enum.sort() == [4, 5]
+
+      assert Enum.count(Multigraph.vertices(candidate.graph), &is_struct(&1, Occurrence)) == 1
+    end
+
+    assert Runic.Component.outputs(Workflow.get_component!(result, :call))[:out][:cardinality] ==
+             :many
+  end
+
+  test "selected output can succeed while an independent child branch fails under skip policy" do
+    request =
+      Runic.step(
+        fn n ->
+          ChildInvocation.new(target: Runic.TestSupport.ChildTargets.sibling_failure(), input: n)
+        end,
+        name: :request
+      )
+
+    base =
+      Workflow.new()
+      |> Workflow.add(Call.new(request, name: :call))
+      |> Workflow.enable_event_emission()
+
+    {result, execution} =
+      Workflow.execute(base, 3, scheduler_policies: [{:failure, %{on_failure: :skip}}])
+
+    assert execution.quiescent?
+    assert [%{error: :bad, kind: :skipped}] = execution.failures
+    assert Workflow.raw_productions(result, :call) == [4]
+
+    replayed =
+      Workflow.from_events(Workflow.build_log(base) ++ Enum.reverse(result.uncommitted_events))
+
+    assert Workflow.raw_productions(replayed, :call) == [4]
+    assert not Workflow.is_runnable?(replayed)
+  end
+
+  test "unrecorded child graph wiring is rejected instead of silently dropped" do
+    child = Runic.TestSupport.ChildTargets.grouped()
+    extra = Runic.step(fn n -> n + 10 end, name: :unrecorded)
+    child = Workflow.add_step(child, Workflow.get_component!(child, :sum), extra)
+
+    assert_raise ArgumentError, ~r/build log does not preserve its graph/, fn ->
+      ChildInvocation.new(target: child, input: 3)
+    end
+  end
 end

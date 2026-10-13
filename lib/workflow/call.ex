@@ -3,15 +3,19 @@ defmodule Runic.Workflow.Call do
   A composite that invokes one child per request-Step activation.
 
   `new/2` takes a Step that returns `ChildInvocation.new/1` and a required name.
-  Its `out` port emits the selected child output after completion. Request and
-  input wiring are private. Invalid requests fail the Call activation.
+  Its `out` port has `:many` cardinality and forwards each accepted value from
+  the selected child producer. Request and input wiring are private. Invalid
+  requests fail the Call activation. A selected producer can run several times;
+  this port is not a barrier for all child branches.
 
   Children run as ordinary nodes in the parent's execution scope. Each Call
   activation owns a separate occurrence. Checkpoints retain its dynamic
   construction and accepted progress through the existing event log. Cancel
   and deadlines use the native parent task owner. Completion in local memory
   and Store acknowledgement remain separate states. The Call Runnable completes
-  the request attempt; the declared output port completes the child call.
+  the request attempt; the output port forwards selected producer results.
+  Execution scope quiescence reports the end of admitted work. Independent
+  branch failure can coexist with output under the parent's failure policy.
   """
   use Runic.Workflow.SingleOutput
 
@@ -96,7 +100,7 @@ defimpl Runic.Component, for: Runic.Workflow.Call do
 
   def hash(call), do: call.hash
   def inputs(call), do: Runic.Component.inputs(call.request_step)
-  def outputs(call), do: [out: [type: :any, from: call.output.hash]]
+  def outputs(call), do: [out: [type: :any, cardinality: :many, from: call.output.hash]]
 end
 
 defimpl Runic.Workflow.Activator, for: Runic.Workflow.Call do
