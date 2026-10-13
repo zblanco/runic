@@ -81,6 +81,9 @@ defmodule Runic.Workflow.Rehydration do
   Preserves graph topology — edges reference vertex ids (hashes), which are
   identical between a `Fact` and its corresponding `FactRef`. Only the vertex
   value in the vertices map is swapped; no edges are modified.
+
+  Native local facts keep their full values, including cold history. They cannot
+  load from a Store, so this function does not replace them with references.
   """
   @spec dehydrate(Workflow.t(), MapSet.t()) :: Workflow.t()
   def dehydrate(%Workflow{graph: graph} = workflow, cold_hashes) do
@@ -88,7 +91,9 @@ defmodule Runic.Workflow.Rehydration do
       Enum.reduce(cold_hashes, graph.vertices, fn hash, vertices ->
         case Map.get(vertices, hash) do
           %Fact{} = fact ->
-            Map.put(vertices, hash, Facts.to_ref(fact))
+            if Runic.Workflow.LocalBoundary.check(fact, :fact) == :ok,
+              do: Map.put(vertices, hash, Facts.to_ref(fact)),
+              else: vertices
 
           _ ->
             vertices
@@ -104,6 +109,8 @@ defmodule Runic.Workflow.Rehydration do
   Combines `classify/2` and `dehydrate/2` into a single call, returning
   the dehydrated workflow paired with a `FactResolver` that can resolve
   any `FactRef` on demand from the backing store.
+
+  Native local facts remain full facts. Only portable references can use the Store.
 
   ## Example
 
@@ -150,7 +157,9 @@ defmodule Runic.Workflow.Rehydration do
               MapSet.member?(meta_targets, hash) or
               MapSet.member?(join_inputs, hash)
 
-          if is_hot, do: verts, else: Map.put(verts, hash, Facts.to_ref(fact))
+          if is_hot or Runic.Workflow.LocalBoundary.check(fact, :fact) != :ok,
+            do: verts,
+            else: Map.put(verts, hash, Facts.to_ref(fact))
 
         _, verts ->
           verts
@@ -169,7 +178,8 @@ defmodule Runic.Workflow.Rehydration do
   @spec resolve_hot(Workflow.t(), MapSet.t(), FactResolver.t()) ::
           {Workflow.t(), FactResolver.t()}
   def resolve_hot(%Workflow{graph: graph} = workflow, hot_hashes, resolver) do
-    resolver = FactResolver.preload(resolver, MapSet.to_list(hot_hashes))
+    ref_hashes = Enum.filter(hot_hashes, &is_struct(Map.get(graph.vertices, &1), FactRef))
+    resolver = FactResolver.preload(resolver, ref_hashes)
 
     vertices =
       Enum.reduce(hot_hashes, graph.vertices, fn hash, vertices ->

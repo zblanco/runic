@@ -531,50 +531,12 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Accumulator do
 
   def match_or_execute(_state_reactor), do: :execute
 
-  def invoke(
-        %Accumulator{} = acc,
-        %Workflow{} = workflow,
-        %Fact{} = fact
-      ) do
-    last_known_state = last_known_state(workflow, acc)
-
-    causal_depth = Workflow.ancestry_depth(workflow, fact) + 1
-
-    unless is_nil(last_known_state) do
-      next_state = apply(acc.reducer, [fact.value, last_known_state.value])
-
-      next_state_produced_fact =
-        Fact.child([fact, last_known_state], value: next_state, ancestry: {acc.hash, fact.hash})
-
-      workflow
-      |> Workflow.log_fact(next_state_produced_fact)
-      |> Workflow.draw_connection(acc, fact, :state_produced, weight: causal_depth)
-      |> Workflow.mark_runnable_as_ran(acc, fact)
-      |> Workflow.run_after_hooks(acc, next_state_produced_fact)
-      |> Workflow.prepare_next_runnables(acc, next_state_produced_fact)
-    else
-      init_fact = init_fact(acc, fact)
-
-      next_state = apply(acc.reducer, [fact.value, init_fact.value])
-
-      next_state_produced_fact =
-        Fact.child(fact, value: next_state, ancestry: {acc.hash, fact.hash})
-
-      workflow
-      |> Workflow.log_fact(init_fact)
-      |> Workflow.draw_connection(acc, init_fact, :state_initiated, weight: causal_depth)
-      |> Workflow.log_fact(next_state_produced_fact)
-      |> Workflow.draw_connection(acc, next_state_produced_fact, :state_produced,
-        weight: causal_depth
-      )
-      |> Workflow.mark_runnable_as_ran(acc, fact)
-      |> Workflow.run_after_hooks(acc, next_state_produced_fact)
-      |> Workflow.prepare_next_runnables(acc, next_state_produced_fact)
-    end
+  def invoke(%Accumulator{} = acc, %Workflow{} = workflow, %Fact{} = fact) do
+    Workflow.invoke(workflow, acc, fact)
   end
 
   def prepare(%Accumulator{} = acc, %Workflow{} = workflow, %Fact{} = fact) do
-    last_state_fact = last_known_state(workflow, acc)
+    last_state_fact = Workflow.latest_state_fact(workflow, acc)
 
     meta_context =
       if Accumulator.has_meta_refs?(acc) do
@@ -687,15 +649,6 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Accumulator do
     end
   end
 
-  defp last_known_state(workflow, accumulator) do
-    Workflow.latest_state_fact(workflow, accumulator)
-  end
-
-  defp init_fact(%Accumulator{init: init, hash: hash}, parent) do
-    init = init.()
-    Fact.initial(parent, hash, init)
-  end
-
   defp run_accumulator_reducer(acc, value, state, ctx) do
     effective_context = merge_effective_context(ctx.meta_context, ctx.run_context)
     arity = Function.info(acc.reducer, :arity) |> elem(1)
@@ -727,73 +680,8 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Join do
 
   def match_or_execute(_join), do: :execute
 
-  def invoke(
-        %Join{} = join,
-        %Workflow{} = workflow,
-        %Fact{ancestry: {_parent_hash, _value_hash}} = fact
-      ) do
-    causal_depth = Workflow.ancestry_depth(workflow, fact) + 1
-
-    workflow =
-      Workflow.draw_connection(workflow, fact, join, :joined, weight: causal_depth)
-
-    join_order_weights =
-      join.joins
-      |> Enum.with_index()
-      |> Map.new()
-
-    joined_edges =
-      workflow.graph
-      |> Multigraph.in_edges(join)
-      |> Enum.filter(&(&1.label == :joined))
-
-    possible_priors_by_parent =
-      joined_edges
-      |> Enum.reduce(%{}, fn edge, acc ->
-        parent_hash = elem(edge.v1.ancestry, 0)
-
-        if Map.has_key?(join_order_weights, parent_hash) and not Map.has_key?(acc, parent_hash) do
-          Map.put(acc, parent_hash, edge.v1)
-        else
-          acc
-        end
-      end)
-
-    possible_priors =
-      join.joins
-      |> Enum.map(&Map.get(possible_priors_by_parent, &1))
-      |> Enum.reject(&is_nil/1)
-      |> Enum.map(& &1.value)
-
-    if Enum.count(join.joins) == Enum.count(possible_priors) do
-      join_bindings_fact =
-        Fact.child(fact, value: possible_priors, ancestry: {join.hash, fact.hash})
-
-      workflow =
-        workflow
-        |> Workflow.log_fact(join_bindings_fact)
-        |> Workflow.prepare_next_runnables(join, join_bindings_fact)
-
-      workflow.graph
-      |> Multigraph.in_edges(join)
-      |> Enum.filter(&(&1.label in [:runnable, :joined]))
-      |> Enum.reduce(workflow, fn
-        %{v1: v1, label: :runnable}, %Workflow{} = wrk ->
-          Workflow.mark_runnable_as_ran(wrk, join, v1)
-
-        %{v1: v1, v2: v2, label: :joined}, %Workflow{} = wrk ->
-          %Workflow{
-            wrk
-            | graph:
-                wrk.graph
-                |> Multigraph.update_labelled_edge(v1, v2, :joined, label: :join_satisfied)
-          }
-      end)
-      |> Workflow.draw_connection(join, join_bindings_fact, :produced, weight: causal_depth)
-      |> Workflow.run_after_hooks(join, join_bindings_fact)
-    else
-      Workflow.mark_runnable_as_ran(workflow, join, fact)
-    end
+  def invoke(%Join{} = join, %Workflow{} = workflow, %Fact{} = fact) do
+    Workflow.invoke(workflow, join, fact)
   end
 
   def prepare(%Join{} = join, %Workflow{} = workflow, %Fact{} = fact) do
@@ -1039,114 +927,8 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.FanIn do
 
   def match_or_execute(_fan_in), do: :execute
 
-  def invoke(
-        %FanIn{} = fan_in,
-        %Workflow{} = workflow,
-        %Fact{ancestry: {parent_step_hash, _parent_fact_hash}} = fact
-      ) do
-    fan_out =
-      workflow.graph
-      |> Multigraph.in_edges(fan_in)
-      |> Enum.filter(&(&1.label == :fan_in))
-      |> List.first(%{})
-      |> Map.get(:v1)
-
-    causal_depth = Workflow.ancestry_depth(workflow, fact) + 1
-
-    case fan_out do
-      nil ->
-        # basic step w/ enumerable output -> fan_in
-        reduced_value = reduce_with_context(fact.value, fan_in.init.(), fan_in.reducer, %{})
-
-        reduced_fact =
-          Fact.child(fact, value: reduced_value, ancestry: {fan_in.hash, fact.hash})
-
-        workflow
-        |> Workflow.log_fact(reduced_fact)
-        |> Workflow.draw_connection(fan_in, reduced_fact, :reduced, weight: causal_depth)
-        |> Workflow.run_after_hooks(fan_in, reduced_fact)
-        |> Workflow.prepare_next_runnables(fan_in, reduced_fact)
-        |> Workflow.mark_runnable_as_ran(fan_in, fact)
-
-      %FanOut{} ->
-        # Find the source_fact_hash that triggered the FanOut batch
-        # This is stable across workflow merges and re-planning
-        source_fact_hash = find_fan_out_source_fact_hash(workflow, fact)
-
-        # Check if this batch has already been reduced by looking for a :reduced edge
-        # This is more robust than checking mapped data which may not survive merges
-        already_completed? = has_reduced_output?(workflow, fan_in, source_fact_hash)
-
-        # Also check mapped data as a fallback
-        completed_key = {:fan_in_completed, source_fact_hash, fan_in.hash}
-        already_completed? = already_completed? or Map.get(workflow.mapped, completed_key, false)
-
-        # Use source_fact_hash based keys (stable across merges)
-        expected_key = {source_fact_hash, fan_out.hash}
-        seen_key = {source_fact_hash, parent_step_hash}
-
-        expected_list = workflow.mapped[expected_key] || []
-        expected_set = MapSet.new(expected_list)
-
-        seen_map = workflow.mapped[seen_key] || %{}
-        seen_set = MapSet.new(Map.keys(seen_map))
-
-        ready? =
-          not already_completed? and
-            not Enum.empty?(expected_set) and
-            MapSet.equal?(expected_set, seen_set)
-
-        # DEBUG: Uncomment to trace FanIn readiness issues
-        # IO.inspect(%{
-        #   fan_in_map: fan_in.map,
-        #   source_fact_hash: source_fact_hash,
-        #   expected_list_size: length(expected_list),
-        #   seen_map_size: map_size(seen_map),
-        #   ready?: ready?,
-        #   already_completed?: already_completed?,
-        #   fact_hash: fact.hash
-        # }, label: "FanIn.invoke DEBUG")
-
-        if ready? do
-          # reduce in FanOut emission order (list was prepended, so reverse)
-          expected_in_order = Enum.reverse(expected_list)
-
-          sister_fact_values =
-            for origin <- expected_in_order do
-              sister_hash = seen_map[origin]
-              workflow.graph.vertices[sister_hash].value
-            end
-
-          reduced_value =
-            reduce_with_context(sister_fact_values, fan_in.init.(), fan_in.reducer, %{})
-
-          reduced_fact =
-            Fact.child(fact, value: reduced_value, ancestry: {fan_in.hash, fact.hash})
-
-          sister_facts =
-            for origin <- expected_in_order do
-              sister_hash = seen_map[origin]
-              workflow.graph.vertices[sister_hash]
-            end
-
-          workflow =
-            Enum.reduce(sister_facts, workflow, fn sister_fact, wrk ->
-              Workflow.mark_runnable_as_ran(wrk, fan_in, sister_fact)
-            end)
-
-          workflow
-          |> Workflow.log_fact(reduced_fact)
-          |> Workflow.draw_connection(fan_in, reduced_fact, :reduced, weight: causal_depth)
-          |> Workflow.run_after_hooks(fan_in, reduced_fact)
-          |> Workflow.prepare_next_runnables(fan_in, reduced_fact)
-          |> Workflow.mark_runnable_as_ran(fan_in, reduced_fact)
-          |> mark_fan_in_completed(completed_key)
-          |> cleanup_mapped(expected_key, seen_key, source_fact_hash)
-        else
-          workflow
-          |> Workflow.mark_runnable_as_ran(fan_in, fact)
-        end
-    end
+  def invoke(%FanIn{} = fan_in, %Workflow{} = workflow, %Fact{} = fact) do
+    Workflow.invoke(workflow, fan_in, fact)
   end
 
   defp find_fan_out_source_fact_hash(workflow, fact) do
@@ -1155,66 +937,6 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.FanIn do
       nil -> nil
     end
   end
-
-  # Mark that this FanIn has completed for this batch - survives merges
-  defp mark_fan_in_completed(workflow, completed_key) do
-    Map.put(workflow, :mapped, Map.put(workflow.mapped, completed_key, true))
-  end
-
-  # Check if FanIn has already produced a :reduced output for this batch
-  # by checking if there's a fact with ancestry matching (fan_in.hash, _) 
-  # that traces back to this source_fact_hash
-  defp has_reduced_output?(workflow, fan_in, source_fact_hash) do
-    workflow.graph
-    |> Multigraph.out_edges(fan_in)
-    |> Enum.any?(fn edge ->
-      edge.label == :reduced and
-        traces_to_source_fact?(workflow, edge.v2, source_fact_hash)
-    end)
-  end
-
-  defp traces_to_source_fact?(_workflow, %Fact{ancestry: nil}, _source_fact_hash), do: false
-
-  defp traces_to_source_fact?(
-         workflow,
-         %Fact{ancestry: {_producer_hash, parent_fact_hash}},
-         source_fact_hash
-       ) do
-    cond do
-      parent_fact_hash == source_fact_hash ->
-        true
-
-      is_nil(parent_fact_hash) ->
-        false
-
-      true ->
-        # Check if parent fact is the source or traces to it
-        parent_fact = workflow.graph.vertices[parent_fact_hash]
-
-        if is_nil(parent_fact) do
-          false
-        else
-          case parent_fact do
-            %Fact{ancestry: {parent_producer, _}} ->
-              parent_producer_node = workflow.graph.vertices[parent_producer]
-
-              case parent_producer_node do
-                %FanOut{} ->
-                  # Found FanOut, check its parent fact
-                  parent_fact.ancestry |> elem(1) == source_fact_hash
-
-                _ ->
-                  traces_to_source_fact?(workflow, parent_fact, source_fact_hash)
-              end
-
-            _ ->
-              false
-          end
-        end
-    end
-  end
-
-  defp traces_to_source_fact?(_workflow, _fact, _source_fact_hash), do: false
 
   defp reduce_with_context(enumerable, acc, reducer, effective_context) do
     arity = Function.info(reducer, :arity) |> elem(1)
@@ -1242,16 +964,6 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.FanIn do
   defp merge_effective_context(meta, run) when map_size(run) == 0, do: meta
   defp merge_effective_context(meta, run) when map_size(meta) == 0, do: run
   defp merge_effective_context(meta, run), do: Map.merge(run, meta)
-
-  defp cleanup_mapped(workflow, expected_key, seen_key, source_fact_hash) do
-    mapped =
-      workflow.mapped
-      |> Map.delete(expected_key)
-      |> Map.delete(seen_key)
-      |> Map.delete({:fan_out_for_batch, source_fact_hash})
-
-    Map.put(workflow, :mapped, mapped)
-  end
 
   def prepare(
         %FanIn{} = fan_in,

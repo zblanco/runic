@@ -920,6 +920,7 @@ defmodule Runic.Runner.Worker do
     {dispatch_time, dispatch_times} = Map.pop(state.dispatch_times, ref)
 
     duration = if dispatch_time, do: System.monotonic_time(:millisecond) - dispatch_time, else: 0
+    {workflow, executed, events} = Workflow.accept_runnable(state.workflow, executed, events)
     emit_runnable_result(executed, state.id, dispatch_time)
 
     case executed.status do
@@ -932,15 +933,6 @@ defmodule Runic.Runner.Worker do
       _ ->
         :ok
     end
-
-    workflow = Workflow.apply_runnable(state.workflow, executed)
-
-    workflow =
-      if events != [] do
-        Workflow.append_runnable_events(workflow, events)
-      else
-        workflow
-      end
 
     state =
       %{state | active_tasks: active_tasks, dispatch_times: dispatch_times}
@@ -1102,7 +1094,7 @@ defmodule Runic.Runner.Worker do
       policy: policy
     })
 
-    boundary = remote_boundary(executor, runnable)
+    boundary = remote_boundary(executor, %{unit: runnable, policy: policy})
 
     case {executor, boundary} do
       {:inline, _} ->
@@ -1198,7 +1190,7 @@ defmodule Runic.Runner.Worker do
       node_hashes: promise.node_hashes
     })
 
-    boundary = remote_boundary(executor, promise)
+    boundary = remote_boundary(executor, %{unit: promise, workflow: workflow, policies: policies})
 
     case {executor, boundary} do
       {:inline, _} ->
@@ -1270,7 +1262,7 @@ defmodule Runic.Runner.Worker do
     executed = execute_runnable(runnable, policy)
 
     # Normalize to {runnable, events}
-    {executed_runnable, _events} =
+    {executed_runnable, events} =
       case executed do
         {%Runnable{} = r, events} -> {r, events}
         %Runnable{} = r -> {r, []}
@@ -1282,16 +1274,24 @@ defmodule Runic.Runner.Worker do
 
       _ ->
         # Apply to local workflow copy so next runnable sees updated state
-        wf = Workflow.apply_runnable(workflow, executed_runnable)
-        # Prepare next runnables and find those in our chain
-        {wf, next_runnables} = Workflow.prepare_for_dispatch(wf)
+        {wf, accepted, normalized_events} =
+          Workflow.accept_runnable(workflow, executed_runnable, events)
 
-        chain_runnables =
-          Enum.filter(next_runnables, fn r ->
-            MapSet.member?(promise.node_hashes, r.node.hash)
-          end)
+        case accepted.status do
+          :failed ->
+            {:promise_partial, promise.id, Enum.reverse(completed), {accepted, normalized_events}}
 
-        resolve_promise_loop(promise, wf, policies, chain_runnables, [executed | completed])
+          _ ->
+            # Prepare next runnables and find those in our chain
+            {wf, next_runnables} = Workflow.prepare_for_dispatch(wf)
+
+            chain_runnables =
+              Enum.filter(next_runnables, fn r ->
+                MapSet.member?(promise.node_hashes, r.node.hash)
+              end)
+
+            resolve_promise_loop(promise, wf, policies, chain_runnables, [executed | completed])
+        end
     end
   end
 
@@ -1410,6 +1410,9 @@ defmodule Runic.Runner.Worker do
           %Runnable{} = r -> {r, []}
         end
 
+      {workflow, executed_runnable, events} =
+        Workflow.accept_runnable(acc.workflow, executed_runnable, events)
+
       emit_runnable_result(executed_runnable, acc.id, nil)
 
       case executed_runnable.status do
@@ -1422,15 +1425,6 @@ defmodule Runic.Runner.Worker do
         _ ->
           :ok
       end
-
-      workflow = Workflow.apply_runnable(acc.workflow, executed_runnable)
-
-      workflow =
-        if events != [] do
-          Workflow.append_runnable_events(workflow, events)
-        else
-          workflow
-        end
 
       acc
       |> collect_pending_events(workflow, events)
@@ -1806,6 +1800,7 @@ defmodule Runic.Runner.Worker do
             do: {:ok, 0},
             else:
               with(
+                :ok <- Runic.Workflow.LocalBoundary.check(id, :workflow_id),
                 :ok <- Runic.Workflow.LocalBoundary.check(build_events, :events),
                 do: store_mod.append(id, build_events, store_state)
               )
@@ -1860,7 +1855,8 @@ defmodule Runic.Runner.Worker do
         else
           log = Workflow.event_log(state.workflow)
 
-          with :ok <- Runic.Workflow.LocalBoundary.check(log, :events) do
+          with :ok <- Runic.Workflow.LocalBoundary.check(id, :workflow_id),
+               :ok <- Runic.Workflow.LocalBoundary.check(log, :events) do
             if operation == :checkpoint and function_exported?(mod, :checkpoint, 3) do
               mod.checkpoint(id, log, st)
             else
@@ -1878,7 +1874,8 @@ defmodule Runic.Runner.Worker do
 
   defp append_pending_events(state, mod, st) do
     # Keep full values in the retry batch until BOTH value writes and append succeed.
-    with :ok <- Runic.Workflow.LocalBoundary.check(state.uncommitted_events, :events),
+    with :ok <- Runic.Workflow.LocalBoundary.check(state.id, :workflow_id),
+         :ok <- Runic.Workflow.LocalBoundary.check(state.uncommitted_events, :events),
          :ok <- flush_pending_facts(state.uncommitted_events, mod, st) do
       events =
         if function_exported?(mod, :save_fact, 3) do

@@ -42,7 +42,8 @@ defmodule Runic.Runner.Store.ETS do
 
   @impl Runic.Runner.Store
   def save(workflow_id, log, %{table: table}) do
-    with :ok <- Runic.Workflow.LocalBoundary.check(log, :events) do
+    with :ok <- Runic.Workflow.LocalBoundary.check(workflow_id, :workflow_id),
+         :ok <- Runic.Workflow.LocalBoundary.check(log, :events) do
       :ets.insert(table, {workflow_id, log, System.monotonic_time(:millisecond)})
       :ok
     end
@@ -64,7 +65,8 @@ defmodule Runic.Runner.Store.ETS do
   @impl Runic.Runner.Store
   def append(workflow_id, events, %{events_table: events_table, counters_table: counters_table})
       when is_list(events) do
-    with :ok <- Runic.Workflow.LocalBoundary.check(events, :events) do
+    with :ok <- Runic.Workflow.LocalBoundary.check(workflow_id, :workflow_id),
+         :ok <- Runic.Workflow.LocalBoundary.check(events, :events) do
       count = length(events)
 
       cursor =

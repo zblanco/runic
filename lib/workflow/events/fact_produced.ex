@@ -47,8 +47,8 @@ defmodule Runic.Workflow.Events.FactProduced do
         value: fact.value,
         ancestry: fact.ancestry,
         causal_ancestry: fact.causal_ancestry,
-        identity_mode: fact.identity_mode,
-        local_scope: fact.local_scope,
+        identity_mode: Map.get(fact, :identity_mode, :portable),
+        local_scope: Map.get(fact, :local_scope),
         meta: fact.meta
       ] ++ attrs
     )

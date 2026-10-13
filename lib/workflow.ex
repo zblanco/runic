@@ -2021,6 +2021,7 @@ defmodule Runic.Workflow do
       Runic.Workflow.LocalBoundary.validate_current!(base_workflow, :workflow)
     else
       Runic.Workflow.LocalBoundary.check!(events, :events)
+      Runic.Workflow.LocalBoundary.check!(base_workflow, :workflow)
     end
 
     fact_mode = Keyword.get(opts, :fact_mode, :full)
@@ -2056,6 +2057,7 @@ defmodule Runic.Workflow do
 
     Enum.reduce(runtime_events, base, fn event, wf ->
       case {fact_mode, event} do
+        {:ref, %FactProduced{identity_mode: :local}} -> apply_event(wf, event)
         {:ref, %FactProduced{}} -> apply_event_lean(wf, event)
         _ -> apply_event(wf, event)
       end
@@ -3611,7 +3613,7 @@ defmodule Runic.Workflow do
 
     Enum.reduce_while(runnables, {workflow, false, execution}, fn runnable, {wrk, false, scope} ->
       {executed, events} = execute_with_policy(runnable, policies, driver_opts)
-      wrk = wrk |> append_runnable_events(events) |> apply_runnable(executed)
+      {wrk, executed, _events} = accept_runnable(wrk, executed, events)
       result = {wrk, executed.status == :failed, Execution.record(scope, wrk, executed)}
       if executed.status == :failed, do: {:halt, result}, else: {:cont, result}
     end)
@@ -3754,9 +3756,11 @@ defmodule Runic.Workflow do
          config
        )
        when is_list(events) do
-    apply_async_result(
-      {:result, ref, executed},
-      append_runnable_events(workflow, events),
+    apply_async_accepted(
+      ref,
+      executed,
+      events,
+      workflow,
       pending,
       active,
       stopped?,
@@ -3772,16 +3776,7 @@ defmodule Runic.Workflow do
          stopped?,
          config
        ) do
-    workflow = apply_runnable(workflow, executed)
-    config = %{config | execution: Execution.record(config.execution, workflow, executed)}
-
-    async_cycle(
-      workflow,
-      pending,
-      Map.delete(active, ref),
-      stopped? or executed.status == :failed,
-      config
-    )
+    apply_async_accepted(ref, executed, [], workflow, pending, active, stopped?, config)
   end
 
   defp apply_async_result({:result, ref, _invalid}, workflow, pending, active, stopped?, config) do
@@ -3798,6 +3793,19 @@ defmodule Runic.Workflow do
 
     config = %{config | execution: execution}
     async_cycle(workflow, pending, Map.delete(active, ref), true, config)
+  end
+
+  defp apply_async_accepted(ref, executed, events, workflow, pending, active, stopped?, config) do
+    {workflow, executed, _events} = accept_runnable(workflow, executed, events)
+    config = %{config | execution: Execution.record(config.execution, workflow, executed)}
+
+    async_cycle(
+      workflow,
+      pending,
+      Map.delete(active, ref),
+      stopped? or executed.status == :failed,
+      config
+    )
   end
 
   defp record_execution_loss(%__MODULE__{emit_events: true} = workflow, runnable, reason) do
@@ -4195,7 +4203,8 @@ defmodule Runic.Workflow do
     case Invokable.prepare(step, wrk, fact) do
       {:ok, runnable} ->
         {executed, events} = execute.(runnable)
-        {wrk |> append_runnable_events(events) |> apply_runnable(executed), executed}
+        {wrk, accepted, _events} = accept_runnable(wrk, executed, events)
+        {wrk, accepted}
 
       {:skip, reducer_fn} ->
         {reducer_fn.(wrk), nil}
@@ -4720,12 +4729,77 @@ defmodule Runic.Workflow do
       workflow = Workflow.apply_runnable(workflow, executed)
   """
   @spec apply_runnable(t(), Runnable.t()) :: t()
+  def apply_runnable(workflow, runnable), do: elem(accept_runnable(workflow, runnable), 0)
 
-  def apply_runnable(
-        %__MODULE__{} = workflow,
-        %Runnable{status: :completed, events: events} = runnable
-      )
-      when is_list(events) and events != [] do
+  @doc false
+  def accept_runnable(workflow, %Runnable{} = runnable, events \\ []) do
+    accepted =
+      case validate_acceptance(workflow, runnable) do
+        :ok ->
+          runnable
+
+        {:error, error} ->
+          %{
+            runnable
+            | status: :failed,
+              error: error,
+              result: nil,
+              events: nil,
+              hook_apply_fns: []
+          }
+      end
+
+    lifecycle =
+      if accepted.status != runnable.status, do: rejection_events(events, accepted), else: events
+
+    wf = do_apply_runnable(workflow, accepted) |> append_runnable_events(lifecycle)
+    {wf, accepted, lifecycle}
+  end
+
+  defp validate_acceptance(workflow, %Runnable{status: :completed} = runnable) do
+    with :ok <- Fact.check_parents([runnable.input_fact]) do
+      Runic.Workflow.LocalBoundary.validate_current!(runnable.events, :events)
+
+      case runnable.node do
+        %Runic.Workflow.Join{} = join ->
+          staged = Enum.reduce(runnable.events || [], workflow, &apply_event(&2, &1))
+          Runic.Workflow.Join.check_parents(join, staged)
+
+        %Runic.Workflow.FanIn{} = fan_in ->
+          staged = Enum.reduce(runnable.events || [], workflow, &apply_event(&2, &1))
+          Runic.Workflow.FanIn.check_parents(fan_in, staged, runnable.context)
+
+        _ ->
+          :ok
+      end
+    end
+  rescue
+    error in [ArgumentError, Runic.Workflow.LocalFactError] -> {:error, error}
+  end
+
+  defp validate_acceptance(_, _), do: :ok
+
+  defp rejection_events(events, runnable) do
+    failed = %RunnableFailed{
+      runnable_id: runnable.id,
+      activation_id: Runnable.activation_id(runnable),
+      attempt_id: runnable.attempt_id,
+      node_hash: runnable.node.hash,
+      order_key: Runnable.order_key(runnable),
+      error: runnable.error,
+      failed_at: System.monotonic_time(:millisecond),
+      attempts: (runnable.attempt_number || 0) + 1,
+      failure_action: :halt
+    }
+
+    Enum.reject(events, &is_struct(&1, RunnableCompleted)) ++ [failed]
+  end
+
+  defp do_apply_runnable(
+         %__MODULE__{} = workflow,
+         %Runnable{status: :completed, events: events} = runnable
+       )
+       when is_list(events) and events != [] do
     # 1. Fold core events
     wf = Enum.reduce(events, workflow, fn event, wf -> apply_event(wf, event) end)
 
@@ -4770,11 +4844,11 @@ defmodule Runic.Workflow do
 
   # Skipped runnable: fold events (marks activation as consumed),
   # then suppress downstream work for the same input.
-  def apply_runnable(
-        %__MODULE__{} = workflow,
-        %Runnable{status: :skipped, events: events, node: node, input_fact: fact}
-      )
-      when is_list(events) and events != [] do
+  defp do_apply_runnable(
+         %__MODULE__{} = workflow,
+         %Runnable{status: :skipped, events: events, node: node, input_fact: fact}
+       )
+       when is_list(events) and events != [] do
     wf = Enum.reduce(events, workflow, fn event, wf -> apply_event(wf, event) end)
 
     wf =
@@ -4787,11 +4861,11 @@ defmodule Runic.Workflow do
     suppress_downstream_for_input(wf, node, fact)
   end
 
-  def apply_runnable(%__MODULE__{} = workflow, %Runnable{status: :failed} = runnable) do
+  defp do_apply_runnable(%__MODULE__{} = workflow, %Runnable{status: :failed} = runnable) do
     handle_failed_runnable(workflow, runnable)
   end
 
-  def apply_runnable(%__MODULE__{} = workflow, %Runnable{status: :pending}) do
+  defp do_apply_runnable(%__MODULE__{} = workflow, %Runnable{status: :pending}) do
     workflow
   end
 

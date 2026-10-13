@@ -22,6 +22,26 @@ defmodule Runic.Workflow.FanIn do
   that need to be resolved during the prepare phase.
   """
   def has_meta_refs?(%__MODULE__{meta_refs: meta_refs}), do: meta_refs != []
+
+  @doc false
+  def pending_parents(fan_in, workflow, %{fan_in_context: %{mode: :fan_out_reduce} = context}) do
+    expected = Map.get(workflow.mapped, context.expected_key, [])
+    seen = Map.get(workflow.mapped, context.seen_key, %{})
+
+    complete? =
+      Map.get(workflow.mapped, {:fan_in_completed, context.source_fact_hash, fan_in.hash}, false)
+
+    if not complete? and expected != [] and MapSet.new(expected) == MapSet.new(Map.keys(seen)),
+      do:
+        Enum.map(Enum.reverse(expected), &Map.get(workflow.graph.vertices, Map.fetch!(seen, &1))),
+      else: []
+  end
+
+  def pending_parents(_, _, _), do: []
+
+  @doc false
+  def check_parents(fan_in, workflow, context),
+    do: Runic.Workflow.Fact.check_parents(pending_parents(fan_in, workflow, context))
 end
 
 defimpl Runic.Workflow.Coordinator, for: Runic.Workflow.FanIn do
@@ -64,10 +84,15 @@ defimpl Runic.Workflow.Coordinator, for: Runic.Workflow.FanIn do
             wf.graph.vertices[sister_hash].value
           end
 
-        reduced_value = fan_in_reduce(sister_fact_values, fan_in.init.(), fan_in.reducer)
-
         parents =
           Enum.map(expected_in_order, fn origin -> wf.graph.vertices[seen_map[origin]] end)
+
+        case Fact.check_parents(parents) do
+          :ok -> :ok
+          {:error, error} -> raise error
+        end
+
+        reduced_value = fan_in_reduce(sister_fact_values, fan_in.init.(), fan_in.reducer)
 
         reduced_fact =
           Fact.child(parents, value: reduced_value, ancestry: {fan_in.hash, fact.hash})

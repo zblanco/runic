@@ -59,9 +59,10 @@ input profile when appropriate. Existing native task ownership still applies.
 
 A join or reducer cannot combine different local scopes. Accumulator state
 keeps its scope, so repeated local state updates require a shared scope. A
-scope conflict is rejected; the native accumulator rejects it before calling
-its reducer. Combining portable facts with one local scope yields a local
-result. Promotion requires selecting new portable data and admitting it into
+scope conflict becomes a failed Runnable. Join and FanIn check the current
+graph before acceptance. Reducers and hooks do not run for rejected parent
+scopes. Direct invocation uses the same paths. Combining portable facts with
+one local scope yields a local result. Promotion requires selecting new portable data and admitting it into
 a new portable execution, not changing a local child's marker.
 
 ## Persistence, replay, and remote execution
@@ -98,13 +99,25 @@ still work. There is no saved local execution to resume.
 Event ETF serialization and workflow snapshot encoding reject native local
 markers. Snapshot decoding and Runner recovery reject them too. Explicit
 in-memory event replay uses `Workflow.from_events(events, nil,
-allow_local: true)` and must use the same live VM. It does not call accepted
-callbacks again. Local FactRefs cannot load their values from a Store. Raw
+allow_local: true)` and must use the same live VM. Local events must retain
+their original mode, scope, and identities. Replay does not create a new scope
+for an existing identity. The option applies to both the events and the base
+workflow. Replay does not call accepted callbacks again.
+
+Local FactRefs cannot load their values from a Store or resolver cache.
+Reference and preload checks run before any Store read. `Rehydration.dehydrate/2`
+and the fused rehydration path retain full native local Facts, including cold
+history. They can still replace cold portable Facts with references. Native
+local replay also retains full Facts when `fact_mode: :ref` is selected.
+Local values therefore remain in memory until the workflow drops them. Raw
 Erlang serialization and legacy low-level replay APIs are not portable codecs.
 
 Custom remote executors must declare `locality/0` as `:remote`. The Worker
 rejects a native local Runnable or Promise before dispatch. Existing executors
-without this callback retain their local profile. `Runnable.for_remote/1` and
+without this callback retain their local profile. The check includes the
+policy captured for a Runnable and the full workflow and policies captured
+for a Promise. Local history prevents remote Promise dispatch even when the
+current input is portable. `Runnable.for_remote/1` and
 `LocalBoundary.check/2` provide the same marker check for other adapters.
 These checks do not serialize code or certify arbitrary legacy raw data,
 captured bindings, hooks, or policies. A remote adapter must validate its

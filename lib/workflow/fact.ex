@@ -58,7 +58,7 @@ defmodule Runic.Workflow.Fact do
     parents = parents |> List.wrap() |> Enum.reject(&is_nil/1)
     if parents == [], do: raise(ArgumentError, "a child fact requires at least one parent")
     locals = Enum.filter(parents, &(Map.get(&1, :identity_mode, :portable) == :local))
-    scopes = locals |> Enum.map(& &1.local_scope) |> Enum.uniq()
+    scopes = locals |> Enum.map(&Map.get(&1, :local_scope)) |> Enum.uniq()
 
     case check_parents(parents) do
       :ok -> :ok
@@ -83,14 +83,19 @@ defmodule Runic.Workflow.Fact do
       |> List.wrap()
       |> Enum.reject(&is_nil/1)
       |> Enum.filter(&(Map.get(&1, :identity_mode, :portable) == :local))
-      |> Enum.map(& &1.local_scope)
+      |> Enum.map(&Map.get(&1, :local_scope))
       |> Enum.uniq()
 
-    Enum.each(scopes, &LocalScope.validate!/1)
+    cond do
+      Enum.any?(scopes, &(not LocalScope.valid?(&1))) ->
+        {:error, %ArgumentError{message: "local fact scope must belong to this live VM"}}
 
-    if length(scopes) > 1,
-      do: {:error, %ArgumentError{message: "cannot combine facts from different local scopes"}},
-      else: :ok
+      length(scopes) > 1 ->
+        {:error, %ArgumentError{message: "cannot combine facts from different local scopes"}}
+
+      true ->
+        :ok
+    end
   end
 
   @doc false
@@ -115,6 +120,11 @@ defmodule Runic.Workflow.Fact do
   defp put_scope(%__MODULE__{identity_mode: :portable, local_scope: nil} = fact), do: fact
 
   defp put_scope(%__MODULE__{identity_mode: :local} = fact) do
+    if is_nil(fact.local_scope) and
+         Enum.any?([fact.id, fact.hash, fact.payload_digest, fact.content_digest], &(!is_nil(&1))) do
+      raise ArgumentError, "an existing local identity requires its original local scope"
+    end
+
     %{fact | local_scope: LocalScope.validate!(fact.local_scope || LocalScope.new())}
   end
 

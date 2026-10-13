@@ -32,10 +32,13 @@ defmodule Runic.Workflow.FactResolver do
   @spec resolve(Fact.t() | FactRef.t(), t()) :: {:ok, Fact.t()} | {:error, term()}
   def resolve(%Fact{value: v} = fact, _resolver) when not is_nil(v), do: {:ok, fact}
 
-  def resolve(%FactRef{identity_mode: :local} = ref, _resolver),
-    do: Runic.Workflow.LocalBoundary.check(ref, :fact_ref)
+  def resolve(%FactRef{} = ref, resolver) do
+    with :ok <- Runic.Workflow.LocalBoundary.check(ref, :fact_ref) do
+      resolve_ref(ref, resolver)
+    end
+  end
 
-  def resolve(%FactRef{hash: h} = ref, %__MODULE__{} = resolver) do
+  defp resolve_ref(%FactRef{hash: h} = ref, %__MODULE__{} = resolver) do
     case Map.get(resolver.cache, h) do
       nil ->
         {mod, st} = resolver.store
@@ -65,6 +68,7 @@ defmodule Runic.Workflow.FactResolver do
   """
   @spec preload(t(), [term()]) :: t()
   def preload(%__MODULE__{} = resolver, fact_hashes) when is_list(fact_hashes) do
+    Runic.Workflow.LocalBoundary.check!(fact_hashes, :fact_hashes)
     {mod, st} = resolver.store
 
     loaded =

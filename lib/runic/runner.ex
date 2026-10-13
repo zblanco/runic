@@ -160,9 +160,21 @@ defmodule Runic.Runner do
   """
   def run(runner, workflow_id, input, opts \\ []) do
     case lookup(runner, workflow_id) do
-      nil -> {:error, :not_found}
-      pid -> GenServer.cast(pid, {:run, input, opts})
+      nil ->
+        {:error, :not_found}
+
+      pid ->
+        fact =
+          if is_struct(input, Runic.Workflow.Fact),
+            do: input,
+            else: Runic.Workflow.Fact.input(input, opts)
+
+        Runic.Workflow.LocalBoundary.validate_current!(fact, :input)
+        GenServer.cast(pid, {:run, fact, opts})
     end
+  rescue
+    error in [ArgumentError, Runic.Identity.CanonicalError, Runic.Workflow.LocalFactError] ->
+      {:error, error}
   end
 
   @doc """

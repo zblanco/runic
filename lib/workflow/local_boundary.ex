@@ -9,6 +9,26 @@ defmodule Runic.Workflow.LocalBoundary do
   alias Runic.Identity
   alias Runic.Workflow.{Fact, FactRef, LocalFactError, LocalScope}
 
+  alias Runic.Workflow.Events.{
+    FactProduced,
+    StateInitiated,
+    JoinCompleted,
+    FanOutFactEmitted,
+    FanInCompleted
+  }
+
+  @scope_records %{
+    Fact => {:identity_mode, :local_scope, [:id, :hash, :payload_digest, :content_digest]},
+    FactRef => {:identity_mode, :local_scope, [:id, :hash, :payload_digest, :content_digest]},
+    FactProduced => {:identity_mode, :local_scope, [:hash, :payload_digest, :content_digest]},
+    StateInitiated => {:init_identity_mode, :init_local_scope, [:init_fact_hash]},
+    JoinCompleted => {:result_identity_mode, :result_local_scope, [:result_fact_hash]},
+    FanOutFactEmitted =>
+      {:emitted_identity_mode, :emitted_local_scope,
+       [:emitted_fact_hash, :emitted_payload_digest, :emitted_content_digest]},
+    FanInCompleted => {:result_identity_mode, :result_local_scope, [:result_fact_hash]}
+  }
+
   def check(value, field), do: walk(value, [field])
 
   def check!(value, field) do
@@ -28,22 +48,65 @@ defmodule Runic.Workflow.LocalBoundary do
     :ok
   end
 
-  defp validate_scopes(value, path) when is_map(value) do
+  defp validate_scopes(%module{} = record, path) when is_map_key(@scope_records, module) do
+    {mode_key, scope_key, identities} = Map.fetch!(@scope_records, module)
+
+    native? =
+      Map.get(record, mode_key, :portable) == :local or
+        Enum.any?(identities, &match?(%Identity{scheme: :local_sha256}, Map.get(record, &1)))
+
+    if native? do
+      cond do
+        Map.get(record, mode_key) != :local ->
+          raise LocalFactError,
+            field: hd(path),
+            path: path ++ [mode_key],
+            reason: :invalid_local_profile
+
+        is_nil(Map.get(record, scope_key)) ->
+          raise LocalFactError,
+            field: hd(path),
+            path: path ++ [scope_key],
+            reason: :missing_local_scope
+
+        not LocalScope.valid?(Map.get(record, scope_key)) ->
+          raise LocalFactError,
+            field: hd(path),
+            path: path ++ [scope_key],
+            reason: :foreign_local_scope
+
+        true ->
+          :ok
+      end
+    end
+
+    validate_scope_fields(record, path)
+  end
+
+  defp validate_scopes(value, path) when is_map(value), do: validate_scope_fields(value, path)
+
+  defp validate_scopes(value, path) when is_tuple(value),
+    do: value |> Tuple.to_list() |> validate_scopes(path)
+
+  defp validate_scopes(value, path) when is_list(value), do: validate_scope_list(value, path, 0)
+  defp validate_scopes(_, _), do: :ok
+
+  defp validate_scope_list([], _, _), do: :ok
+
+  defp validate_scope_list([head | tail], path, index) do
+    validate_scopes(head, path ++ [index])
+
+    if is_list(tail),
+      do: validate_scope_list(tail, path, index + 1),
+      else: validate_scopes(tail, path ++ [:tail])
+  end
+
+  defp validate_scope_fields(value, path) do
     Enum.each(Map.to_list(value), fn {key, item} ->
       validate_scopes(key, path ++ [:map_key])
       validate_scopes(item, path ++ [key])
     end)
   end
-
-  defp validate_scopes(value, path) when is_tuple(value),
-    do: value |> Tuple.to_list() |> validate_scopes(path)
-
-  defp validate_scopes([head | tail], path) do
-    validate_scopes(head, path ++ [:head])
-    validate_scopes(tail, path ++ [:tail])
-  end
-
-  defp validate_scopes(_, _), do: :ok
 
   defp walk(%Fact{identity_mode: :local}, path), do: reject(path ++ [:identity_mode], :local_fact)
 

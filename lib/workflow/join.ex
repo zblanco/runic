@@ -5,6 +5,27 @@ defmodule Runic.Workflow.Join do
   def new(joins) when is_list(joins) do
     %__MODULE__{joins: joins, hash: Components.fact_hash(joins)}
   end
+
+  @doc false
+  def pending_parents(join, workflow) do
+    joined =
+      Multigraph.in_edges(workflow.graph, join)
+      |> Enum.filter(&(&1.label == :joined))
+
+    selected =
+      Enum.reduce(joined, %{}, fn edge, acc ->
+        parent = elem(edge.v1.ancestry, 0)
+        if parent in join.joins, do: Map.put_new(acc, parent, edge.v1), else: acc
+      end)
+
+    if Enum.all?(join.joins, &Map.has_key?(selected, &1)),
+      do: Enum.map(join.joins, &Map.fetch!(selected, &1)),
+      else: []
+  end
+
+  @doc false
+  def check_parents(join, workflow),
+    do: Runic.Workflow.Fact.check_parents(pending_parents(join, workflow))
 end
 
 defimpl Runic.Workflow.Coordinator, for: Runic.Workflow.Join do
