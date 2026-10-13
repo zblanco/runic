@@ -14,7 +14,10 @@ input = Runic.Workflow.Batch.input([10, 20], %{adjustment: 3})
 ```
 
 The result step receives `%Runic.Workflow.Batch.Result{id, parent, outcomes}`.
-Each outcome has `id`, `batch_id`, `index`, `status`, `value`, and `error`.
+Each outcome has `id`, `batch_id`, `index`, `status`, `value`, `error`,
+`activation_id`, and `attempt_id`. Failed and skipped outcomes have the accepted
+failure activation and terminal attempt identities. Completed, pending, and
+uncertain observations have nil activation and attempt fields.
 The batch ID uses the FanOut activation and source Fact occurrence. The item ID
 uses that occurrence and its output index. Index alone is not an identity.
 Use `Workflow.execute/3` or `Runner.start_execution/4` for repeated invocations
@@ -32,7 +35,10 @@ A custom callback reads `SingleOutput.Context.batch`. This view has `id`,
 coordinates, without a parent copy. Prepared callback contexts do contain the
 parent once in `CausalContext.batch`. Runic does not add another view to runtime
 or meta context. Steps resolve `context(:batch)` during execution. User runtime
-keys, including `:batch`, remain unchanged in the public runtime view. Large
+keys, including `:batch`, remain unchanged in the public runtime view.
+Context introspection excludes the native `:batch` key for registered members.
+Custom SingleOutput meta refs for that key do not create a meta view; custom
+callbacks read `Context.batch`. Other required context keys remain external. Large
 parent maps can still increase worker copying. The completed Result also contains
 the parent. This is not a zero-copy execution contract.
 

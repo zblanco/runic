@@ -460,7 +460,12 @@ defmodule Runic.Workflow do
         is_map_key(vertex, :meta_refs),
         refs = vertex.meta_refs,
         refs != [],
-        context_refs = Enum.filter(refs, &(&1.kind == :context)),
+        context_refs =
+          Enum.filter(
+            refs,
+            &(&1.kind == :context and
+                not Runic.Workflow.Batch.provides_context?(workflow, vertex, &1.target))
+          ),
         context_refs != [],
         name = resolve_component_name(workflow, vertex),
         not is_nil(name),
@@ -2545,23 +2550,7 @@ defmodule Runic.Workflow do
 
     # 4. Rewire: connect each upstream parent to each downstream child
     #    Add both :flow edges (for runtime) and :connects_to edges (for component graph)
-    graph =
-      Enum.reduce(upstream_parents, workflow.graph, fn parent, g ->
-        Enum.reduce(downstream_children, g, fn child, g ->
-          g = Multigraph.add_edge(g, parent, child, label: :flow, weight: 0)
-
-          # Find the owning components for the parent/child to add :connects_to edges
-          temp_wrk = %{workflow | graph: g}
-          parent_component = find_owning_component(temp_wrk, parent)
-          child_component = find_owning_component(temp_wrk, child)
-
-          if parent_component && child_component && parent_component != child_component do
-            Multigraph.add_edge(g, parent_component, child_component, label: :connects_to)
-          else
-            g
-          end
-        end)
-      end)
+    graph = rewire_removed(workflow, upstream_parents, downstream_children).graph
 
     # 5. Delete the safe-to-remove vertices (also removes all their edges)
     graph = Multigraph.delete_vertices(graph, safe_to_remove)
@@ -2592,6 +2581,29 @@ defmodule Runic.Workflow do
         after_hooks: after_hooks,
         build_log: workflow.build_log ++ [event]
     }
+  end
+
+  @doc false
+  def rewire_removed(workflow, parents, children) do
+    graph =
+      Enum.reduce(parents, workflow.graph, fn parent, g ->
+        Enum.reduce(children, g, fn child, g ->
+          g = Multigraph.add_edge(g, parent, child, label: :flow, weight: 0)
+
+          # Find the owning components for the parent/child to add :connects_to edges
+          temp_wrk = %{workflow | graph: g}
+          parent_component = find_owning_component(temp_wrk, parent)
+          child_component = find_owning_component(temp_wrk, child)
+
+          if parent_component && child_component && parent_component != child_component do
+            Multigraph.add_edge(g, parent_component, child_component, label: :connects_to)
+          else
+            g
+          end
+        end)
+      end)
+
+    %{workflow | graph: graph}
   end
 
   defp get_by_hash(%__MODULE__{graph: g}, %{hash: hash}) do

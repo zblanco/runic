@@ -180,14 +180,16 @@ defmodule Runic.Workflow.BatchOpusTest do
     merged =
       Workflow.merge(Workflow.new() |> Workflow.add(one), Workflow.new() |> Workflow.add(two))
 
-    assert map_size(merged.mapped.batch_members) == 2
+    assert map_size(merged.mapped.batch_members) == 4
 
     assert_raise ArgumentError, ~r/remove owning Batch :one/, fn ->
       Workflow.remove_component(merged, {:one, :fan_out})
     end
 
     remaining = Workflow.remove_component(merged, :one)
-    assert Map.keys(remaining.mapped.batch_members) == [two.component.hash]
+
+    assert MapSet.new(Map.keys(remaining.mapped.batch_members)) ==
+             MapSet.new([two.component.hash, two.fan_in.hash])
 
     assert Workflow.from_log(Workflow.build_log(remaining)).mapped.batch_members ==
              remaining.mapped.batch_members

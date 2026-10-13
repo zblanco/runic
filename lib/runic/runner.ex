@@ -741,25 +741,14 @@ defmodule Runic.Runner do
   defp resume_from_events(events, rehydration, store, base_workflow \\ nil)
 
   defp resume_from_events(events, rehydration, store, base_workflow) do
-    structure =
-      if rehydration in [:lazy, :hybrid] do
-        if base_workflow,
-          do: base_workflow,
-          else:
-            Workflow.from_log(
-              Enum.filter(
-                events,
-                &(is_struct(&1, Workflow.ComponentAdded) or
-                    is_struct(&1, Workflow.ComponentRemoved))
-              )
-            )
-      end
-
-    if structure && Runic.Workflow.Batch.present?(structure) do
+    if rehydration in [:lazy, :hybrid] and not is_nil(base_workflow) and
+         Runic.Workflow.Batch.present?(base_workflow) do
       {:error, {:unsupported_batch_rehydration, rehydration}}
     else
-      {workflow, resolver} = do_resume_from_events(events, rehydration, store, base_workflow)
-      {:ok, workflow, resolver}
+      case do_resume_from_events(events, rehydration, store, base_workflow) do
+        {:error, _} = error -> error
+        {workflow, resolver} -> {:ok, workflow, resolver}
+      end
     end
   end
 
@@ -793,15 +782,22 @@ defmodule Runic.Runner do
 
   defp do_resume_from_events(events, :hybrid, store, base_workflow) do
     workflow = Workflow.from_events(events, base_workflow, fact_mode: :ref)
-    %{hot: hot} = Workflow.Rehydration.classify(workflow)
-    resolver = Workflow.FactResolver.new(store)
-    {workflow, resolver} = Workflow.Rehydration.resolve_hot(workflow, hot, resolver)
-    {workflow, resolver}
+
+    if Runic.Workflow.Batch.present?(workflow) do
+      {:error, {:unsupported_batch_rehydration, :hybrid}}
+    else
+      %{hot: hot} = Workflow.Rehydration.classify(workflow)
+      resolver = Workflow.FactResolver.new(store)
+      Workflow.Rehydration.resolve_hot(workflow, hot, resolver)
+    end
   end
 
   defp do_resume_from_events(events, :lazy, store, base_workflow) do
     workflow = Workflow.from_events(events, base_workflow, fact_mode: :ref)
-    {workflow, Workflow.FactResolver.new(store)}
+
+    if Runic.Workflow.Batch.present?(workflow),
+      do: {:error, {:unsupported_batch_rehydration, :lazy}},
+      else: {workflow, Workflow.FactResolver.new(store)}
   end
 
   defp resume_from_log(runner, workflow_id, store_mod, store_state, opts) do

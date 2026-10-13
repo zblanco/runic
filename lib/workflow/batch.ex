@@ -247,11 +247,42 @@ defmodule Runic.Workflow.Batch do
 
   @doc false
   def item_scope(workflow, node, fact) do
-    case lookup_item(workflow, node, fact) do
-      {_source, _fan_out, item, _coordinates} -> item
-      _ -> nil
+    case Map.get(Map.get(workflow.mapped, :batch_members, %{}), node.hash) do
+      %{collector: fan_out, member: producer} ->
+        case fact.ancestry do
+          {^producer, item} ->
+            case Map.get(workflow.graph.vertices, item) do
+              %{
+                hash: ^item,
+                ancestry: {^fan_out, source},
+                meta: %{runic_batch: %{item_id: ^item, source_fact_id: metadata_source}}
+              }
+              when metadata_source == source ->
+                item
+
+              _ ->
+                nil
+            end
+
+          _ ->
+            nil
+        end
+
+      _ ->
+        case lookup_item(workflow, node, fact) do
+          {_source, _fan_out, item, _coordinates} -> item
+          _ -> nil
+        end
     end
   end
+
+  @doc false
+  def provides_context?(workflow, node, :batch) do
+    match?(%{fan_out: _}, Map.get(Map.get(workflow.mapped, :batch_members, %{}), node.hash)) and
+      SingleOutput.supported?(node)
+  end
+
+  def provides_context?(_workflow, _node, _key), do: false
 
   @doc false
   def descendant?(_workflow, %{hash: hash}, hash), do: true
@@ -287,6 +318,15 @@ defmodule Runic.Workflow.Batch do
       Enum.reduce(definitions, %{}, fn {_hash, batch}, index ->
         entry = %{owner: batch.hash, fan_out: batch.fan_out.hash}
         index = Map.put(index, batch.component.hash, entry)
+
+        member =
+          case batch.component do
+            %__MODULE__{} = nested -> nested.fan_in.hash
+            node -> node.hash
+          end
+
+        index =
+          Map.put(index, batch.fan_in.hash, %{collector: batch.fan_out.hash, member: member})
 
         case batch.component do
           %__MODULE__{} = nested -> Map.put(index, nested.fan_out.hash, entry)
@@ -348,11 +388,7 @@ defmodule Runic.Workflow.Batch do
     children = Multigraph.out_edges(workflow.graph, batch.fan_in, by: :flow) |> Enum.map(& &1.v2)
 
     graph =
-      Enum.reduce(parents, workflow.graph, fn parent, graph ->
-        Enum.reduce(children, graph, fn child, graph ->
-          Multigraph.add_edge(graph, parent, child, label: :flow)
-        end)
-      end)
+      Workflow.rewire_removed(workflow, parents, children).graph
       |> Multigraph.delete_vertices(Enum.map(hashes, &workflow.graph.vertices[&1]))
 
     definitions =

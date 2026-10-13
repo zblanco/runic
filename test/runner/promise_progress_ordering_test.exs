@@ -87,7 +87,15 @@ defmodule Runic.Runner.PromiseProgressOrderingTest do
     scope = state.task_scope
     :sys.suspend(scope)
     on_exit(fn -> if Process.alive?(scope), do: :sys.resume(scope) end)
+    :erlang.trace(worker, true, [:receive, {:tracer, self()}])
+    on_exit(fn -> if Process.alive?(worker), do: :erlang.trace(worker, false, [:receive]) end)
     send(task, :release)
+
+    assert_receive {:trace, ^worker, :receive,
+                    {:promise_progress, _id, %Workflow.Runnable{}, []}},
+                   2000
+
+    :erlang.trace(worker, false, [:receive])
     wait_control(scope, handle)
     rejected = :sys.get_state(worker)
     assert rejected.promise_progress == %{}
