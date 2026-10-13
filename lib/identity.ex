@@ -52,7 +52,7 @@ defmodule Runic.Identity do
           | :segment
 
   @type t :: %__MODULE__{
-          scheme: :sha256,
+          scheme: :sha256 | :local_sha256,
           version: 1,
           domain: domain(),
           digest: <<_::256>>
@@ -72,7 +72,44 @@ defmodule Runic.Identity do
 
   @doc "Derives an identity from an ordered collection of identities and scalars."
   @spec derive(domain(), term()) :: t()
-  def derive(domain, coordinates), do: digest(domain, {:derive, coordinates})
+  def derive(domain, coordinates) do
+    if contains_local_identity?(coordinates),
+      do: local_digest(domain, {:derive, coordinates}),
+      else: digest(domain, {:derive, coordinates})
+  end
+
+  @doc """
+  Builds an explicitly local identity from ETF bytes. This does not use the
+  portable canonical codec. Callers must include their local scope in payload
+  documents. Causal identities inherit the local tag from their coordinates.
+  """
+  @spec local_digest(domain(), term()) :: t()
+  def local_digest(domain, document) when domain in @domains do
+    bytes = :erlang.term_to_binary(document, [:deterministic])
+
+    %__MODULE__{
+      scheme: :local_sha256,
+      version: 1,
+      domain: domain,
+      digest: :crypto.hash(:sha256, Preimage.frame_v1(domain, "runic-local-etf-v1" <> bytes))
+    }
+  end
+
+  defp contains_local_identity?(%__MODULE__{scheme: :local_sha256}), do: true
+
+  defp contains_local_identity?(value) when is_map(value),
+    do:
+      Enum.any?(Map.to_list(value), fn {k, v} ->
+        contains_local_identity?(k) or contains_local_identity?(v)
+      end)
+
+  defp contains_local_identity?(value) when is_tuple(value),
+    do: value |> Tuple.to_list() |> contains_local_identity?()
+
+  defp contains_local_identity?([head | tail]),
+    do: contains_local_identity?(head) or contains_local_identity?(tail)
+
+  defp contains_local_identity?(_), do: false
 
   @doc "Builds an identity from a value's explicit portable projection."
   @spec project(domain(), term()) :: t()
@@ -106,10 +143,26 @@ defmodule Runic.Identity do
       digest::binary>>
   end
 
+  def to_binary(%__MODULE__{
+        scheme: :local_sha256,
+        version: version,
+        domain: domain,
+        digest: digest
+      })
+      when byte_size(digest) == 32 do
+    domain_bytes = Atom.to_string(domain)
+
+    <<2, version::unsigned-16, byte_size(domain_bytes)::unsigned-16, domain_bytes::binary,
+      digest::binary>>
+  end
+
   @doc "Verifies that an identity document reproduces the expected identity."
   @spec verify(t(), term()) :: :ok | {:error, Runic.Identity.IntegrityError.t()}
   def verify(%__MODULE__{} = expected, identity_document) do
-    actual = digest(expected.domain, identity_document)
+    actual =
+      if expected.scheme == :local_sha256,
+        do: local_digest(expected.domain, identity_document),
+        else: digest(expected.domain, identity_document)
 
     if actual == expected do
       :ok
@@ -130,7 +183,7 @@ defmodule Runic.Identity do
   @doc "Returns the full tagged text representation of an identity."
   @spec to_string(t()) :: String.t()
   def to_string(%__MODULE__{} = identity) do
-    "runic:sha256:v#{identity.version}:#{identity.domain}:" <>
+    "runic:#{identity.scheme}:v#{identity.version}:#{identity.domain}:" <>
       Base.encode16(identity.digest, case: :lower)
   end
 
@@ -139,6 +192,7 @@ defmodule Runic.Identity do
   def short_string(%__MODULE__{} = identity, length \\ 20)
       when is_integer(length) and length > 0 do
     digest = identity.digest |> Base.encode16(case: :lower) |> binary_part(0, min(length, 64))
-    "#{identity.domain}_#{digest}"
+    prefix = if identity.scheme == :local_sha256, do: "local_", else: ""
+    "#{prefix}#{identity.domain}_#{digest}"
   end
 end

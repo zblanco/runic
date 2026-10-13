@@ -65,6 +65,7 @@ defmodule Runic.Workflow.Runnable do
   """
   @spec new(struct(), Fact.t(), CausalContext.t()) :: t()
   def new(node, fact, context) do
+    validate_scope!(fact)
     activation_id = runnable_id(node, fact)
 
     %__MODULE__{
@@ -87,6 +88,8 @@ defmodule Runic.Workflow.Runnable do
   """
   @spec new(term(), struct(), Fact.t(), CausalContext.t()) :: t()
   def new(id, node, fact, context) do
+    validate_scope!(fact)
+
     activation_id =
       case {id, node} do
         {%Identity{domain: :activation}, _} -> id
@@ -118,6 +121,20 @@ defmodule Runic.Workflow.Runnable do
   @spec runnable_id(struct(), Fact.t()) :: Identity.t()
   def runnable_id(node, fact) do
     Identity.derive(:activation, [:local, fact.hash, node.hash])
+  end
+
+  defp validate_scope!(%Fact{identity_mode: :local, local_scope: scope}),
+    do: Runic.Workflow.LocalScope.validate!(scope)
+
+  defp validate_scope!(_), do: :ok
+
+  @doc """
+  Checks a prepared Runnable before remote export. Native local facts and
+  scopes are rejected. The adapter still owns code serialization, legacy raw
+  value validation, and fresh resource installation on the destination.
+  """
+  def for_remote(%__MODULE__{} = runnable) do
+    with :ok <- Runic.Workflow.LocalBoundary.check(runnable, :dispatch), do: {:ok, runnable}
   end
 
   @doc false

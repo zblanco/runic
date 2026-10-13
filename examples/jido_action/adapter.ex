@@ -1,10 +1,12 @@
 defmodule Runic.Examples.JidoAction do
   @moduledoc """
-  Portable, ordinary Jido Action example using Runic's single-output lifecycle.
+  Ordinary Jido Action example using Runic's single-output lifecycle.
 
   Load this and `component.ex` in a project with Jido Action V3 and this Runic
-  revision. This deliberately reuses Jido's validation/execution boundary;
-  it is not a replacement Flow compiler or a migration of local-value mode.
+  revision. Native local facts supply bare input and inherit their mode through
+  SingleOutput; no Jido fact wrapper or child-fact factory is needed here.
+  Portable calls retain Jido's durability checks. Action schemas, output and
+  effect validation remain in Jido. This is not a replacement Flow compiler.
   """
   use Runic.Workflow.SingleOutput
 
@@ -45,8 +47,8 @@ defmodule Runic.Examples.JidoAction do
 
     result =
       Jido.Exec.Telemetry.span(:action, metadata, fn ->
-        with :ok <- Jido.Exec.Portable.validate(input, :input),
-             :ok <- Jido.Exec.Portable.validate(context.input_metadata, :metadata),
+        with :ok <- validate_data(input, :input, context.identity_mode),
+             :ok <- validate_data(context.input_metadata, :metadata, context.identity_mode),
              {:ok, value, effects} <-
                Jido.Exec.Node.Action.execute(
                  node.action,
@@ -54,8 +56,8 @@ defmodule Runic.Examples.JidoAction do
                  context.runtime,
                  context.input_metadata
                ),
-             :ok <- Jido.Exec.Portable.validate(value, :output),
-             :ok <- Jido.Exec.Portable.validate(effects, :effects) do
+             :ok <- validate_data(value, :output, context.identity_mode),
+             :ok <- validate_data(effects, :effects, context.identity_mode) do
           {:ok, value, effects}
         end
       end)
@@ -73,4 +75,7 @@ defmodule Runic.Examples.JidoAction do
         Result.failure(reason)
     end
   end
+
+  defp validate_data(_value, _field, :local), do: :ok
+  defp validate_data(value, field, :portable), do: Jido.Exec.Portable.validate(value, field)
 end

@@ -75,6 +75,10 @@ defmodule Runic.Identity.Canonical do
     {frame(0x21, Atom.to_string(atom)), 1}
   end
 
+  defp encode(%Identity{scheme: :local_sha256}, path, _depth, _limits) do
+    raise CanonicalError, reason: {:unsupported, :local_identity}, path: Enum.reverse(path)
+  end
+
   defp encode(%Identity{} = identity, _path, _depth, _limits) do
     {frame(0x40, Identity.to_binary(identity)), 1}
   end

@@ -1465,7 +1465,9 @@ defmodule Runic.Workflow do
         value: e.value,
         ancestry: e.ancestry,
         causal_ancestry: e.causal_ancestry,
-        meta: e.meta
+        meta: e.meta,
+        identity_mode: Map.get(e, :identity_mode, :portable),
+        local_scope: Map.get(e, :local_scope)
       )
 
     wf = log_fact(wf, fact)
@@ -1550,7 +1552,15 @@ defmodule Runic.Workflow do
   end
 
   def apply_event(%__MODULE__{} = wf, %StateInitiated{} = e) do
-    init_fact = Fact.new(hash: e.init_fact_hash, value: e.init_value, ancestry: e.init_ancestry)
+    init_fact =
+      Fact.new(
+        hash: e.init_fact_hash,
+        value: e.init_value,
+        ancestry: e.init_ancestry,
+        identity_mode: Map.get(e, :init_identity_mode, :portable),
+        local_scope: Map.get(e, :init_local_scope)
+      )
+
     acc = Map.get(wf.graph.vertices, e.accumulator_hash)
 
     if acc do
@@ -1577,7 +1587,13 @@ defmodule Runic.Workflow do
     join = Map.get(wf.graph.vertices, e.join_hash)
 
     result_fact =
-      Fact.new(hash: e.result_fact_hash, value: e.result_value, ancestry: e.result_ancestry)
+      Fact.new(
+        hash: e.result_fact_hash,
+        value: e.result_value,
+        ancestry: e.result_ancestry,
+        identity_mode: Map.get(e, :result_identity_mode, :portable),
+        local_scope: Map.get(e, :result_local_scope)
+      )
 
     if join do
       wf
@@ -1610,7 +1626,9 @@ defmodule Runic.Workflow do
         payload_digest: e.emitted_payload_digest,
         value: e.emitted_value,
         ancestry: e.emitted_ancestry,
-        causal_ancestry: e.emitted_causal_ancestry
+        causal_ancestry: e.emitted_causal_ancestry,
+        identity_mode: Map.get(e, :emitted_identity_mode, :portable),
+        local_scope: Map.get(e, :emitted_local_scope)
       )
 
     fan_out = Map.get(wf.graph.vertices, e.fan_out_hash)
@@ -1634,7 +1652,13 @@ defmodule Runic.Workflow do
     fan_in = Map.get(wf.graph.vertices, e.fan_in_hash)
 
     result_fact =
-      Fact.new(hash: e.result_fact_hash, value: e.result_value, ancestry: e.result_ancestry)
+      Fact.new(
+        hash: e.result_fact_hash,
+        value: e.result_value,
+        ancestry: e.result_ancestry,
+        identity_mode: Map.get(e, :result_identity_mode, :portable),
+        local_scope: Map.get(e, :result_local_scope)
+      )
 
     if fan_in do
       wf
@@ -1662,7 +1686,9 @@ defmodule Runic.Workflow do
       hash: e.hash,
       ancestry: e.ancestry,
       causal_ancestry: e.causal_ancestry,
-      meta: e.meta
+      meta: e.meta,
+      identity_mode: Map.get(e, :identity_mode, :portable),
+      local_scope: Map.get(e, :local_scope)
     }
 
     wf = log_fact(wf, ref)
@@ -1974,6 +2000,8 @@ defmodule Runic.Workflow do
     * `:fact_mode` — `:full` (default) creates `Fact` vertices from `FactProduced`
       events. `:ref` creates lightweight `FactRef` vertices instead, enabling
       lean replay that avoids loading cold fact values into memory.
+    * `:allow_local` - defaults to `false`. Set `true` only for explicit event
+      replay in the same live VM. It is not a persistent recovery profile.
 
   ## Example
 
@@ -1986,6 +2014,15 @@ defmodule Runic.Workflow do
   end
 
   defp do_from_events(events, base_workflow, opts) do
+    events = Enum.to_list(events)
+
+    if Keyword.get(opts, :allow_local, false) do
+      Runic.Workflow.LocalBoundary.validate_current!(events, :events)
+      Runic.Workflow.LocalBoundary.validate_current!(base_workflow, :workflow)
+    else
+      Runic.Workflow.LocalBoundary.check!(events, :events)
+    end
+
     fact_mode = Keyword.get(opts, :fact_mode, :full)
 
     {build_events, runtime_events} =
@@ -3362,7 +3399,9 @@ defmodule Runic.Workflow do
   The execution ID and input Fact occurrence ID distinguish repeated equal
   inputs. Pass an existing `:execution_id` to use the same correlation identity.
 
-  `input` is a portable payload value. To use the value from an existing Fact,
+  `input` is portable by default. Set `identity_mode: :local` for an
+  experimental native local fact and optionally reuse `:local_scope`.
+  To use the value from an existing Fact,
   pass `fact.value`; this API creates its own input occurrence and does not
   accept a Fact envelope as the occurrence.
 
@@ -3379,6 +3418,9 @@ defmodule Runic.Workflow do
 
     * `:execution_id` - an optional `%Runic.Identity{domain: :execution}`
     * `:runnable_order` - defaults to `:stable` for this observation API
+    * `:identity_mode` - `:portable` (default) or `:local`
+    * `:local_scope` - a live `Runic.Workflow.LocalScope` for local mode;
+      omission creates a new scope. Native children inherit the scope.
 
   ## Example
 
@@ -3560,7 +3602,7 @@ defmodule Runic.Workflow do
   end
 
   def react(%__MODULE__{} = wrk, raw_fact, opts) do
-    react(wrk, Fact.new(value: raw_fact), opts)
+    react(wrk, Fact.input(raw_fact, opts), opts)
   end
 
   defp execute_runnables_serial(workflow, runnables, opts, execution) do
@@ -3865,7 +3907,7 @@ defmodule Runic.Workflow do
   end
 
   def react_until_satisfied(%__MODULE__{} = wrk, raw_fact, opts) do
-    react_until_satisfied(wrk, Fact.new(value: raw_fact), opts)
+    react_until_satisfied(wrk, Fact.input(raw_fact, opts), opts)
   end
 
   defp maybe_convert_deadline(opts) do

@@ -13,8 +13,20 @@ defmodule Runic.Workflow.FactRef do
           hash: Runic.Workflow.Fact.hash(),
           ancestry: {Runic.Workflow.Fact.hash(), Runic.Workflow.Fact.hash()} | nil,
           causal_ancestry: Runic.Workflow.FactAncestry.t() | nil,
+          identity_mode: :portable | :local,
+          local_scope: Runic.Workflow.LocalScope.t() | nil,
           meta: map()
         }
 
-  defstruct [:id, :content_digest, :payload_digest, :hash, :ancestry, :causal_ancestry, meta: %{}]
+  defstruct [
+    :id,
+    :content_digest,
+    :payload_digest,
+    :hash,
+    :ancestry,
+    :causal_ancestry,
+    identity_mode: :portable,
+    local_scope: nil,
+    meta: %{}
+  ]
 end

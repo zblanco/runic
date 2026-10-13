@@ -32,6 +32,9 @@ defmodule Runic.Workflow.FactResolver do
   @spec resolve(Fact.t() | FactRef.t(), t()) :: {:ok, Fact.t()} | {:error, term()}
   def resolve(%Fact{value: v} = fact, _resolver) when not is_nil(v), do: {:ok, fact}
 
+  def resolve(%FactRef{identity_mode: :local} = ref, _resolver),
+    do: Runic.Workflow.LocalBoundary.check(ref, :fact_ref)
+
   def resolve(%FactRef{hash: h} = ref, %__MODULE__{} = resolver) do
     case Map.get(resolver.cache, h) do
       nil ->
@@ -88,6 +91,8 @@ defmodule Runic.Workflow.FactResolver do
       ancestry: ref.ancestry,
       causal_ancestry: ref.causal_ancestry,
       meta: Map.get(ref, :meta, %{}),
+      identity_mode: Map.get(ref, :identity_mode, :portable),
+      local_scope: Map.get(ref, :local_scope),
       value: value
     }
   end

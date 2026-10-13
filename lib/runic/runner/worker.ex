@@ -115,6 +115,7 @@ defmodule Runic.Runner.Worker do
     event_cursor: 0,
     uncommitted_events: [],
     persistence: :pending,
+    persistence_enabled?: true,
     executions: %{},
     current_execution_id: nil,
     hooks: %{},
@@ -169,13 +170,17 @@ defmodule Runic.Runner.Worker do
     workflow_id = Keyword.fetch!(opts, :workflow_id)
     workflow = Keyword.fetch!(opts, :workflow)
     resumed = Keyword.get(opts, :resumed, false)
+    persistence = Keyword.get(opts, :persistence, :enabled)
+
+    unless persistence in [:enabled, :disabled],
+      do: raise(ArgumentError, "persistence must be :enabled or :disabled")
 
     workflow = maybe_apply_resume_options(workflow, opts, resumed)
 
     {store_mod, store_state} = Runic.Runner.get_store(runner)
 
     workflow =
-      if Runic.Runner.Store.supports_stream?(store_mod) do
+      if persistence == :enabled and Runic.Runner.Store.supports_stream?(store_mod) do
         Workflow.enable_event_emission(workflow)
       else
         workflow
@@ -235,6 +240,8 @@ defmodule Runic.Runner.Worker do
       runner: runner,
       workflow: workflow,
       store: {store_mod, store_state},
+      persistence_enabled?: persistence == :enabled,
+      persistence: if(persistence == :disabled, do: :not_managed, else: :pending),
       task_supervisor: task_supervisor,
       task_scope: task_scope,
       task_scope_ref: Process.monitor(task_scope),
@@ -455,7 +462,7 @@ defmodule Runic.Runner.Worker do
   end
 
   def handle_call({:stop, opts}, _from, state) do
-    persist? = Keyword.get(opts, :persist, true)
+    persist? = state.persistence_enabled? and Keyword.get(opts, :persist, true)
     result = if persist?, do: persist(state, :save), else: {:ok, state}
 
     case result do
@@ -469,6 +476,9 @@ defmodule Runic.Runner.Worker do
         {:reply, {:error, reason}, state}
     end
   end
+
+  def handle_call(:checkpoint, _from, %{persistence_enabled?: false} = state),
+    do: {:reply, {:error, :persistence_disabled}, state}
 
   def handle_call(:checkpoint, _from, state) do
     case do_checkpoint(state) do
@@ -486,6 +496,11 @@ defmodule Runic.Runner.Worker do
   end
 
   defp admit_input(state, input, opts) do
+    input =
+      if match?(%Runic.Workflow.Fact{}, input),
+        do: input,
+        else: Runic.Workflow.Fact.input(input, opts)
+
     policies = merge_runtime_policies(opts, state.workflow.scheduler_policies)
 
     workflow =
@@ -670,7 +685,7 @@ defmodule Runic.Runner.Worker do
     state = apply_promise_results(state, completed)
 
     # Handle the failed runnable through existing error path
-    state = apply_promise_results(state, [failed])
+    state = apply_promise_results(state, List.wrap(failed))
 
     Telemetry.promise_event(:stop, %{duration: duration}, %{
       promise_id: promise_id,
@@ -1087,8 +1102,10 @@ defmodule Runic.Runner.Worker do
       policy: policy
     })
 
-    case executor do
-      :inline ->
+    boundary = remote_boundary(executor, runnable)
+
+    case {executor, boundary} do
+      {:inline, _} ->
         # Execute synchronously in the Worker process.
         # Skip timeout enforcement for inline (per design doc); preserve retry/fallback.
         inline_policy = %{policy | timeout_ms: :infinity}
@@ -1111,7 +1128,18 @@ defmodule Runic.Runner.Worker do
             handle_task_result(ref, executed, [], state, false)
         end
 
-      executor_mod ->
+      {_, {:error, error}} ->
+        ref = make_ref()
+
+        state = %{
+          state
+          | active_tasks: Map.put(state.active_tasks, ref, runnable.id),
+            dispatch_times: Map.put(state.dispatch_times, ref, now)
+        }
+
+        handle_task_result(ref, Runnable.fail(runnable, error), [], state, false)
+
+      {executor_mod, :ok} ->
         {handle, new_executor_state} = executor_mod.dispatch(work_fn, [], executor_state)
 
         state = update_executor_state(state, executor_origin, new_executor_state)
@@ -1124,6 +1152,14 @@ defmodule Runic.Runner.Worker do
             dispatch_times: Map.put(state.dispatch_times, handle, now)
         }
     end
+  end
+
+  defp remote_boundary(:inline, _unit), do: :ok
+
+  defp remote_boundary(executor, unit) do
+    if function_exported?(executor, :locality, 0) and executor.locality() == :remote,
+      do: Runic.Workflow.LocalBoundary.check(unit, :dispatch),
+      else: :ok
   end
 
   defp build_work_fn(runnable, policy) do
@@ -1162,8 +1198,10 @@ defmodule Runic.Runner.Worker do
       node_hashes: promise.node_hashes
     })
 
-    case executor do
-      :inline ->
+    boundary = remote_boundary(executor, promise)
+
+    case {executor, boundary} do
+      {:inline, _} ->
         # Execute promise synchronously
         result = resolve_promise(promise, workflow, policies)
         ref = make_ref()
@@ -1184,7 +1222,20 @@ defmodule Runic.Runner.Worker do
             handle_promise_partial_inline(ref, promise_id, completed, failed, state)
         end
 
-      executor_mod ->
+      {_, {:error, error}} ->
+        ref = make_ref()
+
+        state = %{
+          state
+          | active_tasks: Map.put(state.active_tasks, ref, {:promise, promise.id}),
+            active_promises: Map.put(state.active_promises, promise.id, promise),
+            dispatch_times: Map.put(state.dispatch_times, ref, now)
+        }
+
+        failed = Enum.map(promise.runnables, &Runnable.fail(&1, error))
+        handle_promise_partial_inline(ref, promise.id, [], failed, state)
+
+      {executor_mod, :ok} ->
         {handle, new_executor_state} = executor_mod.dispatch(work_fn, [], executor_state)
 
         state = update_executor_state(state, :default, new_executor_state)
@@ -1333,7 +1384,7 @@ defmodule Runic.Runner.Worker do
     }
 
     state = apply_promise_results(state, completed)
-    state = apply_promise_results(state, [failed])
+    state = apply_promise_results(state, List.wrap(failed))
 
     Telemetry.promise_event(:stop, %{duration: duration}, %{
       promise_id: promise_id,
@@ -1720,6 +1771,8 @@ defmodule Runic.Runner.Worker do
 
   # --- Checkpointing ---
 
+  defp maybe_checkpoint(%{persistence_enabled?: false} = state), do: state
+
   defp maybe_checkpoint(%{store: nil} = state), do: state
   defp maybe_checkpoint(%{checkpoint_strategy: :manual} = state), do: state
   defp maybe_checkpoint(%{checkpoint_strategy: :on_complete} = state), do: state
@@ -1738,6 +1791,8 @@ defmodule Runic.Runner.Worker do
 
   # --- Persistence ---
 
+  defp maybe_persist_build_log(%{persistence_enabled?: false} = state, _resumed), do: {:ok, state}
+
   defp maybe_persist_build_log(
          %{store: {store_mod, store_state}, id: id, workflow: wf} = state,
          resumed
@@ -1749,7 +1804,11 @@ defmodule Runic.Runner.Worker do
         Telemetry.store_span(:build, %{workflow_id: id}, fn ->
           if build_events == [],
             do: {:ok, 0},
-            else: store_mod.append(id, build_events, store_state)
+            else:
+              with(
+                :ok <- Runic.Workflow.LocalBoundary.check(build_events, :events),
+                do: store_mod.append(id, build_events, store_state)
+              )
         end)
 
       acknowledge_persistence(result, state, :build)
@@ -1757,6 +1816,13 @@ defmodule Runic.Runner.Worker do
       {:ok, if(resumed, do: %{state | persistence: :saved}, else: state)}
     end
   end
+
+  defp collect_pending_events(
+         %{persistence_enabled?: false} = state,
+         workflow,
+         _lifecycle_events
+       ),
+       do: %{state | workflow: %{workflow | uncommitted_events: []}}
 
   defp collect_pending_events(state, workflow, lifecycle_events) do
     {store_mod, _store_state} = state.store
@@ -1777,8 +1843,12 @@ defmodule Runic.Runner.Worker do
     end
   end
 
+  defp mark_persistence_pending(%{persistence_enabled?: false} = state), do: state
+
   defp mark_persistence_pending(%{persistence: {:error, _}} = state), do: state
   defp mark_persistence_pending(state), do: %{state | persistence: :pending}
+
+  defp persist(%{persistence_enabled?: false} = state, _operation), do: {:ok, state}
 
   defp persist(%{store: {mod, st}, id: id} = state, operation) do
     state = collect_pending_events(state, state.workflow, [])
@@ -1790,10 +1860,12 @@ defmodule Runic.Runner.Worker do
         else
           log = Workflow.event_log(state.workflow)
 
-          if operation == :checkpoint and function_exported?(mod, :checkpoint, 3) do
-            mod.checkpoint(id, log, st)
-          else
-            mod.save(id, log, st)
+          with :ok <- Runic.Workflow.LocalBoundary.check(log, :events) do
+            if operation == :checkpoint and function_exported?(mod, :checkpoint, 3) do
+              mod.checkpoint(id, log, st)
+            else
+              mod.save(id, log, st)
+            end
           end
         end
       end)
@@ -1806,7 +1878,8 @@ defmodule Runic.Runner.Worker do
 
   defp append_pending_events(state, mod, st) do
     # Keep full values in the retry batch until BOTH value writes and append succeed.
-    with :ok <- flush_pending_facts(state.uncommitted_events, mod, st) do
+    with :ok <- Runic.Workflow.LocalBoundary.check(state.uncommitted_events, :events),
+         :ok <- flush_pending_facts(state.uncommitted_events, mod, st) do
       events =
         if function_exported?(mod, :save_fact, 3) do
           strip_fact_values(state.uncommitted_events)

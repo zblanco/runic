@@ -394,7 +394,10 @@ defmodule Runic.Workflow.PolicyDriver do
           Runic.Workflow.SingleOutput.complete_value(runnable, term)
         else
           result_fact =
-            Fact.new(value: term, ancestry: {runnable.node.hash, runnable.input_fact.hash})
+            Fact.child(runnable.input_fact,
+              value: term,
+              ancestry: {runnable.node.hash, runnable.input_fact.hash}
+            )
 
           alias Runic.Workflow.Events.{FactProduced, ActivationConsumed}
 

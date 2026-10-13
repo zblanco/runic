@@ -30,6 +30,8 @@ defmodule Runic.Workflow.Events.FactProduced do
     :causal_ancestry,
     :producer_label,
     :weight,
+    identity_mode: :portable,
+    local_scope: nil,
     meta: %{}
   ]
 
@@ -45,6 +47,8 @@ defmodule Runic.Workflow.Events.FactProduced do
         value: fact.value,
         ancestry: fact.ancestry,
         causal_ancestry: fact.causal_ancestry,
+        identity_mode: fact.identity_mode,
+        local_scope: fact.local_scope,
         meta: fact.meta
       ] ++ attrs
     )

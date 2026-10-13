@@ -33,6 +33,8 @@ defmodule Runic.Workflow.Facts do
       hash: fact.hash,
       ancestry: fact.ancestry,
       causal_ancestry: fact.causal_ancestry,
+      identity_mode: Map.get(fact, :identity_mode, :portable),
+      local_scope: Map.get(fact, :local_scope),
       meta: fact.meta
     }
   end

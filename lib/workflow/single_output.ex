@@ -151,7 +151,7 @@ defmodule Runic.Workflow.SingleOutput do
   defp child_fact(runnable, %Result{value: value, metadata: metadata}) do
     Result.validate_metadata!(metadata)
 
-    Fact.new(
+    Fact.child(runnable.input_fact,
       value: value,
       ancestry: {runnable.node.hash, runnable.input_fact.hash},
       meta: metadata

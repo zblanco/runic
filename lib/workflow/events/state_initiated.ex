@@ -14,5 +14,13 @@ defmodule Runic.Workflow.Events.StateInitiated do
           weight: non_neg_integer()
         }
 
-  defstruct [:accumulator_hash, :init_fact_hash, :init_value, :init_ancestry, :weight]
+  defstruct [
+    :accumulator_hash,
+    :init_fact_hash,
+    :init_value,
+    :init_ancestry,
+    :weight,
+    init_identity_mode: :portable,
+    init_local_scope: nil
+  ]
 end

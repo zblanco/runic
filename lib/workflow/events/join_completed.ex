@@ -18,5 +18,13 @@ defmodule Runic.Workflow.Events.JoinCompleted do
           weight: non_neg_integer()
         }
 
-  defstruct [:join_hash, :result_fact_hash, :result_value, :result_ancestry, :weight]
+  defstruct [
+    :join_hash,
+    :result_fact_hash,
+    :result_value,
+    :result_ancestry,
+    :weight,
+    result_identity_mode: :portable,
+    result_local_scope: nil
+  ]
 end

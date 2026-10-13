@@ -28,6 +28,8 @@ defmodule Runic.Workflow.Events.FanOutFactEmitted do
     :emitted_value,
     :emitted_ancestry,
     :emitted_causal_ancestry,
-    :weight
+    :weight,
+    emitted_identity_mode: :portable,
+    emitted_local_scope: nil
   ]
 end

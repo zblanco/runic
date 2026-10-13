@@ -65,7 +65,12 @@ defimpl Runic.Workflow.Coordinator, for: Runic.Workflow.FanIn do
           end
 
         reduced_value = fan_in_reduce(sister_fact_values, fan_in.init.(), fan_in.reducer)
-        reduced_fact = Fact.new(value: reduced_value, ancestry: {fan_in.hash, fact.hash})
+
+        parents =
+          Enum.map(expected_in_order, fn origin -> wf.graph.vertices[seen_map[origin]] end)
+
+        reduced_fact =
+          Fact.child(parents, value: reduced_value, ancestry: {fan_in.hash, fact.hash})
 
         wf = Workflow.run_before_hooks(wf, fan_in, fact)
 
@@ -88,6 +93,8 @@ defimpl Runic.Workflow.Coordinator, for: Runic.Workflow.FanIn do
           result_fact_hash: reduced_fact.hash,
           result_value: reduced_fact.value,
           result_ancestry: reduced_fact.ancestry,
+          result_identity_mode: reduced_fact.identity_mode,
+          result_local_scope: reduced_fact.local_scope,
           expected_key: fctx.expected_key,
           seen_key: fctx.seen_key,
           weight: ctx.ancestry_depth + 1

@@ -11,9 +11,15 @@ defmodule Runic.Workflow.SingleOutput.Context do
   This is a transient callback view, not a saved component definition or a
   portable dispatch envelope. Do not retain resources from it in outputs or
   captured bindings. Resume must supply fresh runtime resources as usual.
+
+  `identity_mode` and `local_scope` describe the input Fact, not another runtime
+  context system. A native local callback receives bare data. To pass it to a
+  nested workflow, explicitly pass these fields to `Workflow.execute/3`.
   """
 
   @type t :: %__MODULE__{
+          identity_mode: :portable | :local,
+          local_scope: Runic.Workflow.LocalScope.t() | nil,
           runtime: map(),
           meta: map(),
           input_metadata: map(),
@@ -27,6 +33,8 @@ defmodule Runic.Workflow.SingleOutput.Context do
     :activation_id,
     :attempt_id,
     :attempt_number,
+    identity_mode: :portable,
+    local_scope: nil,
     runtime: %{},
     meta: %{},
     input_metadata: %{}
@@ -36,6 +44,8 @@ defmodule Runic.Workflow.SingleOutput.Context do
   def from_runnable(runnable) do
     %__MODULE__{
       runtime: runnable.context.run_context,
+      identity_mode: Map.get(runnable.input_fact, :identity_mode, :portable),
+      local_scope: Map.get(runnable.input_fact, :local_scope),
       meta: runnable.context.meta_context,
       input_metadata: runnable.input_fact.meta,
       runnable_id: runnable.id,

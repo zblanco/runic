@@ -82,5 +82,13 @@ defmodule Runic.Runner.Executor do
   """
   @callback cleanup(executor_state()) :: :ok
 
-  @optional_callbacks [release: 2, cleanup: 1]
+  @doc """
+  Declares whether dispatch leaves this VM. Custom remote executors must return
+  `:remote`; the Worker rejects native local facts before dispatch/3. Omission
+  means local execution for compatibility. The executor still owns portable
+  code transport and fresh runtime resources on the destination.
+  """
+  @callback locality() :: :local | :remote
+
+  @optional_callbacks [release: 2, cleanup: 1, locality: 0]
 end

@@ -50,7 +50,8 @@ defimpl Runic.Workflow.Coordinator, for: Runic.Workflow.Join do
         |> Enum.reject(&is_nil/1)
         |> Enum.map(& &1.value)
 
-      join_fact = Fact.new(value: collected_values, ancestry: {join.hash, fact.hash})
+      parents = Enum.map(join.joins, &Map.fetch!(satisfied_by_parent, &1))
+      join_fact = Fact.child(parents, value: collected_values, ancestry: {join.hash, fact.hash})
 
       wf = Workflow.run_before_hooks(wf, join, fact)
 
@@ -59,6 +60,8 @@ defimpl Runic.Workflow.Coordinator, for: Runic.Workflow.Join do
         result_fact_hash: join_fact.hash,
         result_value: join_fact.value,
         result_ancestry: join_fact.ancestry,
+        result_identity_mode: join_fact.identity_mode,
+        result_local_scope: join_fact.local_scope,
         weight: ctx.ancestry_depth + 1
       }
 

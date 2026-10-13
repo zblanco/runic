@@ -111,7 +111,7 @@ defprotocol Runic.Workflow.Invokable do
 
         def invoke(%MyApp.CustomNode{} = node, workflow, fact) do
           result = node.work.(fact.value)
-          result_fact = Fact.new(value: result, ancestry: {node.hash, fact.hash})
+          result_fact = Fact.child(fact, value: result, ancestry: {node.hash, fact.hash})
 
           workflow
           |> Workflow.log_fact(result_fact)
@@ -132,7 +132,7 @@ defprotocol Runic.Workflow.Invokable do
 
         def execute(%MyApp.CustomNode{} = node, %Runnable{input_fact: fact, context: ctx} = runnable) do
           result = node.work.(fact.value)
-          result_fact = Fact.new(value: result, ancestry: {node.hash, fact.hash})
+          result_fact = Fact.child(fact, value: result, ancestry: {node.hash, fact.hash})
 
           events = [
             FactProduced.new(result_fact,
@@ -377,7 +377,7 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.InputBinding do
     result = InputBinding.bind(binding, fact.value)
 
     result_fact =
-      Fact.new(
+      Fact.child(fact,
         value: result,
         ancestry: {binding.hash, fact.hash},
         meta: InputBinding.fact_meta(binding)
@@ -408,7 +408,7 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.InputBinding do
       result = InputBinding.bind(binding, fact.value)
 
       result_fact =
-        Fact.new(
+        Fact.child(fact,
           value: result,
           ancestry: {binding.hash, fact.hash},
           meta: InputBinding.fact_meta(binding)
@@ -521,7 +521,6 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Accumulator do
 
   alias Runic.Workflow.{
     Fact,
-    Components,
     Accumulator,
     Runnable,
     CausalContext,
@@ -544,7 +543,8 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Accumulator do
     unless is_nil(last_known_state) do
       next_state = apply(acc.reducer, [fact.value, last_known_state.value])
 
-      next_state_produced_fact = Fact.new(value: next_state, ancestry: {acc.hash, fact.hash})
+      next_state_produced_fact =
+        Fact.child([fact, last_known_state], value: next_state, ancestry: {acc.hash, fact.hash})
 
       workflow
       |> Workflow.log_fact(next_state_produced_fact)
@@ -553,11 +553,12 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Accumulator do
       |> Workflow.run_after_hooks(acc, next_state_produced_fact)
       |> Workflow.prepare_next_runnables(acc, next_state_produced_fact)
     else
-      init_fact = init_fact(acc)
+      init_fact = init_fact(acc, fact)
 
       next_state = apply(acc.reducer, [fact.value, init_fact.value])
 
-      next_state_produced_fact = Fact.new(value: next_state, ancestry: {acc.hash, fact.hash})
+      next_state_produced_fact =
+        Fact.child(fact, value: next_state, ancestry: {acc.hash, fact.hash})
 
       workflow
       |> Workflow.log_fact(init_fact)
@@ -591,6 +592,7 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Accumulator do
         ancestry_depth: Workflow.ancestry_depth(workflow, fact),
         hooks: Workflow.get_hooks(workflow, acc.hash),
         last_known_state: if(last_state_fact, do: last_state_fact.value, else: nil),
+        state_fact: last_state_fact,
         is_state_initialized: not is_nil(last_state_fact),
         mergeable: acc.mergeable,
         meta_context: meta_context,
@@ -601,10 +603,22 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Accumulator do
   end
 
   def execute(%Accumulator{} = acc, %Runnable{input_fact: fact, context: ctx} = runnable) do
+    case Fact.check_parents([fact, Map.get(ctx, :state_fact)]) do
+      :ok -> execute_state(acc, runnable)
+      {:error, error} -> Runnable.fail(runnable, error)
+    end
+  end
+
+  defp execute_state(%Accumulator{} = acc, %Runnable{input_fact: fact, context: ctx} = runnable) do
     with {:ok, before_apply_fns} <- HookRunner.run_before(ctx, acc, fact) do
       if ctx.is_state_initialized do
         next_state = run_accumulator_reducer(acc, fact.value, ctx.last_known_state, ctx)
-        next_state_produced_fact = Fact.new(value: next_state, ancestry: {acc.hash, fact.hash})
+
+        next_state_produced_fact =
+          Fact.child([fact, Map.get(ctx, :state_fact)],
+            value: next_state,
+            ancestry: {acc.hash, fact.hash}
+          )
 
         case HookRunner.run_after(ctx, acc, fact, next_state_produced_fact) do
           {:ok, after_apply_fns} ->
@@ -630,13 +644,12 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Accumulator do
         init_fact_val = acc.init.()
 
         init_fact =
-          Fact.new(
-            value: init_fact_val,
-            ancestry: {acc.hash, Components.fact_hash(init_fact_val)}
-          )
+          Fact.initial(fact, acc.hash, init_fact_val)
 
         next_state = run_accumulator_reducer(acc, fact.value, init_fact_val, ctx)
-        next_state_produced_fact = Fact.new(value: next_state, ancestry: {acc.hash, fact.hash})
+
+        next_state_produced_fact =
+          Fact.child(fact, value: next_state, ancestry: {acc.hash, fact.hash})
 
         case HookRunner.run_after(ctx, acc, fact, next_state_produced_fact) do
           {:ok, after_apply_fns} ->
@@ -646,6 +659,8 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Accumulator do
                 init_fact_hash: init_fact.hash,
                 init_value: init_fact.value,
                 init_ancestry: init_fact.ancestry,
+                init_identity_mode: init_fact.identity_mode,
+                init_local_scope: init_fact.local_scope,
                 weight: ctx.ancestry_depth + 1
               },
               FactProduced.new(next_state_produced_fact,
@@ -676,9 +691,9 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Accumulator do
     Workflow.latest_state_fact(workflow, accumulator)
   end
 
-  defp init_fact(%Accumulator{init: init, hash: hash}) do
+  defp init_fact(%Accumulator{init: init, hash: hash}, parent) do
     init = init.()
-    Fact.new(value: init, ancestry: {hash, Components.fact_hash(init)})
+    Fact.initial(parent, hash, init)
   end
 
   defp run_accumulator_reducer(acc, value, state, ctx) do
@@ -751,7 +766,8 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Join do
       |> Enum.map(& &1.value)
 
     if Enum.count(join.joins) == Enum.count(possible_priors) do
-      join_bindings_fact = Fact.new(value: possible_priors, ancestry: {join.hash, fact.hash})
+      join_bindings_fact =
+        Fact.child(fact, value: possible_priors, ancestry: {join.hash, fact.hash})
 
       workflow =
         workflow
@@ -902,7 +918,7 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.FanOut do
           )
 
         fact =
-          Fact.new(
+          Fact.child(source_fact,
             value: value,
             ancestry: {fan_out.hash, source_fact.hash},
             causal_ancestry: causal_ancestry
@@ -954,7 +970,7 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.FanOut do
             output_index: output_index
           )
 
-        Fact.new(
+        Fact.child(source_fact,
           value: value,
           ancestry: {fan_out.hash, source_fact.hash},
           causal_ancestry: causal_ancestry
@@ -972,6 +988,8 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.FanOut do
           emitted_value: fact.value,
           emitted_ancestry: fact.ancestry,
           emitted_causal_ancestry: fact.causal_ancestry,
+          emitted_identity_mode: fact.identity_mode,
+          emitted_local_scope: fact.local_scope,
           weight: ctx.ancestry_depth + 1
         }
       end)
@@ -1041,7 +1059,7 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.FanIn do
         reduced_value = reduce_with_context(fact.value, fan_in.init.(), fan_in.reducer, %{})
 
         reduced_fact =
-          Fact.new(value: reduced_value, ancestry: {fan_in.hash, fact.hash})
+          Fact.child(fact, value: reduced_value, ancestry: {fan_in.hash, fact.hash})
 
         workflow
         |> Workflow.log_fact(reduced_fact)
@@ -1103,7 +1121,7 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.FanIn do
             reduce_with_context(sister_fact_values, fan_in.init.(), fan_in.reducer, %{})
 
           reduced_fact =
-            Fact.new(value: reduced_value, ancestry: {fan_in.hash, fact.hash})
+            Fact.child(fact, value: reduced_value, ancestry: {fan_in.hash, fact.hash})
 
           sister_facts =
             for origin <- expected_in_order do
@@ -1324,7 +1342,7 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.FanIn do
         with {:ok, before_apply_fns} <- HookRunner.run_before(ctx, fan_in, fact) do
           effective_context = merge_effective_context(ctx.meta_context, ctx.run_context)
           reduced = reduce_with_context(fact.value, init.(), reducer, effective_context)
-          reduced_fact = Fact.new(value: reduced, ancestry: {fan_in.hash, fact.hash})
+          reduced_fact = Fact.child(fact, value: reduced, ancestry: {fan_in.hash, fact.hash})
 
           case HookRunner.run_after(ctx, fan_in, fact, reduced_fact) do
             {:ok, after_apply_fns} ->

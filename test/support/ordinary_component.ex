@@ -1,5 +1,6 @@
 defmodule Runic.TestSupport.OrdinaryComponent do
   @moduledoc false
+  require Runic
   use Runic.Workflow.SingleOutput
 
   alias Runic.Workflow.SingleOutput.Result
@@ -20,6 +21,27 @@ defmodule Runic.TestSupport.OrdinaryComponent do
     if pid = context.runtime[:observer], do: send(pid, {:work, node.name, context})
 
     case node.operation do
+      :native_callback ->
+        Result.value(value.callback.(value.input))
+
+      :native_nested ->
+        inner =
+          Runic.workflow(
+            steps: [
+              Runic.step(fn value -> %{value: value, task_scope: Runic.TaskScope.current()} end)
+            ]
+          )
+
+        {_wf, execution} =
+          Runic.Workflow.execute(inner, value,
+            identity_mode: context.identity_mode,
+            local_scope: context.local_scope,
+            async: true
+          )
+
+        [output] = Runic.Workflow.Execution.outputs(execution)
+        Result.value(Map.put(output, :outer_task_scope, Runic.TaskScope.current()))
+
       :cache ->
         cache = Map.get(context.runtime, :cache)
 

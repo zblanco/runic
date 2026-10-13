@@ -27,6 +27,8 @@ defmodule Runic.Workflow.Events.FanInCompleted do
     :result_ancestry,
     :expected_key,
     :seen_key,
-    :weight
+    :weight,
+    result_identity_mode: :portable,
+    result_local_scope: nil
   ]
 end

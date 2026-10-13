@@ -11,6 +11,11 @@ defmodule Runic.Runner.Store do
   handle. Reject unsupported data with its field path before writing it. Keep
   transient resources in workflow run context. See the Fact boundaries guide.
 
+  Experimental native local facts are rejected by the Worker before optional
+  value writes and append/save. Built-in ETS and Mnesia also reject their
+  markers in direct writes. This does not certify legacy projections or all
+  captured resources. Non-persistent Workers use `persistence: :disabled`.
+
   ## Stream Semantics (Event-Sourced)
 
   The preferred interface uses `append/3` and `stream/2` for incremental

@@ -112,6 +112,9 @@ defmodule Runic.Runner do
 
   ## Options
 
+  - `:persistence` - `:enabled` (default) uses the Store. `:disabled` creates an
+    in-memory Worker, makes no Store writes, reports `:not_managed`, and cannot
+    resume from the Store. Native local facts require this profile for success.
   - `:dispatch_mode` - Controls when ready work is dispatched. Use
     `:automatic` (default) for normal execution or `:manual` to dispatch one
     scheduler unit at a time with `step/2`.
@@ -125,22 +128,29 @@ defmodule Runic.Runner do
   `{:error, {:persistence_failed, reason}}` without starting a Worker.
   """
   def start_workflow(runner, workflow_id, workflow, opts \\ []) do
-    worker_spec =
-      {Runic.Runner.Worker,
-       Keyword.merge(opts,
-         runner: runner,
-         workflow_id: workflow_id,
-         workflow: workflow
-       )}
+    with :ok <-
+           if(Keyword.get(opts, :resumed, false),
+             do: Runic.Workflow.LocalBoundary.check(workflow, :workflow),
+             else: :ok
+           ) do
+      worker_spec =
+        {Runic.Runner.Worker,
+         Keyword.merge(opts,
+           runner: runner,
+           workflow_id: workflow_id,
+           workflow: workflow
+         )}
 
-    DynamicSupervisor.start_child(
-      Module.concat(runner, WorkerSupervisor),
-      worker_spec
-    )
+      DynamicSupervisor.start_child(
+        Module.concat(runner, WorkerSupervisor),
+        worker_spec
+      )
+    end
   end
 
   @doc """
-  Feeds input to a running workflow.
+  Feeds input to a running workflow. `:identity_mode` selects portable (default)
+  or experimental local facts. `:local_scope` can reuse a local session.
 
   ## Options
 
@@ -161,7 +171,8 @@ defmodule Runic.Runner do
   Returns `{:ok, execution_id}` after the input is admitted to the Worker. The
   call does not wait for computation or persistence. Use `execution/3` to
   observe progress or `await_execution/4` to wait for scope quiescence.
-  Input and execution-ID validation run before the reply. Inline work, Store
+  `:identity_mode` and `:local_scope` select the same fact profile as
+  `Workflow.execute/3`. Input and execution-ID validation run before the reply. Inline work, Store
   writes, and completion callbacks run after the reply and can delay later
   Worker queries.
 
@@ -545,7 +556,8 @@ defmodule Runic.Runner do
   Returns the persistence status of a workflow Worker.
 
   Returns `{:ok, %{status: status, event_cursor: cursor, pending_events: count}}`,
-  or `{:error, :not_found}`. Status is `:saved`, `:pending`, or
+  or `{:error, :not_found}`. Status is `:not_managed` for a Worker with disabled
+  persistence; otherwise it is `:saved`, `:pending`, or
   `{:error, {:persistence_failed, reason}}`. Computation may finish while
   persistence remains pending or failed. The cursor is the latest Store cursor
   acknowledged by this Worker (zero until an append is acknowledged). Legacy
@@ -600,6 +612,7 @@ defmodule Runic.Runner do
   @spec encode_snapshot(Workflow.t()) :: binary()
   def encode_snapshot(%Workflow{} = workflow) do
     workflow = %{workflow | run_context: %{}}
+    Runic.Workflow.LocalBoundary.check!(workflow, :workflow)
     :erlang.term_to_binary({@snapshot_tag, @snapshot_version, workflow})
   end
 
@@ -611,7 +624,8 @@ defmodule Runic.Runner do
   def decode_snapshot(snapshot) when is_binary(snapshot) do
     case :erlang.binary_to_term(snapshot) do
       {@snapshot_tag, @snapshot_version, %Workflow{} = workflow} ->
-        {:ok, normalize_snapshot_workflow(workflow)}
+        workflow = normalize_snapshot_workflow(workflow)
+        with :ok <- Runic.Workflow.LocalBoundary.check(workflow, :workflow), do: {:ok, workflow}
 
       {@snapshot_tag, version, _workflow} ->
         {:error, {:unsupported_snapshot, version}}
@@ -677,6 +691,8 @@ defmodule Runic.Runner do
     else
       resume_from_log(runner, workflow_id, store_mod, store_state, opts)
     end
+  rescue
+    error in Runic.Workflow.LocalFactError -> {:error, error}
   end
 
   defp resume_from_streaming_store(workflow_id, rehydration, {store_mod, store_state} = store) do
@@ -787,6 +803,7 @@ defmodule Runic.Runner do
   defp resume_from_log(runner, workflow_id, store_mod, store_state, opts) do
     case store_mod.load(workflow_id, store_state) do
       {:ok, log} ->
+        Runic.Workflow.LocalBoundary.check!(log, :events)
         workflow = Runic.Workflow.from_events(log)
         start_workflow(runner, workflow_id, workflow, Keyword.put(opts, :resumed, true))
 

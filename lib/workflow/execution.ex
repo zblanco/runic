@@ -88,10 +88,18 @@ defmodule Runic.Workflow.Execution do
   @spec start(Workflow.t(), term(), keyword()) :: {t(), Fact.t()}
   def start(%Workflow{} = workflow, input, opts \\ []) do
     execution_id = execution_id(workflow, Keyword.get(opts, :execution_id))
-    draft = Fact.new(value: input)
+    draft = Fact.input(input, opts)
     input_id = Identity.derive(:input_command, [execution_id, draft.payload_digest])
     input_fact_id = Identity.derive(:fact_occurrence, [input_id, :root])
-    input_fact = Fact.new(value: input, id: input_fact_id)
+
+    input_fact =
+      Fact.new(
+        value: input,
+        id: input_fact_id,
+        identity_mode: draft.identity_mode,
+        local_scope: draft.local_scope
+      )
+
     now = System.monotonic_time(:millisecond)
 
     {%__MODULE__{

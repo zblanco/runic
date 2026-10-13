@@ -42,8 +42,10 @@ defmodule Runic.Runner.Store.ETS do
 
   @impl Runic.Runner.Store
   def save(workflow_id, log, %{table: table}) do
-    :ets.insert(table, {workflow_id, log, System.monotonic_time(:millisecond)})
-    :ok
+    with :ok <- Runic.Workflow.LocalBoundary.check(log, :events) do
+      :ets.insert(table, {workflow_id, log, System.monotonic_time(:millisecond)})
+      :ok
+    end
   end
 
   @impl Runic.Runner.Store
@@ -62,20 +64,22 @@ defmodule Runic.Runner.Store.ETS do
   @impl Runic.Runner.Store
   def append(workflow_id, events, %{events_table: events_table, counters_table: counters_table})
       when is_list(events) do
-    count = length(events)
+    with :ok <- Runic.Workflow.LocalBoundary.check(events, :events) do
+      count = length(events)
 
-    cursor =
-      :ets.update_counter(counters_table, workflow_id, {2, count}, {workflow_id, 0})
+      cursor =
+        :ets.update_counter(counters_table, workflow_id, {2, count}, {workflow_id, 0})
 
-    start_seq = cursor - count + 1
+      start_seq = cursor - count + 1
 
-    events
-    |> Enum.with_index(start_seq)
-    |> Enum.each(fn {event, seq} ->
-      :ets.insert(events_table, {{workflow_id, seq}, event})
-    end)
+      events
+      |> Enum.with_index(start_seq)
+      |> Enum.each(fn {event, seq} ->
+        :ets.insert(events_table, {{workflow_id, seq}, event})
+      end)
 
-    {:ok, cursor}
+      {:ok, cursor}
+    end
   end
 
   @impl Runic.Runner.Store
@@ -105,8 +109,10 @@ defmodule Runic.Runner.Store.ETS do
 
   @impl Runic.Runner.Store
   def save_fact(fact_hash, value, %{facts_table: facts_table}) do
-    :ets.insert(facts_table, {fact_hash, value})
-    :ok
+    with :ok <- Runic.Workflow.LocalBoundary.check({fact_hash, value}, :fact) do
+      :ets.insert(facts_table, {fact_hash, value})
+      :ok
+    end
   end
 
   @impl Runic.Runner.Store

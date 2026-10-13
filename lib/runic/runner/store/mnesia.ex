@@ -80,11 +80,13 @@ defmodule Runic.Runner.Store.Mnesia do
 
   @impl Runic.Runner.Store
   def save(workflow_id, log, %{table: table}) do
-    record = {table, workflow_id, log, System.monotonic_time(:millisecond)}
+    with :ok <- Runic.Workflow.LocalBoundary.check(log, :events) do
+      record = {table, workflow_id, log, System.monotonic_time(:millisecond)}
 
-    case :mnesia.transaction(fn -> :mnesia.write(record) end) do
-      {:atomic, :ok} -> :ok
-      {:aborted, reason} -> {:error, {:mnesia_write_failed, reason}}
+      case :mnesia.transaction(fn -> :mnesia.write(record) end) do
+        {:atomic, :ok} -> :ok
+        {:aborted, reason} -> {:error, {:mnesia_write_failed, reason}}
+      end
     end
   end
 
@@ -104,28 +106,30 @@ defmodule Runic.Runner.Store.Mnesia do
   @impl Runic.Runner.Store
   def append(workflow_id, events, %{events_table: events_table, counters_table: counters_table})
       when is_list(events) do
-    case :mnesia.transaction(fn ->
-           # Atomically increment counter and write events
-           cursor =
-             case :mnesia.read(counters_table, workflow_id) do
-               [{^counters_table, ^workflow_id, current}] -> current
-               [] -> 0
-             end
+    with :ok <- Runic.Workflow.LocalBoundary.check(events, :events) do
+      case :mnesia.transaction(fn ->
+             # Atomically increment counter and write events
+             cursor =
+               case :mnesia.read(counters_table, workflow_id) do
+                 [{^counters_table, ^workflow_id, current}] -> current
+                 [] -> 0
+               end
 
-           count = length(events)
-           new_cursor = cursor + count
-           :mnesia.write({counters_table, workflow_id, new_cursor})
+             count = length(events)
+             new_cursor = cursor + count
+             :mnesia.write({counters_table, workflow_id, new_cursor})
 
-           events
-           |> Enum.with_index(cursor + 1)
-           |> Enum.each(fn {event, seq} ->
-             :mnesia.write({events_table, {workflow_id, seq}, event})
-           end)
+             events
+             |> Enum.with_index(cursor + 1)
+             |> Enum.each(fn {event, seq} ->
+               :mnesia.write({events_table, {workflow_id, seq}, event})
+             end)
 
-           new_cursor
-         end) do
-      {:atomic, cursor} -> {:ok, cursor}
-      {:aborted, reason} -> {:error, {:mnesia_append_failed, reason}}
+             new_cursor
+           end) do
+        {:atomic, cursor} -> {:ok, cursor}
+        {:aborted, reason} -> {:error, {:mnesia_append_failed, reason}}
+      end
     end
   end
 
@@ -160,11 +164,13 @@ defmodule Runic.Runner.Store.Mnesia do
 
   @impl Runic.Runner.Store
   def save_fact(fact_hash, value, %{facts_table: facts_table}) do
-    record = {facts_table, fact_hash, value}
+    with :ok <- Runic.Workflow.LocalBoundary.check({fact_hash, value}, :fact) do
+      record = {facts_table, fact_hash, value}
 
-    case :mnesia.transaction(fn -> :mnesia.write(record) end) do
-      {:atomic, :ok} -> :ok
-      {:aborted, reason} -> {:error, {:mnesia_write_failed, reason}}
+      case :mnesia.transaction(fn -> :mnesia.write(record) end) do
+        {:atomic, :ok} -> :ok
+        {:aborted, reason} -> {:error, {:mnesia_write_failed, reason}}
+      end
     end
   end
 

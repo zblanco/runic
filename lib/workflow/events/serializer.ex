@@ -43,6 +43,7 @@ defmodule Runic.Workflow.Events.Serializer do
   """
   @spec to_binary([struct()]) :: binary()
   def to_binary(events) when is_list(events) do
+    Runic.Workflow.LocalBoundary.check!(events, :events)
     :erlang.term_to_binary(events)
   end
 
@@ -56,7 +57,8 @@ defmodule Runic.Workflow.Events.Serializer do
   """
   @spec from_binary(binary()) :: {:ok, [struct()]} | {:error, term()}
   def from_binary(binary) when is_binary(binary) do
-    {:ok, :erlang.binary_to_term(binary, [:safe])}
+    events = :erlang.binary_to_term(binary, [:safe])
+    with :ok <- Runic.Workflow.LocalBoundary.check(events, :events), do: {:ok, events}
   rescue
     e -> {:error, e}
   end
@@ -66,6 +68,7 @@ defmodule Runic.Workflow.Events.Serializer do
   """
   @spec event_to_binary(struct()) :: binary()
   def event_to_binary(event) when is_struct(event) do
+    Runic.Workflow.LocalBoundary.check!(event, :event)
     :erlang.term_to_binary(event)
   end
 
@@ -74,7 +77,8 @@ defmodule Runic.Workflow.Events.Serializer do
   """
   @spec event_from_binary(binary()) :: {:ok, struct()} | {:error, term()}
   def event_from_binary(binary) when is_binary(binary) do
-    {:ok, :erlang.binary_to_term(binary, [:safe])}
+    event = :erlang.binary_to_term(binary, [:safe])
+    with :ok <- Runic.Workflow.LocalBoundary.check(event, :event), do: {:ok, event}
   rescue
     e -> {:error, e}
   end

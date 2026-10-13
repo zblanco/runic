@@ -1,254 +1,172 @@
-# Fact values and runtime resources
+# Fact values and local identity
 
-Decision for [issue #36](https://github.com/zblanco/runic/issues/36): retain the
-existing boundary. Use portable fact values and the existing run context for
-live resources. A consumer can keep an explicit local wrapper for immediate
-execution. This decision does not add a native `Fact` mode.
+This draft implements an experimental native local fact mode for
+[issue #36](https://github.com/zblanco/runic/issues/36), tracked by
+[#30](https://github.com/zblanco/runic/issues/30). It is a first implementation
+for evaluation, not a decision to land the API. The earlier wrapper-only
+decision is the comparison baseline. Portable remains the default.
 
-The comparison uses upstream `976ea2318ef30022642fd7066090cb28c4eb09f2` and the
-Jido adapter at `5e52df87d8114a1c8f805ead3c278c47f9f869a4`. This replaces the
-older Runic integration-fork baseline in the issue. The decision uses the
-merged task ownership, `SingleOutput`, failure admission, suppression, and
-execution observation contracts. Their task and acceptance rules stay in
-their present layers.
+## Native local facts
 
-## Why retain this boundary
-
-A native local mode would remove wrapper construction and value conversion
-from consumers. It would also need a separate identity contract through every
-fact producer, collection, causal reference, replay event, Store callback, and
-executor. A field in `Fact.meta` would not supply that contract. Native Steps
-replace output metadata, and identity construction does not inspect it.
-
-The selected design has no Fact, FactRef, event, snapshot, or identity version
-migration. It removes zero lines from Jido. This is a deliberate decision to
-retain the adapter, not a completed Jido migration. The measured possible
-removal is 103 nonblank lines in Jido's `lib/jido_exec/fact.ex`, with 26 call-site
-substitutions: one `local_root/1`, thirteen `value/1`, and twelve `child/2`
-calls. These counts include the wrapper and its projection. They are an upper
-bound; a native design would still need local/portable selection at admission.
-Jido's 57 nonblank lines in `lib/jido_exec/portable.ex` and its input/output
-schemas and effect checks would remain.
-
-For comparison, the executable example probes a raw root with an explicitly
-supplied payload digest. It is not a native mode. A native child with the same
-raw value still raises `Runic.Identity.CanonicalError`. Supplying a digest at
-one constructor does not establish inheritance or a storage guarantee.
-
-## Identity and inheritance
-
-The canonical codec continues to reject PIDs, ports, references, and functions.
-It also rejects structs without an explicit identity projection. Default Fact
-construction hashes the canonical value. A legacy `hash` does not bypass that
-check. Supplied digests are a caller trust boundary; do not use them to label a
-live term as a portable payload.
-
-`Runic.Identity.Projectable` encodes an identity document. A projection can
-omit fields. Successful canonical encoding of that document does not prove
-that the raw struct can be stored or recovered. A local wrapper uses this
-extension deliberately and must remain subject to its consumer's local gate.
-
-The local wrapper in `examples/fact_modes/` uses SHA-256 of deterministic ETF
-bytes. Its digest has meaning only for the exact term in the current live VM
-and compatible code. It is not a promise that a PID, port, reference, or
-function remains usable after a restart, after resource closure, or on another
-node. The digest does not describe the changing contents of a resource.
-
-The consumer must retain the wrapper through each local child, including a
-child whose value has become an integer. Native containers preserve wrappers
-as values; they do not propagate a mode to new raw outputs. The Jido adapter
-uses its local metadata and detection of wrappers in lists, tuples, and maps
-for this purpose. Its wrapper detection does not inspect arbitrary struct
-fields; the example rejection gate checks raw struct fields separately.
-A native scalar child can lose that metadata. Therefore, consumers must gate
-the whole local execution before persistence or remote dispatch. Checking
-only its last scalar output is insufficient.
-
-Nested execution gets local values only when the caller passes the wrapper
-explicitly. Do not assume that a new child workflow inherits a fact mode or a
-context map from its parent. Nested async work uses Runic's existing owned task
-scope. It does not need an adapter task supervisor.
-
-Equal local terms have equal local payload digests in the same VM. Plain
-`Fact.new/1` can therefore produce the same default occurrence. Use
-`Workflow.execute/3` or `Runner.start_execution/4` for repeated equal inputs
-that need distinct execution and root occurrence IDs. Reusing an explicit
-execution ID is a caller correlation choice. It does not make external effects
-exactly once. A consumer that needs a different resource session identity must
-include an explicit session token in its data or admission record.
-
-## Persistence and remote dispatch
-
-Reject a local execution before a Store write or remote dispatch. Do not
-convert it implicitly to portable identity. To export a result, the application
-must select and validate new portable data, then admit that data as a new
-portable input. Keep the relation to the earlier local execution as explicit
-application provenance.
-
-For portable work, check raw saved or dispatched fields: input, output,
-metadata, effects, captured bindings, and component configuration. A data gate
-must identify the field and nested path. For example:
+A native local fact carries the original value. Callbacks do not wrap or
+unwrap PIDs, references, ports, functions, or unprojected structs.
 
 ```elixir
-{:error, %{
-  field: :input,
-  path: [:input, :requests, 0, :reply_to],
-  reason: {:unsupported, :pid},
-  retry: false
+local = Runic.Workflow.Fact.local(%{reply_to: self(), token: make_ref()})
+local = Runic.Workflow.Fact.new(value: self(), identity_mode: :local)
+
+{workflow, execution} =
+  Runic.Workflow.execute(definition, input, identity_mode: :local, async: true)
+```
+
+`Fact` and `FactRef` have `identity_mode` and `local_scope`. Native Steps,
+SingleOutput callbacks, Rule bindings/reactions, fan-out, joins, reducers,
+accumulators, and policy fallback outputs inherit them. A scalar child is
+still local. SingleOutput callbacks receive the bare value and get the profile
+in `Context.identity_mode` and `Context.local_scope`. Low-level custom
+Invokable implementations must construct their outputs with `Fact.child/2`
+and supply their normal causal ancestry. A raw `Fact.new/1` does not infer a
+mode from an ancestry ID and rejects local ancestry in portable mode.
+
+## Scope and identities
+
+A new local root gets a new `LocalScope`. Its VM token is random and kept in
+the running VM; its session token is a reference. The VM token survives code
+reloads but not VM restart. Scope validation also rejects a different node.
+This is identity scope, not task ownership or a resource lease. Resources can
+expire or change while a scope remains valid.
+
+Local IDs use the explicit `:local_sha256` scheme. Payload identity hashes
+scope plus deterministic ETF bytes. Causal identities derived from local IDs
+keep the local tag. They are not portable canonical identity documents.
+`Canonical.encode!/1` rejects local IDs and continues to reject raw PIDs,
+ports, references, and functions. Existing portable identity bytes are unchanged.
+
+Use a shared scope explicitly for a local session or a nested call:
+
+```elixir
+scope = Runic.Workflow.LocalScope.new()
+{workflow, first} = Runic.Workflow.execute(definition, input,
+  identity_mode: :local, local_scope: scope)
+{workflow, second} = Runic.Workflow.execute(workflow, input,
+  identity_mode: :local, local_scope: scope)
+```
+
+Equal values in the same scope have equal payload digests. Execution and root
+occurrence IDs still distinguish repeated calls. A nested execution does not
+inherit a mode from process state: pass it explicitly, using the callback's
+input profile when appropriate. Existing native task ownership still applies.
+
+A join or reducer cannot combine different local scopes. Accumulator state
+keeps its scope, so repeated local state updates require a shared scope. A
+scope conflict is rejected; the native accumulator rejects it before calling
+its reducer. Combining portable facts with one local scope yields a local
+result. Promotion requires selecting new portable data and admitting it into
+a new portable execution, not changing a local child's marker.
+
+## Persistence, replay, and remote execution
+
+Native local facts cannot be persisted. The Worker rejects the event batch
+before `save_fact/3`, `save_payload/3`, or append/save callbacks. Built-in ETS
+and Mnesia also check direct writes, including local identity keys. Encoded
+payload bytes do not waive the identity profile. Errors identify the field:
+
+```elixir
+{:error, %Runic.Workflow.LocalFactError{
+  field: :events, path: [:events, 0, :identity_mode], reason: :local_fact
 }}
 ```
 
-This path is for `FactBoundary.check/2` called on raw input data. The Jido
-fact gate checks an envelope: its paths include `:value` or `:meta`, such as
-`[:output, :meta, :reply_to]`. Both example gates return the same field-error
-map with `field`, `path`, `reason`, and `retry: false`. Wrapper and local-marker
-errors use `{:unsupported, :local_identity}`. An unrecognized execution marker
-uses `{:unsupported, :unknown_identity_mode}`.
+The exact path depends on the envelope. A local identity key can be rejected
+before a Fact marker. Failed persistence retains pending data and preserves
+the existing failed-persistent-stop behavior. Computation, local acceptance,
+and Store acknowledgement remain separate results.
 
-The example raw walker and Jido wrapper scanner use `{:map_key, index}` for a
-map-key path segment, to distinguish it from a value under the literal `:key`
-key. The index follows that map's iteration order; it is diagnostic data, not
-an identity. Paths from Jido's existing raw validator retain its `:key` segment
-for compatibility. That legacy segment can also be a literal value key.
+For a managed local computation, explicitly disable persistence:
 
-`Runic.Examples.FactBoundary.check/2` shows a small data gate. It checks raw
-fields before canonical projection and rejects the example local wrapper,
-even for a scalar. `Runic.Examples.JidoFactBoundary.check/2` checks the full raw
-Fact envelope, including metadata and wrappers in native containers. Jido
-retains its own raw-value validator. The consumer keeps the whole execution's
-local marker outside its outputs and calls the example's `check_execution/3`.
-A native scalar output with empty metadata cannot remove that marker. Explicit
-portable admission starts a new scope for the selected validated data.
-These modules are example code, not new public Runic APIs. Production adapters
-must define their schemas and bounds and check all fields they save or send.
-A remote executor must obtain fresh resources on the target node from that
-node's runtime context. Do not send a prepared Runnable with local context.
+```elixir
+{:ok, worker} = Runic.Runner.start_workflow(runner, :local, definition,
+  owner: self(), persistence: :disabled)
+{:ok, id} = Runic.Runner.start_execution(runner, :local, input,
+  identity_mode: :local)
+```
 
-The current core Store, event ETF serializer, and raw snapshot encoder do not
-apply this consumer gate. ETF can encode live handles and wrappers. Encoding
-or Store acknowledgement cannot make these values portable or usable on
-resume. Runic does not promise to reject every unsafe raw snapshot. Applications
-that choose this profile must apply the gate before admission and validate
-outputs before acceptance into their durable or remote path. A Store or
-executor must reject any unsupported data that can reach its own boundary.
-An output check after an external operation cannot undo that operation.
+This Worker makes no Store writes and reports `:not_managed`. Checkpoint
+returns `{:error, :persistence_disabled}`. Normal stop and native cancellation
+still work. There is no saved local execution to resume.
 
-Keep three separate results: computation, local graph acceptance, and Store
-acknowledgement. Immediate execution reports `:not_managed` persistence.
-A Store acknowledgement reports that Store's guarantees. It does not prove
-exactly-once external effects. Existing failed-persistent-stop behavior and
-native cancellation still apply.
+Event ETF serialization and workflow snapshot encoding reject native local
+markers. Snapshot decoding and Runner recovery reject them too. Explicit
+in-memory event replay uses `Workflow.from_events(events, nil,
+allow_local: true)` and must use the same live VM. It does not call accepted
+callbacks again. Local FactRefs cannot load their values from a Store. Raw
+Erlang serialization and legacy low-level replay APIs are not portable codecs.
 
-## Runtime context, replacement, and resume
+Custom remote executors must declare `locality/0` as `:remote`. The Worker
+rejects a native local Runnable or Promise before dispatch. Existing executors
+without this callback retain their local profile. `Runnable.for_remote/1` and
+`LocalBoundary.check/2` provide the same marker check for other adapters.
+These checks do not serialize code or certify arbitrary legacy raw data,
+captured bindings, hooks, or policies. A remote adapter must validate its
+transport and install fresh resources on the target VM. There is no built-in
+network executor in this prototype. External effects are not made exactly once.
 
-Use `Workflow.put_run_context/2` or the `:run_context` option for resources.
-Context is resolved by component name, with `:_global` defaults. Component
-keys override global keys. It is excluded from fact identity and construction
-events. `SingleOutput.Context.runtime` uses this same context system.
+## Runtime context and existing limits
 
-`put_run_context/2` performs a shallow top-level merge. A new map for a component
-replaces that component's whole prior map. Omitted component names remain.
-To clear every name, start from a definition or restored workflow with empty
-context, or explicitly replace the workflow's `run_context` field with `%{}`.
-Context is captured when a Runnable is prepared. A later workflow context
-change does not modify a Runnable that is already prepared or running.
+Live resources that do not belong in data still use the existing run context.
+`put_run_context/2` makes a shallow merge; a component map replaces its previous
+map, and component keys override `_global`. Prepared Runnables keep their
+captured context. Portable replay and snapshots omit top-level run context;
+resume must supply fresh resources.
 
-Event replay and `Runner.encode_snapshot/1` omit top-level run context.
-`Runner.resume/3` accepts fresh `:run_context` before it prepares pending work.
-Replaying accepted values does not call the resource callback again. An absent
-context key resolves to `nil`, or to the supplied `context/2` default. The
-component determines the result; it can successfully return `nil`. Runic does
-not automatically enforce required context when it executes pending work.
+For named Steps and components whose runtime uses their own name, check fresh
+keys with `validate_run_context/2` and check resource validity before dispatch
+or resume. Explicit nil passes key-presence validation but resolves like an
+absent key. A non-nil default applies at runtime; `default: nil` is required
+for validation. Direct SingleOutput runtime resources also need callback checks.
 
-For named Steps and components whose runtime resolves context by their own
-name, call `Workflow.validate_run_context/2` with the workflow and fresh context
-before dispatch or `Runner.resume/3`. Continue only after that check and the
-application's resource checks pass. Validation checks declared key presence,
-not resource validity. An explicit `nil` passes key-presence validation but
-resolves like an absent key: to `nil` or the default. Non-nil defaults are
-optional; `default: nil` counts as required. Validate that supplied resources
-and selected defaults are usable for the operation.
-
-Rules have a known core name mismatch between validation and runtime.
-Validation lists an anonymous Rule condition's keys under the Rule name.
-At runtime, the condition resolves context with a `nil` name. Its reaction
-Step uses a generated name. Runic does not yet resolve Rule condition or
-reaction context by the Rule name. Put those resources in `:_global`, then
-check their keys and resource validity. `:_global` makes each resource
-available to all components. A successful check of `%{rule_name: %{...}}`
-does not prove that the Rule will read those resources. See the
+Validation lists anonymous Rule condition keys under the Rule name, while
+runtime uses a nil name. Reaction Steps use generated names. Use `_global`
+for Rule resources, which makes them available to all components. This known
+core limitation is recorded in the
 [Rule context owner follow-up](../.docs/rule-context-owner-follow-up.md).
 
-`SingleOutput` callbacks must also validate resources that they use directly
-from `Context.runtime` without declared context references.
+Legacy consumer wrappers and caller-supplied digests remain trust boundaries.
+A projected identity does not prove raw-field portability. The old consumer
+gate examples remain useful for those profiles; native marker rejection is
+not a general production validation framework. Local ETF hashing allocates
+serialized bytes and has no new size limit in this first implementation.
 
-A local execution cannot use this portable resume contract. Start it again
-with new local values. Cancellation stops Runic-owned
-work; the application remains responsible for the resources it supplies.
-
-Do not copy resources into fact metadata, policies, component bindings, or
-outputs. Top-level context removal does not sanitize those fields. It also
-does not guarantee that an external resource still represents the same data.
-
-## Executable evidence and costs
-
-Run the non-Jido cache example and wrapper/root comparison from the Runic root:
+## Executable examples and comparison
 
 ```sh
-MIX_ENV=test mix run examples/fact_modes/check.exs
-mix test test/fact_boundaries_test.exs test/fact_boundary_consumers_test.exs
-```
-
-The cache example puts a live lookup callback in run context. Its request is
-an invoice key, and its result is a portable amount. The local example carries
-a reply PID, request reference, and function through two wrapped stages.
-
-One sample on Elixir 1.20.4 / OTP 29 used 5,000 root constructions:
-
-| Measurement | Wrapper | Raw native root probe |
-| --- | ---: | ---: |
-| Root construction, total microseconds | 63,411 | 50,593 |
-| ETF bytes for the value | 280 | 177 |
-
-These are observations for one small term in one VM. They are not a benchmark
-of a complete native mode. The probe excludes all inheritance, Store, replay,
-and remote checks. ETF bytes include a local function, so code and VM changes
-can change the result. The script prints new measurements for each run.
-
-The wrapper adds an ETF pass and a SHA-256 digest for each wrapped value, plus
-canonical hashing of its projection. Jido recursively wraps local leaves;
-the small non-Jido example wraps the whole value. A native local mode could
-avoid the wrapper object and value conversions, but would still hash the raw
-term and maintain scoped identities. It would also need a distinct storage
-profile or complete rejection at each storage and dispatch path. A process
-handle has no generic recovery representation.
-
-The optional Jido check uses the exact review baseline and current Runic. It
-does not change the shared Jido checkout:
-
-```sh
+MIX_ENV=test mix run examples/native_local_facts.exs
+mix test test/native_fact_mode_test.exs test/native_fact_store_test.exs
 MIX_INSTALL_DIR="$PWD/_build/fact_modes_install" \
-  elixir examples/jido_action/fact_check.exs
+  elixir examples/jido_action/native_check.exs
 ```
 
-It tests the real Jido wrapper, native containers, full fact fields, local
-scalar inheritance, whole-execution rejection, explicit portable admission,
-and field errors. A simulated remote transport callback runs only after the
-consumer gate passes. The default Runic tests also check raw fields hidden by a
-general identity projection, repeated and nested execution, graph reuse after
-failure, context replacement, pending-work replay with missing keys or defaults,
-snapshots, accepted replay, and cancellation. Consumer tests check rejection
-before Store data writes and validate fresh keys and live resources before
-`Runner.resume/3`. The test Store checks `FactProduced` values and metadata;
-it is a narrow data profile, not a complete workflow portability adapter.
-It exports neither `save_fact/3` nor `save_payload/3`. A Store that exports
-these optional callbacks must validate raw fact values and encoded payload
-contents before those writes. The Worker writes values there before
-`append/3` and can strip values from the appended `FactProduced` events.
-Checking only the append batch is insufficient for that Store profile.
+The non-Jido example passes a bare callback, keeps its scalar result local,
+runs under an owned non-persistent Worker, and admits selected portable data
+explicitly. The Jido example uses the existing SingleOutput adapter and real
+Action input/output schemas and effects. Native mode needs no Jido value
+wrapper or Jido child-fact factory. The shared Jido checkout is unchanged.
+Its original low-level Invokable implementation still needs migration to use
+native `Fact.child/2` or SingleOutput.
 
-Reconsider a native mode when a consumer needs live values through arbitrary
-native producers and demonstrates a material total adapter reduction. Require
-a proposal for all producer and collection paths, mixed local/portable inputs,
-resource lifetime, fact references, storage rejection, and version migration
-before adding it. The examples and root probe alone do not justify that change.
+The Jido baseline at `5e52df87d8114a1c8f805ead3c278c47f9f869a4` has 103 nonblank
+lines in its fact adapter and 26 call sites: one root, thirteen value, and
+twelve child calls. Native support can replace those conversions. This PR
+demonstrates the adapter shape; it does not claim a completed Jido migration
+or actual removal of those files. Jido retains schemas and effect validation.
+
+The earlier wrapper/root-digest comparison is still executable in
+`examples/fact_modes/check.exs`. It is a historical baseline, not a native-mode
+benchmark. Native local identity now pays for a VM/session scope and ETF
+hashing throughout causal IDs. Portable ID bytes stay stable, while Fact,
+FactRef, and event records gain optional fields. Legacy portable records use
+portable defaults. Local records require the new code and remain unrecoverable.
+
+The open design questions are mixed-scope coordination, the size/cost of local
+ETF hashing, remote executor declarations, and the public scope/error API.
+Keep this implementation in draft while evaluating those choices.
