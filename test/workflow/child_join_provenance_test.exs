@@ -59,7 +59,13 @@ defmodule Runic.Workflow.ChildJoinProvenanceTest do
 
       live = Workflow.apply_runnable(wf, failure)
 
-      for candidate <- [live, replay(original, live, :full), replay(original, live, :ref)] do
+      for candidate <- [
+            live,
+            replay(original, live, :full),
+            replay(original, live, :ref),
+            Workflow.apply_runnable(replay(original, wf, :full), failure),
+            Workflow.apply_runnable(replay(original, wf, :ref), failure)
+          ] do
         assert Workflow.raw_productions(candidate, :joined) == []
         assert Workflow.raw_productions(candidate, :after_call) == []
         assert not Workflow.is_runnable?(candidate)
@@ -198,6 +204,126 @@ defmodule Runic.Workflow.ChildJoinProvenanceTest do
     legacy = Workflow.apply_runnable(legacy, failure)
     assert not Workflow.is_runnable?(legacy)
     assert Workflow.raw_productions(legacy, :joined) == []
+  end
+
+  for selected_failure? <- [true, false] do
+    test "failure of #{if selected_failure?, do: :selected, else: :discarded} surplus occurrence uses exact parents after full/ref replay" do
+      request =
+        Runic.step(
+          fn n -> ChildInvocation.new(target: ChildTargets.emit_then_fail(), input: n) end,
+          name: :request
+        )
+
+      original =
+        Workflow.new()
+        |> Workflow.add(Runic.step(fn n -> n end, name: :a))
+        |> Workflow.add(Runic.step(fn n -> n + 1 end, name: :b))
+        |> Workflow.add(Call.new(request, name: :call),
+          connections: [[from: {:a, :out}, to: :in], [from: {:b, :out}, to: :in]],
+          input_mode: :any
+        )
+        |> Workflow.add(Runic.step(fn n -> n end, name: :other))
+        |> Workflow.add(Runic.step(fn a, b -> {a, b} end, name: :joined), to: [:call, :other])
+        |> Workflow.enable_event_emission()
+
+      wf =
+        Workflow.plan_eagerly(original, 6)
+        |> advance(&(Map.get(&1.node, :name) == :a))
+        |> advance(&(Map.get(&1.node, :name) == :b))
+        |> advance(&is_struct(&1.node, Runic.Workflow.InputBinding))
+        |> advance(&is_struct(&1.node, Runic.Workflow.InputBinding))
+
+      wf =
+        Enum.reduce([6, 7], wf, fn input, current ->
+          current
+          |> advance(&(Map.get(&1.node, :name) == :call and &1.input_fact.value == input))
+          |> advance(&is_struct(&1.node, Runic.Workflow.CallValue))
+          |> advance(&(Map.get(&1.node, :name) == :left and &1.input_fact.value == input))
+          |> advance(&is_struct(&1.node, Runic.Workflow.InputBinding))
+          |> advance(&(Map.get(&1.node, :name) == :selected and &1.input_fact.value == input + 1))
+          |> advance(&is_struct(&1.node, Runic.Workflow.InputBinding))
+          |> advance(&is_struct(&1.node, Runic.Workflow.CallValue))
+          |> advance(&is_struct(&1.node, Runic.Workflow.CallValue))
+        end)
+
+      wf =
+        wf
+        |> advance(&(is_struct(&1.node, Join) and &1.input_fact.value == 7))
+        |> advance(&(is_struct(&1.node, Join) and &1.input_fact.value == 8))
+        |> advance(&(Map.get(&1.node, :name) == :other))
+        |> advance(&(is_struct(&1.node, Join) and &1.input_fact.value == 6))
+
+      [edge] = Multigraph.in_edges(wf.graph, Workflow.get_component!(wf, :joined), by: :runnable)
+      assert {:known, [chosen, _]} = Workflow.join_contributions(wf, edge.v1)
+      assert chosen.value in [7, 8]
+
+      assert length(
+               Multigraph.in_edges(
+                 wf.graph,
+                 Map.fetch!(wf.graph.vertices, elem(edge.v1.ancestry, 0)),
+                 by: :join_satisfied
+               )
+             ) == 3
+
+      failed_input = if unquote(selected_failure?), do: chosen.value - 1, else: 14 - chosen.value
+
+      failure =
+        executed(
+          wf,
+          &(Map.get(&1.node, :name) == :right and &1.input_fact.value == failed_input),
+          %SchedulerPolicy{on_failure: :skip}
+        )
+
+      for base <- [wf, replay(original, wf, :full), replay(original, wf, :ref)] do
+        applied = Workflow.apply_runnable(base, failure)
+        label = if unquote(selected_failure?), do: :upstream_failed, else: :runnable
+
+        assert length(
+                 Multigraph.in_edges(applied.graph, Workflow.get_component!(applied, :joined),
+                   by: label
+                 )
+               ) == 1
+      end
+    end
+  end
+
+  test "nested known Join provenance suppresses own lineage when failure is decided after replay" do
+    original =
+      emitting()
+      |> Workflow.add(Runic.step(fn n -> n end, name: :extra))
+      |> Workflow.add(Runic.step(fn a, b -> {a, b} end, name: :outer), to: [:joined, :extra])
+
+    wf =
+      Workflow.plan_eagerly(original, 6)
+      |> advance(&(Map.get(&1.node, :name) == :call))
+      |> advance(&is_struct(&1.node, Runic.Workflow.CallValue))
+      |> advance(&(Map.get(&1.node, :name) == :left))
+      |> advance(&is_struct(&1.node, Runic.Workflow.InputBinding))
+      |> advance(&(Map.get(&1.node, :name) == :selected))
+      |> advance(&is_struct(&1.node, Runic.Workflow.InputBinding))
+      |> advance(&is_struct(&1.node, Runic.Workflow.CallValue))
+      |> advance(&is_struct(&1.node, Runic.Workflow.CallValue))
+      |> advance(&(Map.get(&1.node, :name) == :other))
+      |> advance(&(is_struct(&1.node, Join) and &1.input_fact.value == 7))
+      |> advance(&(is_struct(&1.node, Join) and &1.input_fact.value == 6))
+      |> advance(&(Map.get(&1.node, :name) == :joined))
+      |> advance(&(Map.get(&1.node, :name) == :extra))
+      |> advance(&(is_struct(&1.node, Join) and &1.input_fact.value == {7, 6}))
+      |> advance(&(is_struct(&1.node, Join) and &1.input_fact.value == 6))
+
+    failure =
+      executed(wf, &(Map.get(&1.node, :name) == :right), %SchedulerPolicy{on_failure: :skip})
+
+    for base <- [wf, replay(original, wf, :full), replay(original, wf, :ref)] do
+      applied = Workflow.apply_runnable(base, failure)
+      assert Workflow.raw_productions(applied, :outer) == []
+
+      assert length(
+               Multigraph.in_edges(applied.graph, Workflow.get_component!(applied, :outer),
+                 by: :upstream_failed
+               )
+             ) == 1
+    end
   end
 
   defp produced(wf, fact, label) do

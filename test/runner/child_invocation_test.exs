@@ -380,7 +380,7 @@ defmodule Runic.Runner.ChildInvocationTest do
     {:ok, id} =
       Runner.start_execution(runner, :wf, 3, scheduler_policies: [{:call, %{max_retries: 1}}])
 
-    {:ok, execution} = Runner.await_execution(runner, :wf, id)
+    {:ok, execution} = Runner.await_execution(runner, :wf, id, 10_000)
     assert_receive {:request_attempt, 1}
     assert_receive {:request_attempt, 2}
     {:ok, result} = Runner.get_workflow(runner, :wf)

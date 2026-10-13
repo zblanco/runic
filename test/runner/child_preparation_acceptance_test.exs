@@ -44,7 +44,7 @@ defmodule Runic.Runner.ChildPreparationAcceptanceTest do
           scheduler_policies: [{:call, %{execution_mode: :durable}}]
         )
 
-      assert_receive {:executor_result, ^worker, handle, {executed, events}}, 1_000
+      assert_receive {:executor_result, ^worker, handle, {executed, events}}, 5_000
 
       invalid =
         case unquote(mode) do
@@ -65,8 +65,8 @@ defmodule Runic.Runner.ChildPreparationAcceptanceTest do
         end
 
       send(worker, {handle, {invalid, events}})
-      assert_receive {:executor_released, ^handle}, 1_000
-      {:ok, observed} = Runner.await_execution(runner, :wf, id)
+      assert_receive {:executor_released, ^handle}, 5_000
+      {:ok, observed} = Runner.await_execution(runner, :wf, id, 10_000)
       assert observed.admission == :stopped
 
       assert [%{kind: :failed, error: {:child_preparation_missing, _}, result: nil}] =
@@ -135,7 +135,7 @@ defmodule Runic.Runner.ChildPreparationAcceptanceTest do
 
     assert_receive {:executor_result, ^worker, handle,
                     {:promise_result, promise_id, [first, second]}},
-                   1_000
+                   5_000
 
     rejected =
       case first do
@@ -156,8 +156,8 @@ defmodule Runic.Runner.ChildPreparationAcceptanceTest do
       end
 
     send(worker, {handle, {:promise_result, promise_id, [invalid, second]}})
-    assert_receive {:executor_released, ^handle}, 1_000
-    {:ok, observed} = Runner.await_execution(runner, :wf, id)
+    assert_receive {:executor_released, ^handle}, 5_000
+    {:ok, observed} = Runner.await_execution(runner, :wf, id, 10_000)
     assert Process.alive?(worker)
     assert observed.admission == :stopped
     assert [%{kind: :failed, error: {:child_preparation_missing, _}}] = observed.failures

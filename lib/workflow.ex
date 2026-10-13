@@ -5219,64 +5219,72 @@ defmodule Runic.Workflow do
     end)
   end
 
-  defp descends_from?(_workflow, %{hash: hash}, hash), do: true
+  defp descends_from?(workflow, fact, hash),
+    do: lineage_reachability(workflow, fact, {:fact, hash}) |> elem(0)
 
-  defp descends_from?(workflow, %{ancestry: {producer, parent}} = fact, hash) do
+  defp descends_from_call_request?(workflow, fact, hash),
+    do: lineage_reachability(workflow, fact, {:call_request, hash}) |> elem(0)
+
+  # One visited set covers every branch of a query. Diagnostics return its size
+  # so the convergence bound can be tested without a wall-clock threshold.
+  @doc false
+  def lineage_reachability(workflow, fact, target),
+    do: walk_lineage(workflow, [fact], target, MapSet.new())
+
+  defp walk_lineage(_workflow, [], _target, seen), do: {false, MapSet.size(seen)}
+
+  defp walk_lineage(workflow, [%{hash: hash} = fact | rest], target, seen) do
+    if MapSet.member?(seen, hash) do
+      walk_lineage(workflow, rest, target, seen)
+    else
+      seen = MapSet.put(seen, hash)
+
+      case lineage_step(workflow, fact, target) do
+        :match -> {true, MapSet.size(seen)}
+        inputs -> walk_lineage(workflow, inputs ++ rest, target, seen)
+      end
+    end
+  end
+
+  defp walk_lineage(workflow, [_ | rest], target, seen),
+    do: walk_lineage(workflow, rest, target, seen)
+
+  defp lineage_step(_workflow, %{hash: hash}, {:fact, hash}), do: :match
+
+  defp lineage_step(_workflow, %{ancestry: {call_hash, _}}, {:call_request, call_hash}),
+    do: :match
+
+  defp lineage_step(workflow, %{ancestry: {producer, parent}} = fact, target) do
     case Map.get(workflow.graph.vertices, producer) do
       %Join{} ->
         case join_contributions(workflow, fact) do
-          {:known, inputs} ->
-            Enum.any?(inputs, &descends_from?(workflow, &1, hash))
-
-          :unknown ->
-            # Do not invent parents for an old completion. Pending work in the
-            # same root is conservatively affected by occurrence failure.
-            case Map.get(workflow.graph.vertices, hash) do
-              nil ->
-                false
-
-              request ->
-                same_local_root?(workflow, fact, local_root_ancestor_hash(workflow, request))
-            end
+          {:known, inputs} -> inputs
+          :unknown -> unknown_lineage(workflow, fact, target)
         end
 
       _ ->
-        descendant_parent?(workflow, parent, &descends_from?(workflow, &1, hash))
-    end
-  end
-
-  defp descends_from?(_, _, _), do: false
-
-  defp descends_from_call_request?(_workflow, %{ancestry: {call_hash, _}}, call_hash), do: true
-
-  defp descends_from_call_request?(workflow, %{ancestry: {producer, parent}} = fact, call_hash) do
-    case Map.get(workflow.graph.vertices, producer) do
-      %Join{} ->
-        case join_contributions(workflow, fact) do
-          {:known, inputs} ->
-            Enum.any?(inputs, &descends_from_call_request?(workflow, &1, call_hash))
-
-          :unknown ->
-            false
+        case Map.get(workflow.graph.vertices, parent) do
+          nil -> []
+          input -> [input]
         end
-
-      _ ->
-        descendant_parent?(
-          workflow,
-          parent,
-          &descends_from_call_request?(workflow, &1, call_hash)
-        )
     end
   end
 
-  defp descends_from_call_request?(_, _, _), do: false
+  defp lineage_step(_, _, _), do: []
 
-  defp descendant_parent?(workflow, parent, predicate) do
-    case Map.get(workflow.graph.vertices, parent) do
-      nil -> false
-      fact -> predicate.(fact)
+  defp unknown_lineage(workflow, fact, {:fact, request_hash}) do
+    case Map.get(workflow.graph.vertices, request_hash) do
+      nil ->
+        []
+
+      request ->
+        if same_local_root?(workflow, fact, local_root_ancestor_hash(workflow, request)),
+          do: :match,
+          else: []
     end
   end
+
+  defp unknown_lineage(_, _, _), do: []
 
   @doc false
   def join_contributions(workflow, result) do
@@ -5360,18 +5368,26 @@ defmodule Runic.Workflow do
   # A fact passed from another workflow can retain ancestry outside this graph.
   # Use its own hash as the local input boundary, so separate handoff facts do
   # not share a suppression scope merely because they have an external parent.
-  defp local_root_ancestor_hash(_workflow, %{ancestry: nil, hash: hash}), do: hash
+  defp local_root_ancestor_hash(workflow, fact),
+    do: local_root_ancestor_hash(workflow, fact, MapSet.new())
+
+  defp local_root_ancestor_hash(_workflow, %{ancestry: nil, hash: hash}, _seen), do: hash
 
   defp local_root_ancestor_hash(
          %__MODULE__{graph: graph} = workflow,
-         %{ancestry: {_producer_hash, parent_fact_hash}, hash: hash}
+         %{ancestry: {_, parent}, hash: hash},
+         seen
        ) do
-    case Map.get(graph.vertices, parent_fact_hash) do
-      parent_fact when is_struct(parent_fact, Fact) or is_struct(parent_fact, FactRef) ->
-        local_root_ancestor_hash(workflow, parent_fact)
+    if MapSet.member?(seen, hash) do
+      nil
+    else
+      case Map.get(graph.vertices, parent) do
+        fact when is_struct(fact, Fact) or is_struct(fact, FactRef) ->
+          local_root_ancestor_hash(workflow, fact, MapSet.put(seen, hash))
 
-      nil ->
-        hash
+        nil ->
+          hash
+      end
     end
   end
 

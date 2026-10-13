@@ -237,6 +237,11 @@ result parents. The graph keeps these coordinates on that result's produced
 edge, so full/ref event replay and snapshots use the same lineage without
 loading values. Accumulated `join_satisfied` edges are not a parent-history index.
 
+Each lineage query uses one visited set for all contribution branches. It visits
+each Fact hash at most once, including when several Join paths have the same
+ancestor. The set exists only for that query. Cycles terminate without a match
+unless the query has reached its target.
+
 Older completion events without these hashes have unknown provenance. Runic does
 not reconstruct exact parents from the trigger or a same-root historical superset.
 When occurrence/request failure affects that root's pending work, unknown Join
