@@ -533,9 +533,10 @@ executed = Enum.map(runnables, fn runnable ->
   Runic.Workflow.Invokable.execute(runnable.node, runnable)
 end)
 
-# Phase 3: Apply results
-workflow = Enum.reduce(executed, workflow, fn runnable, wrk ->
-  Workflow.apply_runnable(wrk, runnable)
+# Phase 3: Accept results; record result.status, and stop new admission on failure
+{accepted, workflow} = Enum.map_reduce(executed, workflow, fn runnable, wrk ->
+  {wrk, result, _events} = Workflow.accept_runnable(wrk, runnable)
+  {result, wrk}
 end)
 
 # Continue if more work

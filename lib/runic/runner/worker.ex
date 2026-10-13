@@ -298,7 +298,8 @@ defmodule Runic.Runner.Worker do
           try do
             Execution.start(state.workflow, input, opts)
           rescue
-            error in [ArgumentError, Runic.Identity.CanonicalError] -> {:error, error}
+            error in [ArgumentError, Runic.Identity.CanonicalError, Runic.Workflow.LocalFactError] ->
+              {:error, error}
           end
 
         case execution_start do
@@ -510,11 +511,11 @@ defmodule Runic.Runner.Worker do
 
     {workflow, failed} =
       if state.admission_causes == [] and is_nil(state.current_execution_id) do
-        Workflow.plan_eagerly_with_result(workflow, input)
+        Workflow.plan_eagerly_verified(workflow, input)
       else
         # Observed matches use scheduler policy and outcome recording. In a
         # stopped scope, leave matches for explicit continuation/recovery.
-        {Workflow.plan(workflow, input), nil}
+        {Workflow.plan_verified(workflow, input), nil}
       end
 
     status = if state.admission_causes == [], do: :running, else: state.status

@@ -128,7 +128,7 @@ defmodule Runic.Runner do
   `{:error, {:persistence_failed, reason}}` without starting a Worker.
   """
   def start_workflow(runner, workflow_id, workflow, opts \\ []) do
-    Runic.Workflow.LocalBoundary.validate_current!(workflow, :workflow)
+    Runic.Workflow.LocalBoundary.validate_workflow!(workflow)
 
     with :ok <-
            if(Keyword.get(opts, :resumed, false),

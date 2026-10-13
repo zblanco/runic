@@ -41,8 +41,37 @@ defmodule Runic.Workflow.LocalBoundary do
     end
   end
 
-  @doc false
+  @doc """
+  Fully validates native records at an admission or adapter boundary.
+
+  Checks local mode, scope presence and VM, payload proof, and nested records.
+  Raises `LocalFactError` on an invalid profile. This allows local records in
+  the current VM; use `check/2` to reject local records before export.
+
+  Validate incoming adapter records here before using low-level event folds.
+  For a workflow graph, use `validate_workflow!/1` to also check known parent
+  relationships. For event replay, use `Workflow.from_events/3`.
+  """
+  @spec validate_current!(term(), term()) :: :ok
   def validate_current!(value, field), do: validate_scopes(value, [field])
+
+  @doc """
+  Fully validates native workflow records and known child-parent scope links.
+
+  Independent roots can have different scopes. An ancestry link outside this
+  graph is an external handoff and does not impose a scope from a missing parent.
+  """
+  @spec validate_workflow!(Runic.Workflow.t()) :: :ok
+  def validate_workflow!(%Runic.Workflow{} = workflow) do
+    validate_current!(workflow, :workflow)
+
+    Enum.each(workflow.graph.vertices, fn
+      {_, %Fact{} = fact} -> validate_event!(workflow, fact)
+      _ -> :ok
+    end)
+
+    :ok
+  end
 
   @doc false
   def validate_profile!(%module{} = record, field) when is_map_key(@scope_records, module),

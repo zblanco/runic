@@ -85,9 +85,10 @@ defprotocol Runic.Workflow.Invokable do
         Runic.Workflow.Invokable.execute(runnable.node, runnable)
       end, timeout: :infinity)
 
-      # Phase 3: Apply results back to workflow
-      workflow = Enum.reduce(executed, workflow, fn {:ok, runnable}, wrk ->
-        Workflow.apply_runnable(wrk, runnable)
+      # Phase 3: Accept results and record the returned status.
+      {accepted, workflow} = Enum.map_reduce(executed, workflow, fn {:ok, runnable}, wrk ->
+        {wrk, result, _events} = Workflow.accept_runnable(wrk, runnable)
+        {result, wrk}
       end)
 
   ## Implementing Custom Invokable
@@ -219,6 +220,8 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Root do
   def match_or_execute(_root), do: :match
 
   def invoke(%Root{} = root, workflow, fact) do
+    Runic.Workflow.LocalBoundary.validate_current!(fact, :input)
+
     workflow
     |> Workflow.log_fact(fact)
     |> Workflow.prepare_next_runnables(root, fact)

@@ -154,9 +154,10 @@ executed = Task.async_stream(runnables, fn runnable ->
   Runic.Workflow.Invokable.execute(runnable.node, runnable)
 end, timeout: :infinity)
 
-# Phase 3: Apply results back to workflow
-workflow = Enum.reduce(executed, workflow, fn {:ok, runnable}, wrk ->
-  Workflow.apply_runnable(wrk, runnable)
+# Phase 3: Accept results; record result.status, and stop new admission on failure
+{accepted, workflow} = Enum.map_reduce(executed, workflow, fn {:ok, runnable}, wrk ->
+  {wrk, result, _events} = Workflow.accept_runnable(wrk, runnable)
+  {result, wrk}
 end)
 
 # Continue if more work is available

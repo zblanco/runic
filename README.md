@@ -245,7 +245,7 @@ defmodule MyApp.WorkflowScheduler do
       |> Workflow.plan_eagerly(input)
       |> dispatch_tasks()
 
-    {:noreply, %{state | workflow: workflow}}
+    {:noreply, %{state | workflow: workflow} |> Map.put(:admission_stopped?, false)}
   end
 
   # Phase 2: Execute (dispatch to async worker pool, queue, external service, etc.)
@@ -262,19 +262,16 @@ defmodule MyApp.WorkflowScheduler do
     workflow
   end
 
-  # Phase 3: Apply results back to workflow by handling async task callbacks with excecuted runnable
+  # Phase 3: Accept the returned attempt and record its accepted status
   def handle_info({ref, executed_runnable}, %{workflow: workflow} = state) do
-    new_workflow =
-      Enum.reduce(executed, workflow, fn {:ok, runnable}, wrk ->
-        Workflow.apply_runnable(wrk, runnable)
-      end)
-
-    workflow = 
-      if Workflow.is_runnable?(new_workflow) do
-        dispatch_tasks(workflow)
-      end
-
-    {:noreply, %{state | workflow: workflow}}
+    Process.demonitor(ref, [:flush])
+    {workflow, accepted, _events} = Workflow.accept_runnable(workflow, executed_runnable)
+    stopped? = Map.get(state, :admission_stopped?, false) or accepted.status == :failed
+    state = %{state | workflow: workflow} |> Map.put(:admission_stopped?, stopped?)
+    # Record accepted.status and accepted.error; drain already dispatched work.
+    state = if not stopped? and Workflow.is_runnable?(workflow),
+      do: %{state | workflow: dispatch_tasks(workflow)}, else: state
+    {:noreply, state}
   end
 end
 ```
@@ -282,7 +279,8 @@ end
 Key APIs for external scheduling:
 
 - `Workflow.prepare_for_dispatch/1` - Returns `{workflow, [%Runnable{}]}` for dispatch
-- `Workflow.apply_runnable/2` - Applies a completed runnable back to the workflow
+- `Workflow.accept_runnable/3` - Returns the workflow, accepted Runnable, and lifecycle events; record this status
+- `Workflow.apply_runnable/2` - Convenience for callers that need only the workflow
 - `Invokable.execute/2` - Executes a runnable in isolation (no workflow access)
 
 In summary, the `Runic` module provides high level functions and macros for building Runic Components

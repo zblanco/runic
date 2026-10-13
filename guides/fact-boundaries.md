@@ -100,7 +100,10 @@ shallow profile and parent-scope checks. It does not repeatedly hash or walk
 the values. The low-level `apply_event/2` fold and internal verified-record
 constructor assume checked records; they are not import codecs. Adapters must
 validate incoming records with `LocalBoundary.validate_current!/2` or replay
-them with `from_events/3` before using those paths.
+them with `from_events/3` before using those paths. These are public documented
+validation routes. `LocalBoundary.validate_workflow!/1` also checks known
+child-parent scope links. Independent roots may have different scopes, and
+ancestry outside the graph remains an external handoff.
 
 Native local facts cannot be persisted. The Worker rejects the event batch
 before `save_fact/3`, `save_payload/3`, or append/save callbacks. Built-in ETS

@@ -97,8 +97,11 @@ executed = Enum.map(runnables, fn runnable ->
   Invokable.execute(runnable.node, runnable)
 end)
 
-# Phase 3: Application - Reduce results back
-workflow = Enum.reduce(executed, workflow, &Workflow.apply_runnable(&2, &1))
+# Phase 3: Acceptance - Record the returned status and stop new admission on failure
+{accepted, workflow} = Enum.map_reduce(executed, workflow, fn attempt, wrk ->
+  {wrk, result, _events} = Workflow.accept_runnable(wrk, attempt)
+  {result, wrk}
+end)
 ```
 
 ## Do's and Don'ts

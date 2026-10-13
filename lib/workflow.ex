@@ -2038,7 +2038,7 @@ defmodule Runic.Workflow do
 
     if Keyword.get(opts, :allow_local, false) do
       Runic.Workflow.LocalBoundary.validate_current!(events, :events)
-      Runic.Workflow.LocalBoundary.validate_current!(base_workflow, :workflow)
+      if base_workflow, do: Runic.Workflow.LocalBoundary.validate_workflow!(base_workflow)
     else
       Runic.Workflow.LocalBoundary.check!(events, :events)
       Runic.Workflow.LocalBoundary.check!(base_workflow, :workflow)
@@ -3473,7 +3473,7 @@ defmodule Runic.Workflow do
 
     {observed_workflow, planning_failure, execution} =
       observed_workflow
-      |> plan(input_fact)
+      |> plan_verified(input_fact)
       |> activate_matches_with_result(
         &execute_with_policy(&1, policies, driver_opts),
         execution
@@ -3583,7 +3583,7 @@ defmodule Runic.Workflow do
   end
 
   def react(%__MODULE__{} = wrk, raw_fact) when not is_list(raw_fact) do
-    react(wrk, Fact.new(value: raw_fact), [])
+    react(wrk, raw_fact, [])
   end
 
   defp react_cycle(workflow, opts, execution) do
@@ -3617,14 +3617,17 @@ defmodule Runic.Workflow do
   """
   @spec react(t(), Fact.t() | term(), keyword()) :: t()
   def react(%__MODULE__{} = wrk, %Fact{ancestry: nil} = fact, opts) do
-    wrk
-    |> maybe_apply_run_context(opts)
-    |> invoke(root(), fact)
-    |> react(opts)
+    Runic.Workflow.LocalBoundary.validate_current!(fact, :input)
+    react_verified(wrk, fact, opts)
   end
 
   def react(%__MODULE__{} = wrk, raw_fact, opts) do
-    react(wrk, Fact.input(raw_fact, opts), opts)
+    Runic.Workflow.LocalBoundary.validate_current!(raw_fact, :input)
+    react_verified(wrk, Fact.input(raw_fact, opts), opts)
+  end
+
+  defp react_verified(wrk, fact, opts) do
+    wrk |> maybe_apply_run_context(opts) |> plan_verified(fact) |> react(opts)
   end
 
   defp execute_runnables_serial(workflow, runnables, opts, execution) do
@@ -3926,16 +3929,22 @@ defmodule Runic.Workflow do
   end
 
   def react_until_satisfied(%__MODULE__{} = wrk, %Fact{ancestry: nil} = fact, opts) do
+    Runic.Workflow.LocalBoundary.validate_current!(fact, :input)
+    react_until_verified(wrk, fact, opts)
+  end
+
+  def react_until_satisfied(%__MODULE__{} = wrk, raw_fact, opts) do
+    Runic.Workflow.LocalBoundary.validate_current!(raw_fact, :input)
+    react_until_verified(wrk, Fact.input(raw_fact, opts), opts)
+  end
+
+  defp react_until_verified(wrk, fact, opts) do
     opts = maybe_convert_deadline(opts)
     wrk = maybe_apply_run_context(wrk, opts)
 
     wrk
-    |> invoke(root(), fact)
+    |> plan_verified(fact)
     |> react_until_satisfied(nil, opts)
-  end
-
-  def react_until_satisfied(%__MODULE__{} = wrk, raw_fact, opts) do
-    react_until_satisfied(wrk, Fact.input(raw_fact, opts), opts)
   end
 
   defp maybe_convert_deadline(opts) do
@@ -4042,8 +4051,17 @@ defmodule Runic.Workflow do
   end
 
   def plan(%__MODULE__{} = wrk, raw_fact) do
-    plan(wrk, Fact.new(value: raw_fact))
+    Runic.Workflow.LocalBoundary.validate_current!(raw_fact, :input)
+    plan_verified(wrk, Fact.new(value: raw_fact))
   end
+
+  @doc false
+  def plan_verified(workflow, %Fact{} = fact),
+    do: elem(invoke_with_result(workflow, root(), fact), 0)
+
+  @doc false
+  def plan_eagerly_verified(workflow, fact),
+    do: workflow |> plan_verified(fact) |> activate_matches_with_result()
 
   @doc """
   `plan/1` will, for all next left hand side / match phase runnables activate and prepare next match runnables.
@@ -4116,7 +4134,7 @@ defmodule Runic.Workflow do
       |> Enum.uniq()
 
     Enum.reduce(new_productions, workflow, fn output_fact, wrk ->
-      plan(wrk, output_fact)
+      plan_verified(wrk, output_fact)
     end)
     |> activate_matches_with_result()
   end
@@ -4210,7 +4228,14 @@ defmodule Runic.Workflow do
       Workflow.is_runnable?(workflow)
       # => true
   """
-  def invoke(%__MODULE__{} = wrk, step, fact) do
+  def invoke(%__MODULE__{} = wrk, %Root{} = step, %Fact{} = fact) do
+    Runic.Workflow.LocalBoundary.validate_current!(fact, :input)
+    invoke_verified(wrk, step, fact)
+  end
+
+  def invoke(%__MODULE__{} = wrk, step, fact), do: invoke_verified(wrk, step, fact)
+
+  defp invoke_verified(wrk, step, fact) do
     {workflow, _result} = invoke_with_result(wrk, step, fact)
     workflow
   end
@@ -4592,9 +4617,10 @@ defmodule Runic.Workflow do
         Invokable.execute(r.node, r)
       end, timeout: :infinity)
 
-      # Apply results back
-      workflow = Enum.reduce(executed, workflow, fn {:ok, r}, w ->
-        Workflow.apply_runnable(w, r)
+      # Accept results and record the returned status; stop new admission on failure.
+      {accepted, workflow} = Enum.map_reduce(executed, workflow, fn {:ok, r}, w ->
+        {w, result, _events} = Workflow.accept_runnable(w, r)
+        {result, w}
       end)
   """
   @spec prepare_for_dispatch(t()) :: {t(), [Runnable.t()]}
@@ -4876,7 +4902,7 @@ defmodule Runic.Workflow do
       runnable_id: runnable.id,
       activation_id: Runnable.activation_id(runnable),
       attempt_id: runnable.attempt_id,
-      node_hash: runnable.node.hash,
+      node_hash: Components.vertex_id_of(runnable.node),
       order_key: Runnable.order_key(runnable),
       error: runnable.error,
       failed_at: System.monotonic_time(:millisecond),
@@ -5030,7 +5056,7 @@ defmodule Runic.Workflow do
 
     activation_consumed = %ActivationConsumed{
       fact_hash: fact.hash,
-      node_hash: node.hash,
+      node_hash: Components.vertex_id_of(node),
       from_label: Private.connection_for_activatable(node)
     }
 
