@@ -881,6 +881,11 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.FanOut do
 
   def match_or_execute(_fan_out), do: :execute
 
+  def invoke(%FanOut{batch: batch} = fan_out, workflow, fact) when not is_nil(batch) do
+    {:ok, runnable} = prepare(fan_out, workflow, fact)
+    Workflow.apply_runnable(workflow, execute(fan_out, runnable))
+  end
+
   def invoke(
         %FanOut{} = fan_out,
         %Workflow{} = workflow,
@@ -921,7 +926,7 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.FanOut do
   end
 
   def prepare(%FanOut{} = fan_out, %Workflow{} = workflow, %Fact{} = fact) do
-    if is_nil(Enumerable.impl_for(fact.value)) do
+    if is_nil(fan_out.batch) and is_nil(Enumerable.impl_for(fact.value)) do
       {:skip, fn wf -> Workflow.mark_runnable_as_ran(wf, fan_out, fact) end}
     else
       is_reduced = is_reduced?(workflow, fan_out)
@@ -943,7 +948,10 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.FanOut do
 
   def execute(%FanOut{} = fan_out, %Runnable{input_fact: source_fact, context: ctx} = runnable) do
     emitted_facts =
-      source_fact.value
+      if(fan_out.batch,
+        do: Runic.Workflow.Batch.items(source_fact.value),
+        else: source_fact.value
+      )
       |> Enum.with_index()
       |> Enum.map(fn {value, output_index} ->
         causal_ancestry =
@@ -954,11 +962,20 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.FanOut do
             output_index: output_index
           )
 
-        Fact.new(
-          value: value,
-          ancestry: {fan_out.hash, source_fact.hash},
-          causal_ancestry: causal_ancestry
-        )
+        fact =
+          Fact.new(
+            value: value,
+            ancestry: {fan_out.hash, source_fact.hash},
+            causal_ancestry: causal_ancestry
+          )
+
+        if fan_out.batch,
+          do: %{
+            fact
+            | meta:
+                Runic.Workflow.Batch.item_metadata(fan_out, source_fact, output_index, fact.hash)
+          },
+          else: fact
       end)
 
     fan_out_events =
@@ -970,6 +987,7 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.FanOut do
           emitted_content_digest: fact.content_digest,
           emitted_payload_digest: fact.payload_digest,
           emitted_value: fact.value,
+          emitted_meta: fact.meta,
           emitted_ancestry: fact.ancestry,
           emitted_causal_ancestry: fact.causal_ancestry,
           weight: ctx.ancestry_depth + 1
@@ -987,6 +1005,8 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.FanOut do
         ]
 
     Runnable.complete(runnable, emitted_facts, events)
+  rescue
+    exception -> Runnable.fail(runnable, exception)
   end
 
   defp maybe_prepare_map_reduce(workflow, true, fan_out, fan_out_fact, source_fact) do
@@ -1020,6 +1040,11 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.FanIn do
   alias Runic.Workflow.Events.{FactProduced, ActivationConsumed}
 
   def match_or_execute(_fan_in), do: :execute
+
+  def invoke(%FanIn{batch: batch} = fan_in, workflow, fact) when not is_nil(batch) do
+    {:ok, runnable} = prepare(fan_in, workflow, fact)
+    Workflow.apply_runnable(workflow, execute(fan_in, runnable))
+  end
 
   def invoke(
         %FanIn{} = fan_in,

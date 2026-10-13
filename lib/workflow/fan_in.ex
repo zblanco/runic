@@ -15,7 +15,7 @@ defmodule Runic.Workflow.FanIn do
   operation. The `has_meta_refs?/1` function indicates whether context
   references are present.
   """
-  defstruct [:hash, :init, :reducer, :map, :name, mergeable: false, meta_refs: []]
+  defstruct [:hash, :init, :reducer, :map, :name, :batch, mergeable: false, meta_refs: []]
 
   @doc """
   Returns whether this FanIn has meta references (e.g., `context/1`)
@@ -31,6 +31,14 @@ defimpl Runic.Workflow.Coordinator, for: Runic.Workflow.FanIn do
   alias Runic.Workflow.Private
   alias Runic.Workflow.Events.ActivationConsumed
   alias Runic.Workflow.Events.FanInCompleted
+
+  def finalize(%Runic.Workflow.FanIn{batch: batch} = fan_in, workflow, %{
+        context: %{fan_in_context: fctx}
+      })
+      when not is_nil(batch) do
+    {_source, step_hash} = fctx.seen_key
+    Runic.Workflow.Batch.finish(workflow, fan_in, fctx.source_fact_hash, step_hash)
+  end
 
   def finalize(
         %Runic.Workflow.FanIn{} = fan_in,

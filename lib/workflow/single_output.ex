@@ -64,9 +64,16 @@ defmodule Runic.Workflow.SingleOutput do
 
   @doc false
   def prepare(node, workflow, fact) do
+    batch = Runic.Workflow.Batch.context(workflow, fact)
+    runtime = Workflow.get_run_context(workflow, node.name)
+    runtime = if batch, do: Map.put(runtime, :batch, batch), else: runtime
+
+    meta_workflow =
+      if batch, do: Workflow.put_run_context(workflow, %{node.name => runtime}), else: workflow
+
     meta =
       if Map.get(node, :meta_refs, []) != [],
-        do: Workflow.prepare_meta_context(workflow, node),
+        do: Workflow.prepare_meta_context(meta_workflow, node),
         else: %{}
 
     context =
@@ -75,7 +82,8 @@ defmodule Runic.Workflow.SingleOutput do
         input_fact: fact,
         ancestry_depth: Workflow.ancestry_depth(workflow, fact),
         hooks: Workflow.get_hooks(workflow, node.hash),
-        run_context: Workflow.get_run_context(workflow, node.name),
+        run_context: runtime,
+        batch: batch,
         meta_context: meta,
         fan_out_context: collection_context(workflow, node, fact)
       )
