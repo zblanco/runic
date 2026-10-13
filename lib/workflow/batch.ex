@@ -28,7 +28,7 @@ defmodule Runic.Workflow.Batch do
   limits remain separate; Batch has its own reconstructable definition.
   """
   alias Runic.{Component, Identity, Workflow}
-  alias Runic.Workflow.{Fact, FanIn, FanOut, Runnable, SingleOutput, Private}
+  alias Runic.Workflow.{Components, Fact, FanIn, FanOut, Runnable, SingleOutput, Private}
   alias Runic.Workflow.Batch.{Input, Outcome, Result, Terminal}
   alias Runic.Workflow.Events.{FanInCompleted, MapReduceTracked, RunnableActivated}
 
@@ -135,7 +135,7 @@ defmodule Runic.Workflow.Batch do
   end
 
   defp lookup_item(workflow, node, %{ancestry: {producer, source}, hash: item, meta: meta}) do
-    case {Map.get(Map.get(workflow.mapped, :batch_members, %{}), node.hash),
+    case {Map.get(Map.get(workflow.mapped, :batch_members, %{}), Components.vertex_id_of(node)),
           Map.get(meta, :runic_batch)} do
       {%{fan_out: ^producer}, %{source_fact_id: ^source, item_id: ^item} = coordinates} ->
         {source, producer, item, coordinates}
@@ -247,7 +247,7 @@ defmodule Runic.Workflow.Batch do
 
   @doc false
   def item_scope(workflow, node, fact) do
-    case Map.get(Map.get(workflow.mapped, :batch_members, %{}), node.hash) do
+    case Map.get(Map.get(workflow.mapped, :batch_members, %{}), Components.vertex_id_of(node)) do
       %{collector: fan_out, member: producer} ->
         case fact.ancestry do
           {^producer, item} ->
@@ -278,7 +278,10 @@ defmodule Runic.Workflow.Batch do
 
   @doc false
   def provides_context?(workflow, node, :batch) do
-    match?(%{fan_out: _}, Map.get(Map.get(workflow.mapped, :batch_members, %{}), node.hash)) and
+    match?(
+      %{fan_out: _},
+      Map.get(Map.get(workflow.mapped, :batch_members, %{}), Components.vertex_id_of(node))
+    ) and
       SingleOutput.supported?(node)
   end
 

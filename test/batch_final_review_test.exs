@@ -6,6 +6,33 @@ defmodule Runic.Workflow.BatchFinalReviewTest do
   alias Runic.Workflow.Batch
   alias Runic.TestSupport.{BatchFinalComponent, OrdinaryComponent}
 
+  test "Root stays outside Batch coordinate, context and failure-scope membership" do
+    root = Workflow.root()
+    root_id = Workflow.Components.vertex_id_of(root)
+    batch = Runic.batch(OrdinaryComponent.new(:member, :data), name: :batch)
+
+    workflow =
+      Workflow.new()
+      |> Workflow.add(batch)
+      |> Workflow.plan_eagerly(Batch.input([1], :parent))
+      |> Workflow.react()
+
+    {workflow, [member]} = Workflow.prepare_for_dispatch(workflow)
+    assert member.node.hash == Workflow.Components.vertex_id_of(member.node)
+    refute Map.has_key?(workflow.mapped.batch_members, root_id)
+
+    for graph <- [Workflow.new(), workflow],
+        fact <- [Workflow.Fact.new(value: :input), member.input_fact] do
+      assert Batch.context(graph, root, fact) == nil
+      assert Batch.item_scope(graph, root, fact) == nil
+      refute Batch.provides_context?(graph, root, :batch)
+    end
+
+    assert Batch.context(workflow, member.node, member.input_fact).parent == :parent
+    assert Batch.item_scope(workflow, member.node, member.input_fact) == member.input_fact.hash
+    assert Batch.provides_context?(workflow, member.node, :batch)
+  end
+
   test "Batch removal keeps public connections and zero-weight flow live and after replay" do
     a = Runic.step(fn value -> [value + 1] end, name: :a)
     batch = Runic.batch(OrdinaryComponent.new(:member, :data), name: :batch)
