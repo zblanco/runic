@@ -1602,8 +1602,6 @@ defmodule Runic.Workflow do
     if Map.has_key?(component, field), do: Map.get(component, field)
   end
 
-  defp declared_ports(_component, _field), do: nil
-
   defp workflow_boundary?(%__MODULE__{input_ports: input_ports, output_ports: output_ports}),
     do: not is_nil(input_ports) or not is_nil(output_ports)
 
@@ -2263,7 +2261,7 @@ defmodule Runic.Workflow do
   defp restore_meta_ref_properties(_label, properties), do: properties
 
   defp build_eval_env() do
-    require Runic
+    require Runic, warn: false
     import Runic, warn: false
     alias Runic.Workflow, warn: false
     __ENV__
@@ -2814,10 +2812,6 @@ defmodule Runic.Workflow do
       end)
 
     %{workflow | graph: graph}
-  end
-
-  defp get_by_hash(%__MODULE__{graph: g}, %{hash: hash}) do
-    Map.get(g.vertices, hash)
   end
 
   defp get_by_hash(%__MODULE__{graph: g}, hash) when is_integer(hash) do

@@ -2,7 +2,6 @@ defmodule Runic.Workflow.CompilationUtils do
   @moduledoc """
   Macro utilities for compiling expressions into workflow graphs or components.
   """
-  require Runic
   alias Runic.Workflow
   alias Runic.Workflow.Components
   alias Runic.Workflow.Join

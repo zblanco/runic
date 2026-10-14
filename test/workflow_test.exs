@@ -1238,7 +1238,7 @@ defmodule WorkflowTest do
 
       fan_out = Workflow.get_component(workflow, {"map step", :fan_out})
 
-      assert not is_nil(fan_out)
+      assert [%Workflow.FanOut{}] = fan_out
 
       # Multigraph.in_edges(map.pipeline.graph, fan_out, by: :component_of)
     end

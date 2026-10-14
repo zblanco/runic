@@ -795,7 +795,6 @@ defimpl Runic.Component, for: Runic.Workflow.Rule do
           case Workflow.get_component(wrk, tuple_ref) do
             [component | _] -> component
             [] -> nil
-            component -> component
           end
 
         _ ->
@@ -1702,7 +1701,6 @@ defimpl Runic.Component, for: Runic.Workflow.Condition do
             case Workflow.get_component(wrk, tuple_ref) do
               [component | _] -> component
               [] -> nil
-              component -> component
             end
 
           _ ->

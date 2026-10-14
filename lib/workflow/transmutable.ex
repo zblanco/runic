@@ -166,7 +166,6 @@ end
 
 defimpl Runic.Transmutable, for: Runic.Workflow.Step do
   alias Runic.Workflow
-  require Runic
 
   def transmute(step), do: to_workflow(step)
 
@@ -206,7 +205,6 @@ defimpl Runic.Transmutable, for: Function do
 end
 
 defimpl Runic.Transmutable, for: Any do
-  require Runic
   alias Runic.Workflow
 
   def transmute(anything_else), do: to_workflow(anything_else)

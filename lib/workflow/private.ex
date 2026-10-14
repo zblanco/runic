@@ -13,7 +13,6 @@ defmodule Runic.Workflow.Private do
   alias Runic.Workflow.IdentityConflictError
   alias Runic.Workflow.Rule
   alias Runic.Workflow.FanOut
-  alias Runic.Workflow.FanIn
   alias Runic.Workflow.Join
   alias Runic.Workflow.Invokable
   alias Runic.Workflow.Events.RunnableActivated
@@ -71,10 +70,6 @@ defmodule Runic.Workflow.Private do
       workflow
       | components: Map.put(components, name, step)
     }
-  end
-
-  def maybe_put_component(%Workflow{} = workflow, %FanIn{map: nil}) do
-    workflow
   end
 
   def maybe_put_component(%Workflow{} = workflow, %{} = _step), do: workflow

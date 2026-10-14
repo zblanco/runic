@@ -281,7 +281,6 @@ defmodule Runic.Workflow.SchedulerPolicy do
   end
 
   defp normalize_name(name) when is_atom(name), do: name
-  defp normalize_name(nil), do: nil
 
   defp normalize_name(name) when is_binary(name) do
     String.to_existing_atom(name)

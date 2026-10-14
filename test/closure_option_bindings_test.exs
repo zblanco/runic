@@ -14,6 +14,23 @@ defmodule Runic.ClosureOptionBindingsTest do
   alias Runic.Workflow
 
   describe "closure captures option variables" do
+    test "runtime names keep explicit values and use defaults for nil and false" do
+      for name <- [nil, false, :named_step, "named step", 0] do
+        step = Runic.step(fn value -> value end, name: name)
+        {rebuilt, _bindings} = Runic.Closure.eval(step.closure)
+
+        if name in [nil, false] do
+          assert String.starts_with?(step.name, "step_")
+          assert String.ends_with?(step.name, "_#{step.hash}")
+        else
+          assert step.name == name
+        end
+
+        assert rebuilt.name == step.name
+        assert rebuilt.hash == step.hash
+      end
+    end
+
     test "step with runtime name variable roundtrips through build_log/from_log" do
       # Simulates what WorkflowComposer.compose does:
       # building steps dynamically with runtime-computed names and pinned body vars
@@ -197,7 +214,7 @@ defmodule Runic.ClosureOptionBindingsTest do
         )
 
       assert r.name == :dynamic_rule
-      assert not is_nil(r.closure)
+      assert %Runic.Closure{} = r.closure
       assert Map.has_key?(r.closure.bindings, :rule_name)
       assert Map.has_key?(r.closure.bindings, :multiplier)
 
@@ -225,7 +242,7 @@ defmodule Runic.ClosureOptionBindingsTest do
         )
 
       assert r.name == :kw_rule
-      assert not is_nil(r.closure)
+      assert %Runic.Closure{} = r.closure
       assert Map.has_key?(r.closure.bindings, :rule_name)
       assert Map.has_key?(r.closure.bindings, :factor)
 
@@ -252,7 +269,7 @@ defmodule Runic.ClosureOptionBindingsTest do
         )
 
       assert m.name == :dynamic_map
-      assert not is_nil(m.closure)
+      assert %Runic.Closure{} = m.closure
       assert Map.has_key?(m.closure.bindings, :map_name)
       assert Map.has_key?(m.closure.bindings, :offset)
 
@@ -290,7 +307,7 @@ defmodule Runic.ClosureOptionBindingsTest do
         )
 
       assert r.name == :dynamic_reduce
-      assert not is_nil(r.closure)
+      assert %Runic.Closure{} = r.closure
       assert Map.has_key?(r.closure.bindings, :reduce_name)
       assert Map.has_key?(r.closure.bindings, :offset)
 

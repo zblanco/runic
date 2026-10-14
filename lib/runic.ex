@@ -293,11 +293,7 @@ defmodule Runic do
           )
 
         step_name =
-          if unquote(base_name) do
-            unquote(base_name)
-          else
-            unquote(default_component_name("step", "_")) <> "_#{step_hash}"
-          end
+          unquote(runtime_component_name(base_name, "step", quote(do: step_hash)))
 
         Step.new(
           work: unquote(final_work),
@@ -376,11 +372,7 @@ defmodule Runic do
           )
 
         step_name =
-          if unquote(base_name) do
-            unquote(base_name)
-          else
-            unquote(default_component_name("step", "_")) <> "_#{step_hash}"
-          end
+          unquote(runtime_component_name(base_name, "step", quote(do: step_hash)))
 
         Step.new(
           work: unquote(final_work),
@@ -617,11 +609,7 @@ defmodule Runic do
               )
 
             condition_name =
-              if unquote(base_name) do
-                unquote(base_name)
-              else
-                unquote(default_component_name("condition", "_")) <> "_#{condition_hash}"
-              end
+              unquote(runtime_component_name(base_name, "condition", quote(do: condition_hash)))
 
             Condition.new(
               work: unquote(final_work),
@@ -1301,9 +1289,7 @@ defmodule Runic do
         rule_hash = closure.hash
 
         rule_name =
-          if unquote(base_name),
-            do: unquote(base_name),
-            else: unquote(default_component_name("rule", "_")) <> "_#{rule_hash}"
+          unquote(runtime_component_name(base_name, "rule", quote(do: rule_hash)))
 
         %Rule{
           name: rule_name,
@@ -1440,9 +1426,7 @@ defmodule Runic do
         rule_hash = closure.hash
 
         rule_name =
-          if unquote(base_name),
-            do: unquote(base_name),
-            else: unquote(default_component_name("rule", "_")) <> "_#{rule_hash}"
+          unquote(runtime_component_name(base_name, "rule", quote(do: rule_hash)))
 
         %Rule{
           name: rule_name,
@@ -3700,9 +3684,7 @@ defmodule Runic do
         map_hash = closure.hash
 
         map_name =
-          if unquote(base_name),
-            do: unquote(base_name),
-            else: unquote(default_component_name("map", "_")) <> "_#{map_hash}"
+          unquote(runtime_component_name(base_name, "map", quote(do: map_hash)))
 
         map_pipeline =
           unquote(
@@ -3864,9 +3846,7 @@ defmodule Runic do
         reduce_hash = closure.hash
 
         reduce_name =
-          if unquote(base_name),
-            do: unquote(base_name),
-            else: unquote(default_component_name("reduce", "_")) <> "_#{reduce_hash}"
+          unquote(runtime_component_name(base_name, "reduce", quote(do: reduce_hash)))
 
         %Runic.Workflow.Reduce{
           name: reduce_name,
@@ -4003,9 +3983,7 @@ defmodule Runic do
           )
 
         accumulator_name =
-          if unquote(base_name),
-            do: unquote(base_name),
-            else: unquote(default_component_name("accumulator", "_")) <> "_#{accumulator_hash}"
+          unquote(runtime_component_name(base_name, "accumulator", quote(do: accumulator_hash)))
 
         %Accumulator{
           name: accumulator_name,
@@ -4332,6 +4310,18 @@ defmodule Runic do
       other ->
         other
     end)
+  end
+
+  # The caller can supply a name whose truthiness is known at compile time.
+  # Mark only this generated fallback as generated, not the caller's work.
+  defp runtime_component_name(base_name, component_kind, hash) do
+    quote generated: true do
+      if unquote(base_name) do
+        unquote(base_name)
+      else
+        unquote(default_component_name(component_kind, "_")) <> "_#{unquote(hash)}"
+      end
+    end
   end
 
   # Build a Closure struct from rewritten source AST and variable bindings
@@ -5117,9 +5107,7 @@ defmodule Runic do
         rule_hash = closure.hash
 
         rule_name =
-          if unquote(base_name),
-            do: unquote(base_name),
-            else: unquote(default_component_name("rule", "_")) <> "_#{rule_hash}"
+          unquote(runtime_component_name(base_name, "rule", quote(do: rule_hash)))
 
         %Rule{
           name: rule_name,
@@ -5237,9 +5225,7 @@ defmodule Runic do
         rule_hash = closure.hash
 
         rule_name =
-          if unquote(base_name),
-            do: unquote(base_name),
-            else: unquote(default_component_name("rule", "_")) <> "_#{rule_hash}"
+          unquote(runtime_component_name(base_name, "rule", quote(do: rule_hash)))
 
         %Rule{
           name: rule_name,

@@ -126,7 +126,7 @@ defmodule Runic.ClosureMetadata do
         {result, _} =
           Code.eval_string(
             """
-            require Runic
+            require Runic, warn: false
             import Runic
             alias Runic.Workflow
             __ENV__

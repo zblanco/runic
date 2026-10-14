@@ -1521,7 +1521,6 @@ defmodule RunicTest do
       # This is a separate module that doesn't have access to our test's bindings
 
       def recover_and_test(step_log, rule_log, state_machine_log, map_log, reduce_log) do
-        require Runic
         alias Runic.Workflow
 
         # Recover workflows from logs
