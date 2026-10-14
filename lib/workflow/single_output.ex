@@ -13,11 +13,6 @@ defmodule Runic.Workflow.SingleOutput do
   different readiness, state, or multiple-output semantics should continue
   implementing low-level `Runic.Workflow.Invokable` directly.
 
-  Set `batch_parent: false` in `use` when the callback needs batch item
-  coordinates but does not read the shared parent. This omits `:parent` from
-  its prepared batch context and avoids copying that data to each task. The
-  default includes the parent. Batch results and collection tracking retain it.
-
   The callback owns application validation and result interpretation. Use
   `Runic.Workflow.SingleOutput.Result.value/2` for data and `failure/1` for an
   attempt failure. It runs once per attempt, after before hooks and before
@@ -42,22 +37,13 @@ defmodule Runic.Workflow.SingleOutput do
   @doc "Performs one application attempt without access to the workflow graph."
   @callback run(component :: struct(), input :: term(), Context.t()) :: Result.t()
 
-  @doc "Installs the ordinary lifecycle; `batch_parent: false` omits the callback parent."
-  defmacro __using__(opts) do
-    opts = Keyword.validate!(opts, batch_parent: true)
-    batch_parent = Keyword.fetch!(opts, :batch_parent)
-
-    unless is_boolean(batch_parent),
-      do: raise(ArgumentError, ":batch_parent must be a boolean")
-
+  @doc "Installs the ordinary Invokable lifecycle for the calling struct module."
+  defmacro __using__([]) do
     quote do
       @behaviour Runic.Workflow.SingleOutput
 
       @doc false
       def __runic_single_output__, do: true
-
-      @doc false
-      def __runic_batch_parent__, do: unquote(batch_parent)
 
       defimpl Runic.Workflow.Invokable, for: __MODULE__ do
         def match_or_execute(_node), do: :execute
@@ -78,7 +64,7 @@ defmodule Runic.Workflow.SingleOutput do
 
   @doc false
   def prepare(node, workflow, fact) do
-    batch = Runic.Workflow.Batch.context(workflow, node, fact, batch_parent?(node))
+    batch = Runic.Workflow.Batch.context(workflow, node, fact)
     runtime = Workflow.get_run_context(workflow, node.name)
 
     meta =
@@ -115,10 +101,6 @@ defmodule Runic.Workflow.SingleOutput do
       end
 
     {:ok, runnable}
-  end
-
-  defp batch_parent?(%module{}) do
-    not function_exported?(module, :__runic_batch_parent__, 0) or module.__runic_batch_parent__()
   end
 
   @doc false

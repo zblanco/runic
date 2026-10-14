@@ -14,8 +14,7 @@ defmodule Runic.Workflow.Batch do
   activation, so repeated values and nested batches have separate identities.
   `SingleOutput.Context.batch` supplies item coordinates and parent data.
   Steps can use `context(:batch)`. Parent data is stored on the source Fact;
-  it is copied into each prepared callback context by default. A custom
-  SingleOutput member can set `batch_parent: false` to keep only coordinates.
+  it is copied into each prepared callback context when needed.
 
   A terminal `:skip` policy permits collection of a skipped outcome. A `:halt`
   failure stops new admission in the existing execution scope. Admitted work
@@ -139,12 +138,10 @@ defmodule Runic.Workflow.Batch do
   end
 
   @doc false
-  def context(workflow, node, fact, include_parent? \\ true) do
+  def context(workflow, node, fact) do
     case lookup_item(workflow, node, fact) do
       {source, _fan_out, _item, coordinates} ->
-        if include_parent?,
-          do: Map.put(coordinates, :parent, parent(workflow.graph.vertices[source].value)),
-          else: coordinates
+        Map.put(coordinates, :parent, parent(workflow.graph.vertices[source].value))
 
       nil ->
         nil
