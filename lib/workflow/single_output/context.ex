@@ -3,7 +3,8 @@ defmodule Runic.Workflow.SingleOutput.Context do
   Read-only execution information for a single-output callback.
 
   `runtime` is the existing component-scoped Runic runtime context; `meta`
-  contains prepared graph/context expression bindings. `input_metadata` is
+  contains prepared graph/context expression bindings. `batch` contains item
+  coordinates and the shared parent data when this callback is a batch member. `input_metadata` is
   the input Fact's metadata. The remaining fields identify this activation
   and its current attempt, including retries. No graph, hooks, or collection
   bookkeeping is exposed.
@@ -14,6 +15,7 @@ defmodule Runic.Workflow.SingleOutput.Context do
   """
 
   @type t :: %__MODULE__{
+          batch: map() | nil,
           runtime: map(),
           meta: map(),
           input_metadata: map(),
@@ -27,6 +29,7 @@ defmodule Runic.Workflow.SingleOutput.Context do
     :activation_id,
     :attempt_id,
     :attempt_number,
+    batch: nil,
     runtime: %{},
     meta: %{},
     input_metadata: %{}
@@ -35,6 +38,7 @@ defmodule Runic.Workflow.SingleOutput.Context do
   @doc false
   def from_runnable(runnable) do
     %__MODULE__{
+      batch: runnable.context.batch,
       runtime: runnable.context.run_context,
       meta: runnable.context.meta_context,
       input_metadata: runnable.input_fact.meta,

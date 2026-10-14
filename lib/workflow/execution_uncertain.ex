@@ -6,7 +6,9 @@ defmodule Runic.Workflow.ExecutionUncertain do
   activations remain unresolved and may repeat work on explicit recovery.
   `reason` is the observed executor exit, outer timeout, or invalid reply.
   For a Promise, `runnable_ids` identifies its prepared frontier; it does not
-  claim which members started or completed. No input or output is included.
+  claim which unresolved members started or completed. Native sequential Task
+  progress updates that frontier after each accepted member. No input or output
+  is included.
   `members` retains stable activation, prepared-attempt, node, and input
   occurrence identities without retaining input values. It does not claim
   which internal retry attempt was running when the executor ended.

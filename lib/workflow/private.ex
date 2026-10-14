@@ -631,7 +631,11 @@ defmodule Runic.Workflow.Private do
     draw_connection(workflow, from, to, :meta_ref, properties: properties)
   end
 
-  def prepare_meta_context(%Workflow{graph: graph} = workflow, node) do
+  def prepare_meta_context(
+        %Workflow{graph: graph} = workflow,
+        node,
+        excluded_context_targets \\ []
+      ) do
     node_vertex =
       case node do
         %{hash: hash} -> hash
@@ -657,17 +661,17 @@ defmodule Runic.Workflow.Private do
       end)
 
     # Resolve :context-kind refs from run_context
-    external_context = resolve_context_refs(workflow, node)
+    external_context = resolve_context_refs(workflow, node, excluded_context_targets)
 
     # Multigraph context overrides external (more specific wins)
     Map.merge(external_context, graph_context)
   end
 
-  defp resolve_context_refs(%Workflow{} = workflow, node) do
+  defp resolve_context_refs(%Workflow{} = workflow, node, excluded) do
     meta_refs = Map.get(node, :meta_refs, [])
 
     meta_refs
-    |> Enum.filter(fn ref -> ref.kind == :context end)
+    |> Enum.filter(fn ref -> ref.kind == :context and ref.target not in excluded end)
     |> Enum.reduce(%{}, fn ref, acc ->
       component_ctx = Workflow.get_run_context(workflow, node.name)
       value = Map.get(component_ctx, ref.target)

@@ -29,11 +29,33 @@ defmodule Runic.Runner.Promise do
   Promise completes all its members even if another unit stops Worker admission.
   A returned failure prevents the Worker from admitting later scheduler units.
 
-  Results are sent to the Worker in one final or partial reply. The Worker
-  does not receive live progress within the Promise. Outer executor loss before
-  that reply leaves the unit uncertain; it does not create node failure events.
-  Results accepted in an earlier reply remain subject to the normal Store
-  acknowledgement boundary. Local executor release is not durable acceptance.
+  The built-in Task executor reports each sequential member and the next
+  prepared frontier before it starts that frontier. While its Worker stays
+  alive, the Worker accepts each activation once, including its apply hooks
+  and events. Final and partial replies omit already accepted members during
+  application. Outer Task loss leaves only the unresolved frontier uncertain;
+  accepted members remain in the workflow. New Worker admission stops.
+
+  A member with deferred graph hooks ends the Promise at that member. The
+  Worker applies those hooks once, then prepares the remaining work from its
+  changed workflow. This boundary also applies to inline and custom executors.
+  A continuous sequential Task reports only members without deferred changes.
+  Scheduler completion and telemetry retain the original dispatch descriptor;
+  the Worker keeps the unresolved frontier separately for progress and loss.
+
+  A Condition also ends the unit because its result is readiness rather than
+  a Fact. The Worker prepares its Rule reaction as a later unit. This deliberate
+  split adds a dispatch and Task spawn; frontier authorization remains unchanged.
+
+  Each report copies one result and its prepared frontier to the Worker and
+  can trigger the configured checkpoint strategy. Chain batching still saves
+  Task spawns, but it no longer saves all per-member messages or checkpoints.
+  Custom executors and parallel Promises still report only final/partial results.
+  Worker/VM loss and remote progress reporting are outside this contract.
+
+  Local acceptance is separate from Store acknowledgement. Supported replay
+  retains Store-acknowledged results; effects without accepted results can
+  repeat. Progress does not make external effects atomic with persistence.
 
   ## Observability
 

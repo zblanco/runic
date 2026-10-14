@@ -109,6 +109,7 @@ defmodule Runic.Runner.Worker do
     dispatched_units: %{},
     active_executors: %{},
     active_promises: %{},
+    promise_progress: %{},
     dispatch_times: %{},
     cycle_count: 0,
     started_at: nil,
@@ -167,7 +168,7 @@ defmodule Runic.Runner.Worker do
   defp init_owned(opts) do
     runner = Keyword.fetch!(opts, :runner)
     workflow_id = Keyword.fetch!(opts, :workflow_id)
-    workflow = Keyword.fetch!(opts, :workflow)
+    workflow = Keyword.fetch!(opts, :workflow) |> Runic.Workflow.Batch.validate!()
     resumed = Keyword.get(opts, :resumed, false)
 
     workflow = maybe_apply_resume_options(workflow, opts, resumed)
@@ -531,6 +532,28 @@ defmodule Runic.Runner.Worker do
     {:noreply, state}
   end
 
+  # Only the native sequential Task path reports member progress. The Promise
+  # reference correlates the message; the current frontier authorizes acceptance.
+  def handle_info({:promise_progress, promise_id, executed, frontier}, state) do
+    with Runic.Runner.Executor.Task <- state.executor,
+         %Promise{strategy: :sequential} = promise <- state.active_promises[promise_id],
+         %Runnable{} = runnable <- promise_runnable(executed),
+         progress = promise_progress(state, promise),
+         true <- valid_promise_progress?(state.workflow, promise, progress, runnable, frontier) do
+      state = apply_promise_results(state, [executed], progress.accepted)
+
+      progress = %{
+        frontier: frontier,
+        accepted: MapSet.put(progress.accepted, Runnable.activation_id(runnable))
+      }
+
+      state = %{state | promise_progress: Map.put(state.promise_progress, promise_id, progress)}
+      {:noreply, maybe_checkpoint(state)}
+    else
+      _ -> {:noreply, state}
+    end
+  end
+
   # A lost scope cannot deliver results or preserve the ownership contract.
   def handle_info({:DOWN, ref, :process, _pid, reason}, %{task_scope_ref: ref} = state) do
     {:stop, {:task_scope_down, reason}, state}
@@ -540,6 +563,7 @@ defmodule Runic.Runner.Worker do
   def handle_info({:DOWN, ref, :process, _pid, reason}, state) when is_reference(ref) do
     unit = Map.get(state.dispatched_units, ref)
     dispatch_time = Map.get(state.dispatch_times, ref)
+    observed = if unit, do: unresolved_unit(state, unit)
     state = release_executor(state, ref)
 
     state =
@@ -570,7 +594,25 @@ defmodule Runic.Runner.Worker do
             active_promises: active_promises
         }
 
-        state = record_execution_loss(state, unit, reason)
+        state =
+          if match?({:promise, %Promise{runnables: []}}, observed),
+            do: state,
+            else: record_execution_loss(state, observed, reason)
+
+        {:promise, original} = unit
+
+        Telemetry.promise_event(
+          :stop,
+          %{duration: System.monotonic_time(:millisecond) - dispatch_time},
+          %{
+            promise_id: promise_id,
+            runnable_count: length(original.runnables),
+            node_hashes: original.node_hashes,
+            executor_loss: true
+          }
+        )
+
+        state = %{state | promise_progress: Map.delete(state.promise_progress, promise_id)}
         state = stop_admission(state, :uncertain, {:promise, promise_id}, reason)
 
         state = maybe_checkpoint(state)
@@ -621,7 +663,14 @@ defmodule Runic.Runner.Worker do
     }
 
     # Apply all runnables from the promise sequentially
-    state = apply_promise_results(state, executed_runnables)
+    state =
+      apply_promise_results(
+        state,
+        executed_runnables,
+        accepted_promise_members(state, promise_id)
+      )
+
+    state = %{state | promise_progress: Map.delete(state.promise_progress, promise_id)}
 
     # Emit promise completion telemetry
     Telemetry.promise_event(:stop, %{duration: duration}, %{
@@ -667,10 +716,14 @@ defmodule Runic.Runner.Worker do
     }
 
     # Apply completed runnables first (partial commit)
-    state = apply_promise_results(state, completed)
+    state =
+      apply_promise_results(
+        state,
+        completed ++ [failed],
+        accepted_promise_members(state, promise_id)
+      )
 
-    # Handle the failed runnable through existing error path
-    state = apply_promise_results(state, [failed])
+    state = %{state | promise_progress: Map.delete(state.promise_progress, promise_id)}
 
     Telemetry.promise_event(:stop, %{duration: duration}, %{
       promise_id: promise_id,
@@ -702,6 +755,81 @@ defmodule Runic.Runner.Worker do
   end
 
   # --- Private ---
+
+  defp promise_progress(state, promise) do
+    Map.get(state.promise_progress, promise.id, %{
+      frontier: promise.runnables,
+      accepted: MapSet.new()
+    })
+  end
+
+  defp accepted_promise_members(state, promise_id) do
+    case Map.get(state.promise_progress, promise_id) do
+      nil -> MapSet.new()
+      progress -> progress.accepted
+    end
+  end
+
+  defp unresolved_unit(state, {:promise, promise}) do
+    {:promise, %{promise | runnables: promise_progress(state, promise).frontier}}
+  end
+
+  defp unresolved_unit(_state, unit), do: unit
+
+  defp execution_unit(state, {:promise, promise} = unit) do
+    case Map.get(state.promise_progress, promise.id) do
+      nil -> unit
+      progress -> {:promise_progress, promise, progress.frontier}
+    end
+  end
+
+  defp execution_unit(_state, unit), do: unit
+
+  defp valid_promise_progress?(
+         workflow,
+         promise,
+         progress,
+         %Runnable{node: %{hash: _}, input_fact: %{hash: _}} = runnable,
+         frontier
+       )
+       when is_list(frontier) do
+    authorized? =
+      Enum.any?(progress.frontier, fn expected ->
+        Runnable.activation_id(expected) == Runnable.activation_id(runnable) and
+          expected.id == runnable.id and expected.node == runnable.node and
+          expected.input_fact == runnable.input_fact
+      end)
+
+    expected =
+      if runnable.status == :completed and is_struct(runnable.result, Runic.Workflow.Fact) do
+        for next <- Workflow.next_steps(workflow, runnable.node),
+            MapSet.member?(promise.node_hashes, next.hash),
+            do: Runnable.runnable_id(next, runnable.result)
+      else
+        []
+      end
+
+    valid_frontier? =
+      Enum.all?(frontier, fn
+        %Runnable{status: :pending, node: %{hash: _}, input_fact: %Runic.Workflow.Fact{}} = next ->
+          is_struct(runnable.result, Runic.Workflow.Fact) and next.input_fact == runnable.result and
+            Map.get(workflow.graph.vertices, next.node.hash) == next.node and
+            next.activation_id == Runnable.runnable_id(next.node, next.input_fact) and
+            (not Runic.Workflow.SingleOutput.supported?(next.node) or
+               next.id == next.activation_id) and
+            next.attempt_number == 0 and
+            next.attempt_id == Runic.Identity.derive(:attempt, [next.activation_id, 0])
+
+        _ ->
+          false
+      end)
+
+    authorized? and runnable.status in [:completed, :skipped] and
+      (runnable.hook_apply_fns || []) == [] and valid_frontier? and
+      Enum.sort(expected) == Enum.sort(Enum.map(frontier, &Runnable.activation_id/1))
+  end
+
+  defp valid_promise_progress?(_workflow, _promise, _progress, _runnable, _frontier), do: false
 
   defp init_executor(:inline, _opts, _task_supervisor, _task_scope) do
     {nil, :inline}
@@ -819,7 +947,7 @@ defmodule Runic.Runner.Worker do
     Execution.observe(
       execution,
       state.workflow,
-      Map.values(state.dispatched_units),
+      Enum.map(Map.values(state.dispatched_units), &execution_unit(state, &1)),
       admission,
       persistence_snapshot(state)
     )
@@ -1147,8 +1275,14 @@ defmodule Runic.Runner.Worker do
     workflow = state.workflow
     policies = workflow.scheduler_policies
 
+    worker = self()
+
+    progress_to =
+      if state.executor == Runic.Runner.Executor.Task and promise.strategy == :sequential,
+        do: worker
+
     work_fn = fn ->
-      resolve_promise(promise, workflow, policies)
+      resolve_promise(promise, workflow, policies, progress_to)
     end
 
     # Dispatch via the default executor (promises don't use per-component overrides)
@@ -1201,20 +1335,29 @@ defmodule Runic.Runner.Worker do
     end
   end
 
-  defp resolve_promise(%Promise{strategy: :parallel} = promise, _workflow, policies) do
+  defp resolve_promise(promise, workflow, policies, progress_to \\ nil)
+
+  defp resolve_promise(%Promise{strategy: :parallel} = promise, _workflow, policies, _progress_to) do
     resolve_promise_parallel(promise, policies)
   end
 
-  defp resolve_promise(%Promise{} = promise, workflow, policies) do
+  defp resolve_promise(%Promise{} = promise, workflow, policies, progress_to) do
     # Start with the initial runnables in the promise, then follow the chain
-    resolve_promise_loop(promise, workflow, policies, promise.runnables, [])
+    resolve_promise_loop(promise, workflow, policies, promise.runnables, [], progress_to)
   end
 
-  defp resolve_promise_loop(promise, _workflow, _policies, [], completed) do
+  defp resolve_promise_loop(promise, _workflow, _policies, [], completed, _progress_to) do
     {:promise_result, promise.id, Enum.reverse(completed)}
   end
 
-  defp resolve_promise_loop(promise, workflow, policies, [runnable | _rest], completed) do
+  defp resolve_promise_loop(
+         promise,
+         workflow,
+         policies,
+         [runnable | _rest],
+         completed,
+         progress_to
+       ) do
     policy = SchedulerPolicy.resolve(runnable, policies)
 
     executed = execute_runnable(runnable, policy)
@@ -1230,18 +1373,35 @@ defmodule Runic.Runner.Worker do
       :failed ->
         {:promise_partial, promise.id, Enum.reverse(completed), executed}
 
+      _ when executed_runnable.hook_apply_fns not in [nil, []] ->
+        # Deferred changes belong to Worker acceptance. End this dispatch unit
+        # before preparing more work so all executors see the changed workflow.
+        {:promise_result, promise.id, Enum.reverse([executed | completed])}
+
       _ ->
         # Apply to local workflow copy so next runnable sees updated state
-        wf = Workflow.apply_runnable(workflow, executed_runnable)
+        wf = Workflow.apply_runnable(workflow, %{executed_runnable | hook_apply_fns: []})
         # Prepare next runnables and find those in our chain
         {wf, next_runnables} = Workflow.prepare_for_dispatch(wf)
 
         chain_runnables =
           Enum.filter(next_runnables, fn r ->
-            MapSet.member?(promise.node_hashes, r.node.hash)
+            MapSet.member?(promise.node_hashes, r.node.hash) and
+              match?(%Runic.Workflow.Fact{}, executed_runnable.result) and
+              r.input_fact.hash == executed_runnable.result.hash
           end)
 
-        resolve_promise_loop(promise, wf, policies, chain_runnables, [executed | completed])
+        if progress_to,
+          do: send(progress_to, {:promise_progress, promise.id, executed, chain_runnables})
+
+        resolve_promise_loop(
+          promise,
+          wf,
+          policies,
+          chain_runnables,
+          [executed | completed],
+          progress_to
+        )
     end
   end
 
@@ -1351,43 +1511,58 @@ defmodule Runic.Runner.Worker do
     maybe_checkpoint(state)
   end
 
-  defp apply_promise_results(state, executed_list) do
-    Enum.reduce(executed_list, state, fn executed, acc ->
-      # Normalize to {runnable, events}
-      {executed_runnable, events} =
-        case executed do
-          {%Runnable{} = r, evts} when is_list(evts) -> {r, evts}
-          %Runnable{} = r -> {r, []}
+  defp promise_runnable({%Runnable{} = runnable, events}) when is_list(events), do: runnable
+  defp promise_runnable(%Runnable{} = runnable), do: runnable
+  defp promise_runnable(_), do: nil
+
+  defp apply_promise_results(state, executed_list, accepted \\ MapSet.new()) do
+    {state, _accepted} =
+      Enum.reduce(executed_list, {state, accepted}, fn executed, {acc, seen} ->
+        {executed_runnable, events} =
+          case executed do
+            {%Runnable{} = r, evts} when is_list(evts) -> {r, evts}
+            %Runnable{} = r -> {r, []}
+          end
+
+        if MapSet.member?(seen, Runnable.activation_id(executed_runnable)) do
+          {acc, seen}
+        else
+          next = apply_promise_member(acc, executed_runnable, events)
+          {next, MapSet.put(seen, Runnable.activation_id(executed_runnable))}
         end
+      end)
 
-      {executed_runnable, events} = Workflow.validate_runnable_result(executed_runnable, events)
-      emit_runnable_result(executed_runnable, acc.id, nil)
+    state
+  end
 
-      case executed_runnable.status do
-        :completed ->
-          invoke_hook(acc.hooks, :on_complete, [executed_runnable, 0, acc])
+  defp apply_promise_member(acc, executed_runnable, events) do
+    {executed_runnable, events} = Workflow.validate_runnable_result(executed_runnable, events)
+    emit_runnable_result(executed_runnable, acc.id, nil)
 
-        :failed ->
-          invoke_hook(acc.hooks, :on_failed, [executed_runnable, executed_runnable.error, acc])
+    case executed_runnable.status do
+      :completed ->
+        invoke_hook(acc.hooks, :on_complete, [executed_runnable, 0, acc])
 
-        _ ->
-          :ok
+      :failed ->
+        invoke_hook(acc.hooks, :on_failed, [executed_runnable, executed_runnable.error, acc])
+
+      _ ->
+        :ok
+    end
+
+    workflow = Workflow.apply_runnable(acc.workflow, executed_runnable)
+
+    workflow =
+      if events != [] do
+        Workflow.append_runnable_events(workflow, events)
+      else
+        workflow
       end
 
-      workflow = Workflow.apply_runnable(acc.workflow, executed_runnable)
-
-      workflow =
-        if events != [] do
-          Workflow.append_runnable_events(workflow, events)
-        else
-          workflow
-        end
-
-      acc
-      |> collect_pending_events(workflow, events)
-      |> record_execution_outcome(executed_runnable)
-      |> record_failure(executed_runnable)
-    end)
+    acc
+    |> collect_pending_events(workflow, events)
+    |> record_execution_outcome(executed_runnable)
+    |> record_failure(executed_runnable)
   end
 
   defp resolve_executor(policy, state) do
