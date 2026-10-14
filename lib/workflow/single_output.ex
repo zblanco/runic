@@ -118,6 +118,7 @@ defmodule Runic.Workflow.SingleOutput do
   end
 
   defp batch_parent?(%module{}) do
+    Code.ensure_loaded!(module)
     not function_exported?(module, :__runic_batch_parent__, 0) or module.__runic_batch_parent__()
   end
 
