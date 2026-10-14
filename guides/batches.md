@@ -116,8 +116,9 @@ and Store state; item observations do not acknowledge persistence.
 `Runner.cancel/2` uses the existing native task ownership scope. It waits for
 owned native work to stop and removes the Worker. It does not invent terminal
 item outcomes for lost computations. Accepted progress is retained only to the
-extent allowed by the existing persistence contract. Keep Jido parameter
-expressions, result conversion, fail-fast choice, and effect order in Jido.
+extent allowed by the existing persistence contract. Domain-specific parameter
+resolution, result conversion, failure-policy selection, and external effect
+order remain application responsibilities.
 
 ## Recovery scope
 
@@ -130,14 +131,13 @@ After the Store acknowledges that progress, explicit resume does not execute
 those accepted items again. Supply fresh runtime context and runtime scheduler
 policies on resume. Unresolved work can run again.
 
-This support does not repair the separate pre-existing native Map/Reduce full
-build-log reconstruction limit recorded in PR #29 and
-`.docs/issue-21-checkpoint-persistence.md`. The recorded probe produced
-`[2, 4, 6, 12]` before stop and `[]` after full `Runner.resume/3`, with successful
-ETS writes. Runtime events replayed against the original authored topology;
-full build-log reconstruction did not restore the same result. Do not apply a general
-Map/Reduce resume claim to this Batch contract. Lazy/hybrid replay is outside
-this first contract because parent data and collected values must be present.
+The separate native Map/Reduce full build-log reconstruction limitations are
+unchanged. Successful runtime-event replay against an existing authored topology
+does not establish full build-log recovery. Do not infer general Map/Reduce
+resume support from this Batch contract.
+
+Lazy/hybrid replay is outside this first contract because parent data and
+collected values must be present.
 Runner.resume returns `{:error, {:unsupported_batch_rehydration, mode}}` before
 creating a Worker for these unsupported Batch modes.
 Partial collection recovery through a legacy save/load graph log is not
