@@ -19,7 +19,8 @@ defprotocol Runic.Workflow.Activator do
 
   Implementations must return `{workflow, activation_events}` where
   `activation_events` is a list of `RunnableActivated` events that were
-  folded into the workflow. This allows `apply_runnable/2` to capture
+  folded into the workflow. Required `ComponentAdded` events must come before
+  the activations that use their nodes. This allows `apply_runnable/2` to capture
   activation edges in the event stream for replay correctness.
 
   ## Example
@@ -44,6 +45,7 @@ defprotocol Runic.Workflow.Activator do
           workflow :: Runic.Workflow.t(),
           runnable :: Runic.Workflow.Runnable.t()
         ) ::
-          {Runic.Workflow.t(), [Runic.Workflow.Events.RunnableActivated.t()]}
+          {Runic.Workflow.t(),
+           [Runic.Workflow.Events.RunnableActivated.t() | Runic.Workflow.ComponentAdded.t()]}
   def activate_downstream(node, workflow, runnable)
 end

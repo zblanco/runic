@@ -6,6 +6,10 @@ defmodule Runic.Workflow.Events.JoinCompleted do
   NOT during `execute/2`. Contains the result fact (collected join values)
   which gets logged into the graph and connected with a `:produced` edge.
 
+  `contribution_fact_hashes` records the exact selected inputs in declared
+  producer order. It does not include surplus same-root inputs discarded by the
+  native Join. Older events default to nil: their exact provenance is unknown.
+
   During replay via `apply_event/2`, this event is folded directly without
   re-deriving — the completion check only runs during live execution.
   """
@@ -15,8 +19,16 @@ defmodule Runic.Workflow.Events.JoinCompleted do
           result_fact_hash: term(),
           result_value: term(),
           result_ancestry: {term(), term()} | nil,
+          contribution_fact_hashes: [term()] | nil,
           weight: non_neg_integer()
         }
 
-  defstruct [:join_hash, :result_fact_hash, :result_value, :result_ancestry, :weight]
+  defstruct [
+    :join_hash,
+    :result_fact_hash,
+    :result_value,
+    :result_ancestry,
+    :weight,
+    contribution_fact_hashes: nil
+  ]
 end

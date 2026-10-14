@@ -504,7 +504,6 @@ defmodule Runic.Workflow.Batch do
       |> Workflow.draw_connection(batch, batch.fan_in, :component_of,
         properties: %{kind: :output, ports: [:out]}
       )
-      |> Workflow.draw_connection(batch, batch.fan_in, :component_of, properties: %{kind: :leaf})
 
     workflow =
       Component.connect(batch.component, batch.fan_out, workflow)

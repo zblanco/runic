@@ -28,6 +28,7 @@ defimpl Runic.Workflow.Coordinator, for: Runic.Workflow.Join do
       wf.graph
       |> Multigraph.in_edges(join)
       |> Enum.filter(&(&1.label == :joined))
+      |> Enum.filter(Workflow.join_input_filter(wf, join, fact))
 
     satisfied_by_parent =
       joined_edges
@@ -44,11 +45,8 @@ defimpl Runic.Workflow.Coordinator, for: Runic.Workflow.Join do
     can_complete = map_size(satisfied_by_parent) >= length(join.joins)
 
     if can_complete do
-      collected_values =
-        join.joins
-        |> Enum.map(&Map.get(satisfied_by_parent, &1))
-        |> Enum.reject(&is_nil/1)
-        |> Enum.map(& &1.value)
+      contributions = Enum.map(join.joins, &Map.fetch!(satisfied_by_parent, &1))
+      collected_values = Enum.map(contributions, & &1.value)
 
       join_fact = Fact.new(value: collected_values, ancestry: {join.hash, fact.hash})
 
@@ -59,6 +57,7 @@ defimpl Runic.Workflow.Coordinator, for: Runic.Workflow.Join do
         result_fact_hash: join_fact.hash,
         result_value: join_fact.value,
         result_ancestry: join_fact.ancestry,
+        contribution_fact_hashes: Enum.map(contributions, & &1.hash),
         weight: ctx.ancestry_depth + 1
       }
 
@@ -78,15 +77,10 @@ defimpl Runic.Workflow.Coordinator, for: Runic.Workflow.Join do
       wf = Enum.reduce(derived_events, wf, fn event, w -> Workflow.apply_event(w, event) end)
       wf = Workflow.run_after_hooks(wf, join, join_fact)
 
-      # Activate downstream nodes with the join result fact
-      next = Workflow.next_steps(wf, join)
-
-      wf =
-        Enum.reduce(next, wf, fn step, w ->
-          Workflow.draw_connection(w, join_fact, step, Private.connection_for_activatable(step))
-        end)
-
-      {wf, derived_events}
+      # Record delivery as well as completion, so a checkpoint with pending
+      # consumers has the same frontier after replay.
+      {wf, activation_events} = Private.activate_downstream_with_events(wf, join, join_fact)
+      {wf, derived_events ++ activation_events}
     else
       {wf, []}
     end

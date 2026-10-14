@@ -6,6 +6,9 @@ defmodule Runic.Workflow.ComponentAdded do
   `workflow_definition` that retains their boundary ports and child build log.
   `input_ports` and `output_ports` retain contracts applied outside the source
   expression that originally constructed an executable component.
+  `join_parents: true` records the shared all-input Join used by grouped
+  `add_steps/2` construction. Older events default to their existing connection
+  behavior. Explicit grouped events are not merged as legacy parent records.
   The `source` and `bindings` fields remain as a compatibility path for older
   component events.
   """
@@ -21,6 +24,8 @@ defmodule Runic.Workflow.ComponentAdded do
           bindings: map(),
           to: term(),
           connections: list(Runic.Workflow.Connection.t()) | nil,
+          join_parents: boolean() | nil,
+          input_mode: :all | :any | nil,
           input_ports: keyword() | nil,
           output_ports: keyword() | nil,
           workflow_definition: Runic.Workflow.Definition.t() | nil,
@@ -35,6 +40,8 @@ defmodule Runic.Workflow.ComponentAdded do
     :bindings,
     :to,
     :connections,
+    :join_parents,
+    :input_mode,
     :input_ports,
     :output_ports,
     :workflow_definition,

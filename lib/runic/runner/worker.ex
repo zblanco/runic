@@ -1028,6 +1028,7 @@ defmodule Runic.Runner.Worker do
   end
 
   defp handle_task_result(ref, executed, events, state, dispatch? \\ true) do
+    {executed, events} = Workflow.validate_runnable_result(executed, events)
     state = release_executor(state, ref)
     {_runnable_id, active_tasks} = Map.pop(state.active_tasks, ref)
     {dispatch_time, dispatch_times} = Map.pop(state.dispatch_times, ref)
@@ -1535,6 +1536,7 @@ defmodule Runic.Runner.Worker do
   end
 
   defp apply_promise_member(acc, executed_runnable, events) do
+    {executed_runnable, events} = Workflow.validate_runnable_result(executed_runnable, events)
     emit_runnable_result(executed_runnable, acc.id, nil)
 
     case executed_runnable.status do

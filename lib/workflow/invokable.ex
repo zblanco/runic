@@ -307,7 +307,8 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Condition do
       effective_context = merge_effective_context(ctx.meta_context, ctx.run_context)
 
       satisfied =
-        if effective_context != %{} and condition.arity == 2 do
+        if Condition.has_meta_refs?(condition) and effective_context != %{} and
+             condition.arity == 2 do
           Condition.check_with_meta_context(condition, fact, effective_context)
         else
           Condition.check(condition, fact)
@@ -380,7 +381,7 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.InputBinding do
       Fact.new(
         value: result,
         ancestry: {binding.hash, fact.hash},
-        meta: InputBinding.fact_meta(binding)
+        meta: InputBinding.fact_meta(binding, fact.meta)
       )
 
     causal_depth = Workflow.ancestry_depth(workflow, fact) + 1
@@ -411,7 +412,7 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.InputBinding do
         Fact.new(
           value: result,
           ancestry: {binding.hash, fact.hash},
-          meta: InputBinding.fact_meta(binding)
+          meta: InputBinding.fact_meta(binding, fact.meta)
         )
 
       events = [
@@ -731,6 +732,7 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Join do
       workflow.graph
       |> Multigraph.in_edges(join)
       |> Enum.filter(&(&1.label == :joined))
+      |> Enum.filter(Workflow.join_input_filter(workflow, join, fact))
 
     possible_priors_by_parent =
       joined_edges
@@ -761,6 +763,7 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Join do
       workflow.graph
       |> Multigraph.in_edges(join)
       |> Enum.filter(&(&1.label in [:runnable, :joined]))
+      |> Enum.filter(Workflow.join_input_filter(workflow, join, fact))
       |> Enum.reduce(workflow, fn
         %{v1: v1, label: :runnable}, %Workflow{} = wrk ->
           Workflow.mark_runnable_as_ran(wrk, join, v1)
@@ -773,7 +776,13 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Join do
                 |> Multigraph.update_labelled_edge(v1, v2, :joined, label: :join_satisfied)
           }
       end)
-      |> Workflow.draw_connection(join, join_bindings_fact, :produced, weight: causal_depth)
+      |> Workflow.draw_connection(join, join_bindings_fact, :produced,
+        weight: causal_depth,
+        properties: %{
+          join_contribution_fact_hashes:
+            Enum.map(join.joins, &Map.fetch!(possible_priors_by_parent, &1).hash)
+        }
+      )
       |> Workflow.run_after_hooks(join, join_bindings_fact)
     else
       Workflow.mark_runnable_as_ran(workflow, join, fact)
@@ -791,6 +800,7 @@ defimpl Runic.Workflow.Invokable, for: Runic.Workflow.Join do
       workflow.graph
       |> Multigraph.in_edges(join)
       |> Enum.filter(&(&1.label == :joined))
+      |> Enum.filter(Workflow.join_input_filter(workflow, join, fact))
 
     # Collect satisfied facts by parent
     satisfied_by_parent =

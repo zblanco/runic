@@ -14,3 +14,6 @@ Code.require_file("component.ex", __DIR__)
 Code.require_file("fixture.ex", __DIR__)
 ExUnit.start(seed: 905_355)
 Code.require_file("contract_test.exs", __DIR__)
+
+Code.require_file("child_invocation.ex", __DIR__)
+Code.require_file("child_invocation_test.exs", __DIR__)

@@ -110,9 +110,19 @@ defmodule Runic.Workflow.SingleOutput do
   end
 
   @doc false
-  def execute(node, %Runnable{input_fact: fact, context: context} = runnable) do
+  def execute(node, %Runnable{} = runnable) do
+    execute_with(node, runnable, fn component, work -> {run_work(component, work), nil} end)
+  end
+
+  # Internal adapter entry. Execution data travels on the Runnable only; it is
+  # never part of a Result value, Fact, or lifecycle event.
+  @doc false
+  def execute_with(node, %Runnable{input_fact: fact, context: context} = runnable, work) do
     with {:ok, before_fns} <- HookRunner.run_before(context, node, fact) do
-      case run_work(node, runnable) do
+      {result, execution_data} = work.(node, runnable)
+      runnable = %{runnable | execution_data: execution_data}
+
+      case result do
         %Result{status: :value} = result ->
           result_fact = child_fact(runnable, result)
 

@@ -9,19 +9,36 @@ defmodule Runic.TestSupport.SnapshotTailStore do
     counters_table = Module.concat(runner_name, SnapshotTailCounters)
     snapshots_table = Module.concat(runner_name, SnapshotTailSnapshots)
     calls_table = Module.concat(runner_name, SnapshotTailCalls)
+    facts_table = Module.concat(runner_name, SnapshotTailFacts)
 
     ensure_table(events_table, [:ordered_set])
     ensure_table(counters_table, [:set])
     ensure_table(snapshots_table, [:set])
     ensure_table(calls_table, [:set])
+    ensure_table(facts_table, [:set])
 
     {:ok,
      %{
        events_table: events_table,
        counters_table: counters_table,
        snapshots_table: snapshots_table,
-       calls_table: calls_table
+       calls_table: calls_table,
+       facts_table: facts_table
      }}
+  end
+
+  @impl Runic.Runner.Store
+  def save_fact(hash, value, %{facts_table: facts_table}) do
+    :ets.insert(facts_table, {hash, value})
+    :ok
+  end
+
+  @impl Runic.Runner.Store
+  def load_fact(hash, %{facts_table: facts_table}) do
+    case :ets.lookup(facts_table, hash) do
+      [{^hash, value}] -> {:ok, value}
+      [] -> {:error, :not_found}
+    end
   end
 
   @impl Runic.Runner.Store
