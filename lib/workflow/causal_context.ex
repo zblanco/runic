@@ -40,6 +40,7 @@ defmodule Runic.Workflow.CausalContext do
           fan_out_context: map() | nil,
           fan_in_context: map() | nil,
           mergeable: boolean(),
+          batch: map() | nil,
           meta_context: map(),
           run_context: map()
         }
@@ -56,6 +57,7 @@ defmodule Runic.Workflow.CausalContext do
     fan_out_context: nil,
     fan_in_context: nil,
     mergeable: false,
+    batch: nil,
     meta_context: %{},
     run_context: %{}
   ]

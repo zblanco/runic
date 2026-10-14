@@ -79,8 +79,9 @@ defmodule Runic.Runner.FailureAdmissionEdgesTest do
     assert :atomics.get(counts, 1) == 2
   end
 
-  for cut <- [:before_a, :during_b, :after_computation] do
-    test "native Promise loss #{cut} exposes uncertainty and explicit repetition", ctx do
+  for cut <- [:before_a, :during_b, :during_c] do
+    test "native Promise loss #{cut} retains accepted progress and repeats unresolved work",
+         ctx do
       observer = self()
       counts = :atomics.new(3, [])
       a = gated_step(1, :a)
@@ -90,16 +91,6 @@ defmodule Runic.Runner.FailureAdmissionEdgesTest do
       workflow =
         Runic.workflow(steps: [{a, [{b, [c]}]}])
         |> Workflow.set_scheduler_policies([{:default, %{execution_mode: :durable}}])
-        |> Workflow.attach_after_hook(:c, fn _, wf, _ ->
-          # The Promise applies locally before the Worker applies its reply.
-          # Hold only the native executor, not the later accepted application.
-          if self() != Runner.lookup(ctx.runner, :live) do
-            send(observer, {:computed_before_reply, self()})
-            receive do: (:reply -> :ok)
-          end
-
-          wf
-        end)
 
       assert {:ok, worker} =
                Runner.start_workflow(ctx.runner, :live, workflow,
@@ -129,13 +120,13 @@ defmodule Runic.Runner.FailureAdmissionEdgesTest do
             assert_receive {:stage, :b, ^pid}, 2_000
             {pid, [1, 1, 0]}
 
-          :after_computation ->
-            for name <- [:a, :b, :c] do
+          :during_c ->
+            for name <- [:a, :b] do
               assert_receive {:stage, ^name, pid}, 2_000
               send(pid, :release)
             end
 
-            assert_receive {:computed_before_reply, pid}, 2_000
+            assert_receive {:stage, :c, pid}, 2_000
             {pid, [1, 1, 1]}
         end
 
@@ -157,21 +148,39 @@ defmodule Runic.Runner.FailureAdmissionEdgesTest do
       assert {:ok, wf} = Runner.get_workflow(ctx.runner, :live)
       assert Workflow.is_runnable?(wf)
       refute Enum.any?(wf.runnable_events, &is_struct(&1, Workflow.RunnableFailed))
-      assert Workflow.raw_productions(wf) == []
+
+      accepted_values =
+        case unquote(cut) do
+          :before_a -> []
+          :during_b -> [2]
+          :during_c -> [2, 4]
+        end
+
+      assert Enum.sort(Workflow.raw_productions(wf)) == accepted_values
       refute_received {:stage, _, _}
 
       assert :ok = Runner.continue(ctx.runner, :live)
 
-      for name <- [:a, :b, :c] do
+      remaining =
+        case unquote(cut) do
+          :before_a -> [:a, :b, :c]
+          :during_b -> [:b, :c]
+          :during_c -> [:c]
+        end
+
+      for name <- remaining do
         assert_receive {:stage, ^name, pid}, 2_000
         refute pid == lost
         send(pid, :release)
       end
 
-      assert_receive {:computed_before_reply, pid}, 2_000
-      send(pid, :reply)
       assert_receive :drained, 2_000
-      assert read_counts(counts, 3) == Enum.map(expected, &(&1 + 1))
+
+      resumed_counts =
+        Enum.zip([:a, :b, :c], expected)
+        |> Enum.map(fn {name, count} -> count + if(name in remaining, do: 1, else: 0) end)
+
+      assert read_counts(counts, 3) == resumed_counts
       assert {:ok, results} = Runner.get_results(ctx.runner, :live)
       assert Enum.sort(results) == [2, 4, 7]
       assert :ok = Runner.checkpoint(ctx.runner, :live)
@@ -187,7 +196,7 @@ defmodule Runic.Runner.FailureAdmissionEdgesTest do
       assert {:ok, restored} = Runner.get_workflow(ctx.runner, :live)
       refute Workflow.is_runnable?(restored)
       assert {:ok, %{status: :open, active_units: 0}} = Runner.admission_status(ctx.runner, :live)
-      assert read_counts(counts, 3) == Enum.map(expected, &(&1 + 1))
+      assert read_counts(counts, 3) == resumed_counts
       refute_received {:stage, _, _}
     end
   end

@@ -266,6 +266,19 @@ defmodule Runic.Workflow.Execution do
     }
   end
 
+  defp unit_descriptor({:promise_progress, original, frontier}) do
+    order_source = if frontier == [], do: original.runnables, else: frontier
+
+    %{
+      kind: :promise,
+      id: original.id,
+      runnable_ids: Enum.map(frontier, & &1.id),
+      node_names: Enum.map(frontier, &Map.get(&1.node, :name, &1.node.hash)),
+      order_key: order_source |> Enum.map(&Runnable.order_key/1) |> Enum.min(),
+      control_pending?: frontier == []
+    }
+  end
+
   defp unit_descriptor({:promise, promise}) do
     order_key = promise.runnables |> Enum.map(&Runnable.order_key/1) |> Enum.min()
 
@@ -279,5 +292,6 @@ defmodule Runic.Workflow.Execution do
   end
 
   defp unit_runnables({:runnable, %Runnable{} = runnable}), do: [runnable]
+  defp unit_runnables({:promise_progress, original, _frontier}), do: original.runnables
   defp unit_runnables({:promise, promise}), do: promise.runnables
 end

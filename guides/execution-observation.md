@@ -176,7 +176,17 @@ observations after they store or process them.
 
 ## Current limits
 
-This contract does not define full batch ownership, local-value facts, child
-invocation, or application-specific result conversion. A Promise reports the
-completed prefix that the Worker accepted in a reply. It cannot report hidden
-sequential progress that was lost before the reply.
+Execution observation is separate from local-value facts, child invocation,
+and application result conversion. With the built-in Task executor, a sequential
+Promise reports each member before it starts the next member. The Worker accepts
+that progress once. Executor loss retains accepted members and reports the next
+unresolved frontier as uncertain. Custom executors and parallel Promises retain
+their final/partial reply contract. See [Batches](batches.html) for item order and
+batch recovery limits.
+
+A native sequential Promise keeps its original scheduler dispatch descriptor.
+Live member progress updates only its unresolved frontier. When that frontier
+is empty but the final control reply is pending, its active descriptor has
+`control_pending?: true` and no unresolved member IDs. The execution remains
+active until the unit returns or the executor loss is observed. Lost control
+does not turn already accepted members into uncertain computations.

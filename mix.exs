@@ -32,6 +32,7 @@ defmodule Runic.MixProject do
         "guides/protocols.md",
         "guides/custom-components.md",
         "guides/execution-observation.md",
+        "guides/batches.md",
         "guides/scheduling.md",
         "guides/durable-execution.md",
         "guides/execution-strategies.md",
@@ -53,6 +54,10 @@ defmodule Runic.MixProject do
           Runic.Workflow.ProcessManager,
           Runic.Workflow.Accumulator,
           Runic.Workflow.Map,
+          Runic.Workflow.Batch,
+          Runic.Workflow.Batch.Input,
+          Runic.Workflow.Batch.Outcome,
+          Runic.Workflow.Batch.Result,
           Runic.Workflow.Reduce,
           Runic.Workflow.Join
         ],
@@ -161,7 +166,9 @@ defmodule Runic.MixProject do
     ]
   end
 
-  defp elixirc_paths(:test), do: ["lib", "test/support", "examples/single_output"]
+  defp elixirc_paths(:test),
+    do: ["lib", "test/support", "examples/single_output", "examples/batch"]
+
   defp elixirc_paths(_), do: ["lib"]
 
   defp aliases do

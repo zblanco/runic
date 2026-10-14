@@ -823,10 +823,19 @@ Use policy `timeout_ms` for node timeout/retry handling; the immediate async
 A Promise is one scheduler unit. An admitted parallel Promise completes all its
 members even after another unit stops Worker admission. Sequential Promises
 return a completed prefix and the failed node when a node fails. The Worker
-accepts final or partial replies once. It does not receive live progress before
-that reply. If the outer executor loses the reply, the computed prefix can be
-unknown and its effects can repeat. This change does not add a progress journal,
-distributed recovery, or exactly-once effects.
+accepts each member once when the built-in Task executor reports sequential
+progress. Later final or partial replies do not reapply that prefix. Outer Task
+loss stops new admission and leaves only the unresolved frontier uncertain.
+Custom executors and parallel Promises retain final/partial replies. Unaccepted
+work can repeat on explicit recovery. This is separate from Store acknowledgement
+and does not supply distributed recovery or atomic external effects.
+
+A Condition is also a sequential Promise boundary. It produces readiness rather
+than an output Fact. The Task ends that unit, then the Worker prepares the Rule
+reaction and its tail as another unit. This adds a dispatch and Task spawn for
+such a chain. It preserves the verified frontier authorization rule: a reported
+next member must consume the accepted result Fact. No broader coordinator
+continuation or remote progress contract is added by this boundary.
 
 Admission state is local to the Worker. It is separate from persistence:
 `admission_status/2` does not acknowledge storage. Use `persistence_status/2` to

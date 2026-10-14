@@ -14,6 +14,7 @@ defmodule Runic.Workflow.Events.FanOutFactEmitted do
           emitted_content_digest: Runic.Identity.t() | nil,
           emitted_payload_digest: Runic.Identity.t() | nil,
           emitted_value: term(),
+          emitted_meta: map(),
           emitted_ancestry: {term(), term()} | nil,
           emitted_causal_ancestry: Runic.Workflow.FactAncestry.t() | nil,
           weight: non_neg_integer()
@@ -28,6 +29,7 @@ defmodule Runic.Workflow.Events.FanOutFactEmitted do
     :emitted_value,
     :emitted_ancestry,
     :emitted_causal_ancestry,
-    :weight
+    :weight,
+    emitted_meta: %{}
   ]
 end

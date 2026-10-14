@@ -18,6 +18,9 @@ defmodule Runic do
   alias Runic.Workflow.Rule
   alias Runic.Workflow.Components
   alias Runic.Workflow.Conjunction
+  @doc "Builds a batch for a SingleOutput component or nested batch."
+  defdelegate batch(component, opts \\ []), to: Runic.Workflow.Batch, as: :new
+
   alias Runic.Workflow.FanOut
   alias Runic.Workflow.FanIn
   alias Runic.Workflow.Join

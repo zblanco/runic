@@ -4,7 +4,7 @@ defmodule Runic.Workflow.FanOut do
 
   FanOut just splits input facts - separate steps as defined in the map expression will do the processing.
   """
-  defstruct [:hash, :name]
+  defstruct [:hash, :name, :batch]
 
   # Shared by ordinary-node preparation and FanIn. Ancestry coordinates are
   # present on lightweight references; locating a batch must not hydrate values.
@@ -51,4 +51,13 @@ defimpl Runic.Workflow.Activator, for: Runic.Workflow.FanOut do
   end
 
   def activate_downstream(%Runic.Workflow.FanOut{}, %Workflow{} = wf, %Runnable{}), do: {wf, []}
+end
+
+defimpl Runic.Workflow.Coordinator, for: Runic.Workflow.FanOut do
+  def finalize(%{batch: collector}, workflow, %{result: [], input_fact: source})
+      when not is_nil(collector) do
+    Runic.Workflow.Batch.finish(workflow, workflow.graph.vertices[collector], source.hash, nil)
+  end
+
+  def finalize(_, workflow, _), do: {workflow, []}
 end

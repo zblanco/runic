@@ -460,7 +460,12 @@ defmodule Runic.Workflow do
         is_map_key(vertex, :meta_refs),
         refs = vertex.meta_refs,
         refs != [],
-        context_refs = Enum.filter(refs, &(&1.kind == :context)),
+        context_refs =
+          Enum.filter(
+            refs,
+            &(&1.kind == :context and
+                not Runic.Workflow.Batch.provides_context?(workflow, vertex, &1.target))
+          ),
         context_refs != [],
         name = resolve_component_name(workflow, vertex),
         not is_nil(name),
@@ -731,10 +736,15 @@ defmodule Runic.Workflow do
   [Usage Rules](usage-rules.html#prefer-explicit-boundaries-for-reusable-workflows).
   """
   def add(%__MODULE__{} = workflow, component, opts \\ []) do
-    case Keyword.fetch(opts, :connections) do
-      {:ok, connections} -> add_with_connections(workflow, component, connections, opts)
-      :error -> add_to_parent(workflow, component, opts)
-    end
+    result =
+      case Keyword.fetch(opts, :connections) do
+        {:ok, connections} -> add_with_connections(workflow, component, connections, opts)
+        :error -> add_to_parent(workflow, component, opts)
+      end
+
+    result
+    |> Runic.Workflow.Batch.merge_definitions(component)
+    |> Runic.Workflow.Batch.validate!()
   end
 
   defp add_to_parent(%__MODULE__{} = workflow, component, opts) do
@@ -934,6 +944,8 @@ defmodule Runic.Workflow do
               "map #{inspect(name)} has #{length(leaves)} leaf nodes; its output port cannot be lowered unambiguously"
     end
   end
+
+  defp output_node!(_workflow, %Runic.Workflow.Batch{fan_in: fan_in}), do: fan_in
 
   defp output_node!(_workflow, %Runic.Workflow.Reduce{fan_in: fan_in}), do: fan_in
 
@@ -1184,6 +1196,10 @@ defmodule Runic.Workflow do
     end
 
     transmuted
+  end
+
+  defp connect_component(workflow, component, %Runic.Workflow.Batch{fan_in: fan_in}) do
+    connect_component(workflow, component, fan_in)
   end
 
   defp connect_component(
@@ -1609,6 +1625,7 @@ defmodule Runic.Workflow do
         content_digest: e.emitted_content_digest,
         payload_digest: e.emitted_payload_digest,
         value: e.emitted_value,
+        meta: Map.get(e, :emitted_meta, %{}),
         ancestry: e.emitted_ancestry,
         causal_ancestry: e.emitted_causal_ancestry
       )
@@ -1991,6 +2008,7 @@ defmodule Runic.Workflow do
     {build_events, runtime_events} =
       Enum.split_with(events, fn event ->
         is_struct(event, ComponentAdded) or
+          is_struct(event, ComponentRemoved) or
           is_struct(event, ReactionOccurred) or
           is_struct(event, RunnableDispatched) or
           is_struct(event, RunnableCompleted) or
@@ -2465,7 +2483,12 @@ defmodule Runic.Workflow do
     if is_nil(component) do
       workflow
     else
-      do_remove_component(workflow, component, component_name)
+      Runic.Workflow.Batch.assert_removable!(workflow, component)
+
+      case component do
+        %Runic.Workflow.Batch{} -> Runic.Workflow.Batch.remove(workflow, component)
+        _ -> do_remove_component(workflow, component, component_name)
+      end
     end
   end
 
@@ -2527,23 +2550,7 @@ defmodule Runic.Workflow do
 
     # 4. Rewire: connect each upstream parent to each downstream child
     #    Add both :flow edges (for runtime) and :connects_to edges (for component graph)
-    graph =
-      Enum.reduce(upstream_parents, workflow.graph, fn parent, g ->
-        Enum.reduce(downstream_children, g, fn child, g ->
-          g = Multigraph.add_edge(g, parent, child, label: :flow, weight: 0)
-
-          # Find the owning components for the parent/child to add :connects_to edges
-          temp_wrk = %{workflow | graph: g}
-          parent_component = find_owning_component(temp_wrk, parent)
-          child_component = find_owning_component(temp_wrk, child)
-
-          if parent_component && child_component && parent_component != child_component do
-            Multigraph.add_edge(g, parent_component, child_component, label: :connects_to)
-          else
-            g
-          end
-        end)
-      end)
+    graph = rewire_removed(workflow, upstream_parents, downstream_children).graph
 
     # 5. Delete the safe-to-remove vertices (also removes all their edges)
     graph = Multigraph.delete_vertices(graph, safe_to_remove)
@@ -2574,6 +2581,29 @@ defmodule Runic.Workflow do
         after_hooks: after_hooks,
         build_log: workflow.build_log ++ [event]
     }
+  end
+
+  @doc false
+  def rewire_removed(workflow, parents, children) do
+    graph =
+      Enum.reduce(parents, workflow.graph, fn parent, g ->
+        Enum.reduce(children, g, fn child, g ->
+          g = Multigraph.add_edge(g, parent, child, label: :flow, weight: 0)
+
+          # Find the owning components for the parent/child to add :connects_to edges
+          temp_wrk = %{workflow | graph: g}
+          parent_component = find_owning_component(temp_wrk, parent)
+          child_component = find_owning_component(temp_wrk, child)
+
+          if parent_component && child_component && parent_component != child_component do
+            Multigraph.add_edge(g, parent_component, child_component, label: :connects_to)
+          else
+            g
+          end
+        end)
+      end)
+
+    %{workflow | graph: graph}
   end
 
   defp get_by_hash(%__MODULE__{graph: g}, %{hash: hash}) do
@@ -2868,6 +2898,8 @@ defmodule Runic.Workflow do
   """
   def merge(%__MODULE__{} = workflow, %__MODULE__{} = workflow2) do
     Component.connect(workflow2, %Root{}, workflow)
+    |> Runic.Workflow.Batch.merge_definitions(workflow2)
+    |> Runic.Workflow.Batch.validate!()
   end
 
   # def merge(
@@ -4525,6 +4557,8 @@ defmodule Runic.Workflow do
   """
   @spec prepare_for_dispatch(t()) :: {t(), [Runnable.t()]}
   def prepare_for_dispatch(%__MODULE__{graph: graph} = workflow) do
+    workflow = Runic.Workflow.Batch.validate!(workflow)
+
     Multigraph.edges(graph, by: [:runnable, :matchable])
     |> Enum.reduce({workflow, []}, fn %Multigraph.Edge{v2: node, v1: fact}, {wrk, runnables} ->
       case Invokable.prepare(node, wrk, fact) do
@@ -4730,7 +4764,7 @@ defmodule Runic.Workflow do
   # then suppress downstream work for the same input.
   def apply_runnable(
         %__MODULE__{} = workflow,
-        %Runnable{status: :skipped, events: events, node: node, input_fact: fact}
+        %Runnable{status: :skipped, events: events, node: node, input_fact: fact} = runnable
       )
       when is_list(events) and events != [] do
     wf = Enum.reduce(events, workflow, fn event, wf -> apply_event(wf, event) end)
@@ -4742,11 +4776,11 @@ defmodule Runic.Workflow do
         wf
       end
 
-    suppress_downstream_for_input(wf, node, fact)
+    wf |> suppress_downstream_for_input(node, fact) |> Runic.Workflow.Batch.terminal(runnable)
   end
 
   def apply_runnable(%__MODULE__{} = workflow, %Runnable{status: :failed} = runnable) do
-    handle_failed_runnable(workflow, runnable)
+    workflow |> handle_failed_runnable(runnable) |> Runic.Workflow.Batch.terminal(runnable)
   end
 
   def apply_runnable(%__MODULE__{} = workflow, %Runnable{status: :pending}) do
@@ -4860,11 +4894,19 @@ defmodule Runic.Workflow do
          failed_fact
        )
        when is_struct(failed_fact, Fact) or is_struct(failed_fact, FactRef) do
-    failed_root_hash = local_root_ancestor_hash(workflow, failed_fact)
+    case Runic.Workflow.Batch.item_scope(workflow, failed_node, failed_fact) do
+      nil ->
+        failed_root_hash = local_root_ancestor_hash(workflow, failed_fact)
 
-    do_skip_downstream_subgraph(workflow, graph, failed_node, fn edge ->
-      same_local_root?(workflow, edge.v1, failed_root_hash)
-    end)
+        do_skip_downstream_subgraph(workflow, graph, failed_node, fn edge ->
+          same_local_root?(workflow, edge.v1, failed_root_hash)
+        end)
+
+      item ->
+        do_skip_downstream_subgraph(workflow, graph, failed_node, fn edge ->
+          Runic.Workflow.Batch.descendant?(workflow, edge.v1, item)
+        end)
+    end
   end
 
   defp do_skip_downstream_subgraph(workflow, graph, failed_node, suppress_edge?) do
