@@ -4,7 +4,9 @@ defmodule Runic.Workflow.SingleOutput.Context do
 
   `runtime` is the existing component-scoped Runic runtime context; `meta`
   contains prepared graph/context expression bindings. `batch` contains item
-  coordinates and the shared parent data when this callback is a batch member. `input_metadata` is
+  coordinates and the shared parent data when this callback is a batch member.
+  With `use Runic.Workflow.SingleOutput, batch_parent: false`, the `:parent`
+  key is omitted. `input_metadata` is
   the input Fact's metadata. The remaining fields identify this activation
   and its current attempt, including retries. No graph, hooks, or collection
   bookkeeping is exposed.
