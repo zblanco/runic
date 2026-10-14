@@ -42,6 +42,12 @@ callbacks read `Context.batch`. Other required context keys remain external. Lar
 parent maps can still increase worker copying. The completed Result also contains
 the parent. This is not a zero-copy execution contract.
 
+Custom components that do not read the parent can use
+`use Runic.Workflow.SingleOutput, batch_parent: false`. Their prepared batch
+context keeps the item coordinates and omits `:parent`, so task copies do not
+grow with unused parent data. The default and ordinary Steps include the
+parent. Stored input and completed Result values keep it in both modes.
+
 The [price example](../examples/batch/demo.exs) uses a custom component without
 Fact ancestry, custom events, or collection bookkeeping. Run it with:
 
