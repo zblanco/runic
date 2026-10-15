@@ -3,8 +3,8 @@ defmodule Runic.Runner.StableCausalWaveTest do
   require Runic
   alias Runic.{Runner, Workflow}
 
-  for default <- [:inline, Runic.Runner.Executor.Task] do
-    test "stable wave waits for mixed executors with default #{default}" do
+  for default <- [:inline, Runic.Runner.Executor.Task], order <- [:stable, :custom] do
+    test "#{order} wave waits for mixed executors with default #{default}" do
       owner = self()
 
       blocked =
@@ -41,7 +41,7 @@ defmodule Runic.Runner.StableCausalWaveTest do
 
       {:ok, _} =
         Runner.start_workflow(runner, :mixed, workflow,
-          runnable_order: :stable,
+          runnable_order: if(unquote(order) == :custom, do: & &1.node.name, else: :stable),
           executor: unquote(default),
           max_concurrency: 2,
           hooks: [

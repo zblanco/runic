@@ -3723,7 +3723,8 @@ defmodule Runic.Workflow do
       |> plan(input_fact)
       |> activate_matches_with_result(
         &execute_with_policy(&1, policies, driver_opts),
-        execution
+        execution,
+        Keyword.get(run_opts, :runnable_order)
       )
 
     {observed_workflow, stopped?, execution} =
@@ -3811,7 +3812,10 @@ defmodule Runic.Workflow do
   - `:max_concurrency` - Maximum parallel tasks when `async: true`. Default: `System.schedulers_online()`
   - `:timeout` - Timeout for each task when `async: true`. Default: `:infinity`
   - `:runnable_order` - `:stable` orders ready work by causal depth and activation
-    identity. Omit it to keep the existing unspecified enumeration order.
+    identity. A one-argument function supplies a consumer sort key for each
+    Runnable, including eager matches in `execute/3`. Key exceptions propagate
+    before work in the selected ready set starts. Omit the option to keep
+    the existing unspecified enumeration order.
 
   ## Parallel Execution
 
@@ -3888,6 +3892,7 @@ defmodule Runic.Workflow do
 
   defp order_runnables(runnables, nil), do: runnables
   defp order_runnables(runnables, :stable), do: Enum.sort_by(runnables, &Runnable.order_key/1)
+  defp order_runnables(runnables, key) when is_function(key, 1), do: Enum.sort_by(runnables, key)
 
   defp execute_runnables_async(workflow, runnables, opts, execution) do
     max_concurrency = Keyword.get(opts, :max_concurrency, System.schedulers_online())
@@ -4405,23 +4410,48 @@ defmodule Runic.Workflow do
     {workflow, failed}
   end
 
-  defp activate_matches_with_result(workflow, execute, execution) do
-    case next_match_runnables(workflow) do
+  defp activate_matches_with_result(workflow, execute, execution, order \\ nil) do
+    {workflow, matches} = ordered_match_runnables(workflow, order)
+
+    case matches do
       [] ->
         {workflow, nil, execution}
 
-      [{node, fact} | _] ->
+      [match | _] ->
         # Read a fresh frontier after applying each match. Recursing inside a
         # reduce over an older frontier can execute an already-consumed match.
-        {workflow, result} = invoke_with_result(workflow, node, fact, execute)
+        {workflow, result} = invoke_match_with_result(workflow, match, execute)
         execution = if result, do: Execution.record(execution, workflow, result), else: execution
 
         case result do
           %Runnable{status: :failed} -> {workflow, result, execution}
-          _ -> activate_matches_with_result(workflow, execute, execution)
+          _ -> activate_matches_with_result(workflow, execute, execution, order)
         end
     end
   end
+
+  defp ordered_match_runnables(workflow, key) when is_function(key, 1) do
+    {workflow, runnables} =
+      workflow
+      |> next_match_runnables()
+      |> Enum.reduce({workflow, []}, fn {node, fact}, {wrk, runnables} ->
+        case Invokable.prepare(node, wrk, fact) do
+          {:ok, runnable} -> {wrk, [runnable | runnables]}
+          {action, reducer} when action in [:skip, :defer] -> {reducer.(wrk), runnables}
+        end
+      end)
+
+    {workflow, runnables |> Enum.reverse() |> order_runnables(key)}
+  end
+
+  defp ordered_match_runnables(workflow, _order),
+    do: {workflow, next_match_runnables(workflow)}
+
+  defp invoke_match_with_result(workflow, %Runnable{} = runnable, execute),
+    do: execute_and_apply_runnable(workflow, runnable, execute)
+
+  defp invoke_match_with_result(workflow, {node, fact}, execute),
+    do: invoke_with_result(workflow, node, fact, execute)
 
   @doc """
   Executes the Invokable protocol for a runnable step and fact using the three-phase model.
@@ -4463,8 +4493,7 @@ defmodule Runic.Workflow do
   defp invoke_with_result(wrk, step, fact, execute) do
     case Invokable.prepare(step, wrk, fact) do
       {:ok, runnable} ->
-        {executed, events} = execute.(runnable)
-        {wrk |> append_runnable_events(events) |> apply_runnable(executed), executed}
+        execute_and_apply_runnable(wrk, runnable, execute)
 
       {:skip, reducer_fn} ->
         {reducer_fn.(wrk), nil}
@@ -4472,6 +4501,11 @@ defmodule Runic.Workflow do
       {:defer, reducer_fn} ->
         {reducer_fn.(wrk), nil}
     end
+  end
+
+  defp execute_and_apply_runnable(workflow, runnable, execute) do
+    {executed, events} = execute.(runnable)
+    {workflow |> append_runnable_events(events) |> apply_runnable(executed), executed}
   end
 
   @doc """

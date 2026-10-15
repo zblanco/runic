@@ -16,10 +16,16 @@ defmodule Runic.Runner.Worker do
   Pass `executor: MyExecutor` and `executor_opts: [...]` to use a custom executor.
   `runnable_order: :stable` admits ready candidates at the lowest ready or active
   causal depth, ordered by activation identity, before caller hooks and scheduler
-  grouping. Children wait for active work at earlier depths. The default retains
-  the existing unspecified order. Custom hooks and schedulers can select another
-  order. An admitted Promise keeps its internal execution semantics; descendants
-  inside that unit do not wait for sibling units.
+  grouping. A one-argument `:runnable_order` callback selects the sort key for
+  resolved candidates at that same causal depth. Children wait for active work
+  at earlier depths. The default retains the existing unspecified order.
+  Custom hooks and schedulers can select another order. An admitted Promise
+  keeps its internal execution semantics; descendants inside that unit do not
+  wait for sibling units.
+
+  Sort keys run in the Worker before transform hooks and scheduler grouping.
+  A key exception terminates that Worker. The callback is runtime configuration;
+  supply it again on resume.
 
   The special value `executor: :inline` executes runnables synchronously in the
   Worker process — useful for sub-millisecond computations where task spawn
@@ -1104,9 +1110,19 @@ defmodule Runic.Runner.Worker do
       end)
 
     candidates =
-      if state.runnable_order == :stable,
-        do: stable_candidates(candidates, state.dispatched_units),
-        else: candidates
+      case state.runnable_order do
+        :stable ->
+          stable_candidates(candidates, state.dispatched_units)
+
+        order when is_function(order, 1) ->
+          candidates
+          |> stable_candidates(state.dispatched_units)
+          |> Enum.map(&maybe_resolve_input_fact(&1, state.resolver))
+          |> Enum.sort_by(order)
+
+        _unspecified ->
+          candidates
+      end
 
     # Apply transform_runnables hook
     candidates = apply_transform_hook(state.hooks, candidates, workflow)
