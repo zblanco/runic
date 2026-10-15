@@ -31,7 +31,7 @@ defmodule Runic.Workflow.Runnable do
           id: term() | nil,
           activation_id: Identity.t() | nil,
           attempt_id: Identity.t() | nil,
-          attempt_number: non_neg_integer(),
+          attempt_number: non_neg_integer() | nil,
           node: struct(),
           input_fact: Fact.t(),
           context: CausalContext.t() | nil,

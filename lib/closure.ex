@@ -205,9 +205,6 @@ defmodule Runic.Closure do
           _ ->
             "Anonymous function cannot be serialized"
         end
-
-      _ ->
-        "Anonymous function cannot be serialized"
     end
   end
 

@@ -195,6 +195,7 @@ defmodule Runic.Workflow.InputBinding do
   defp fetch_segment(value, segment, _position, connection),
     do: missing_segment!(value, segment, connection)
 
+  @spec missing_segment!(term(), term(), term()) :: no_return()
   defp missing_segment!(value, segment, connection) do
     binding_error!(
       "cannot read segment #{inspect(segment)} from #{inspect(value)} for connection #{inspect(connection.id)}",
@@ -265,6 +266,7 @@ defmodule Runic.Workflow.InputBinding do
     list ++ List.duplicate(nil, max(size - length(list), 0))
   end
 
+  @spec binding_error!(String.t(), term(), list()) :: no_return()
   defp binding_error!(message, connection, path) do
     raise Runic.InputBindingError, message: message, connection: connection, path: path
   end
