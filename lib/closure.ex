@@ -205,9 +205,6 @@ defmodule Runic.Closure do
           _ ->
             "Anonymous function cannot be serialized"
         end
-
-      _ ->
-        "Anonymous function cannot be serialized"
     end
   end
 
@@ -223,10 +220,6 @@ defmodule Runic.Closure do
     "Ports cannot be serialized"
   end
 
-  defp detailed_error(_value) do
-    "Value type is not serializable"
-  end
-
   # Build a minimal evaluation environment
   # We cache the environment in the process dictionary to avoid recreating it
   defp build_minimal_env do
@@ -236,7 +229,7 @@ defmodule Runic.Closure do
         {result, _} =
           Code.eval_string(
             """
-            require Runic
+            require Runic, warn: false
             import Runic
             alias Runic.Workflow
             __ENV__

@@ -81,9 +81,6 @@ defmodule Runic.Workflow.Step do
     %__MODULE__{step | name: "#{fun_name}-#{hash}"}
   end
 
-  defp maybe_set_name(%__MODULE__{name: nil, hash: hash} = step),
-    do: %__MODULE__{step | name: to_string(hash)}
-
   defp maybe_set_name(%__MODULE__{name: name} = step) when not is_nil(name), do: step
 
   defp maybe_hash_work(%Step{work: work, hash: nil} = step),

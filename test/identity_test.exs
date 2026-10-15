@@ -49,8 +49,8 @@ defmodule Runic.IdentityTest do
         Canonical.encode!(%{work: fn -> :ok end})
       end
 
-      assert_raise CanonicalError, ~r/unsupported pid/, fn ->
-        Canonical.encode!(self())
+      assert_raise CanonicalError, ~r/at \$\[:owner\].*unsupported pid/, fn ->
+        Canonical.encode!(%{owner: self()})
       end
     end
 

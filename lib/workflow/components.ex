@@ -111,20 +111,17 @@ defmodule Runic.Workflow.Components do
     end
   end
 
-  def component_impls do
-    case Runic.Component.__protocol__(:impls) do
-      :not_consolidated -> []
-      {:consolidated, impls} -> impls
-    end
-  end
+  def component_impls, do: protocol_impls(Runic.Component)
 
   def component?(%{__struct__: _} = component),
     do: not is_nil(Runic.Component.impl_for(component))
 
   def component?(_component), do: false
 
-  def invokable_impls do
-    case Runic.Workflow.Invokable.__protocol__(:impls) do
+  def invokable_impls, do: protocol_impls(Runic.Workflow.Invokable)
+
+  defp protocol_impls(protocol) do
+    case protocol.__protocol__(:impls) do
       :not_consolidated -> []
       {:consolidated, impls} -> impls
     end

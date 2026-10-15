@@ -377,13 +377,9 @@ defimpl Runic.Component, for: Runic.Workflow.Map do
         %Workflow{} = workflow,
         kind
       ) do
-    case Multigraph.out_edges(workflow.graph, Map.get(workflow.graph.vertices, map.hash),
-           by: :component_of,
-           where: fn edge ->
-             edge.properties[:kind] == kind
-           end
-         )
-         |> List.first() do
+    case workflow.graph
+         |> Multigraph.out_edges(Map.get(workflow.graph.vertices, map.hash), by: :component_of)
+         |> Enum.find(fn edge -> edge.properties[:kind] == kind end) do
       %{v2: component} -> component
       nil -> nil
     end
@@ -795,7 +791,6 @@ defimpl Runic.Component, for: Runic.Workflow.Rule do
           case Workflow.get_component(wrk, tuple_ref) do
             [component | _] -> component
             [] -> nil
-            component -> component
           end
 
         _ ->
@@ -1702,7 +1697,6 @@ defimpl Runic.Component, for: Runic.Workflow.Condition do
             case Workflow.get_component(wrk, tuple_ref) do
               [component | _] -> component
               [] -> nil
-              component -> component
             end
 
           _ ->

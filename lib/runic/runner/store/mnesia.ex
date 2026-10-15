@@ -56,8 +56,6 @@ defmodule Runic.Runner.Store.Mnesia do
   @behaviour Runic.Runner.Store
   use GenServer
 
-  require Logger
-
   # --- Store Behaviour ---
 
   @impl Runic.Runner.Store

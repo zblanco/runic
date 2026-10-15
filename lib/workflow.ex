@@ -994,13 +994,12 @@ defmodule Runic.Workflow do
 
   defp output_node!(workflow, component, source_port) do
     edges =
-      Multigraph.out_edges(workflow.graph, component,
-        by: :component_of,
-        where: fn edge ->
-          edge.properties[:kind] == :output and
-            source_port in Map.get(edge.properties, :ports, [])
-        end
-      )
+      workflow.graph
+      |> Multigraph.out_edges(component, by: :component_of)
+      |> Enum.filter(fn edge ->
+        edge.properties[:kind] == :output and
+          source_port in Map.get(edge.properties, :ports, [])
+      end)
 
     edges = Enum.uniq_by(edges, &Components.vertex_id_of(&1.v2))
 
@@ -1601,8 +1600,6 @@ defmodule Runic.Workflow do
   defp declared_ports(component, field) when is_map(component) do
     if Map.has_key?(component, field), do: Map.get(component, field)
   end
-
-  defp declared_ports(_component, _field), do: nil
 
   defp workflow_boundary?(%__MODULE__{input_ports: input_ports, output_ports: output_ports}),
     do: not is_nil(input_ports) or not is_nil(output_ports)
@@ -2263,7 +2260,7 @@ defmodule Runic.Workflow do
   defp restore_meta_ref_properties(_label, properties), do: properties
 
   defp build_eval_env() do
-    require Runic
+    require Runic, warn: false
     import Runic, warn: false
     alias Runic.Workflow, warn: false
     __ENV__
@@ -2814,10 +2811,6 @@ defmodule Runic.Workflow do
       end)
 
     %{workflow | graph: graph}
-  end
-
-  defp get_by_hash(%__MODULE__{graph: g}, %{hash: hash}) do
-    Map.get(g.vertices, hash)
   end
 
   defp get_by_hash(%__MODULE__{graph: g}, hash) when is_integer(hash) do
@@ -3524,7 +3517,7 @@ defmodule Runic.Workflow do
 
       cardinality =
         Keyword.get_lazy(port_opts, :cardinality, fn ->
-          exported_cardinality(workflow, component_name, MapSet.new())
+          exported_cardinality(workflow, component_name, :sets.new(version: 2))
         end)
 
       values = extract_productions(workflow, component_name, return_facts)
@@ -3549,7 +3542,7 @@ defmodule Runic.Workflow do
       %__MODULE__{} = component ->
         id = Components.vertex_id_of(component)
 
-        if MapSet.member?(seen, id) do
+        if :sets.is_element(id, seen) do
           :one
         else
           compiled_ports =
@@ -3596,7 +3589,7 @@ defmodule Runic.Workflow do
                     Enum.map(aliases, fn {_, schema} ->
                       case Keyword.fetch(schema, :from) do
                         {:ok, source} ->
-                          exported_cardinality(workflow, source, MapSet.put(seen, id))
+                          exported_cardinality(workflow, source, :sets.add_element(id, seen))
 
                         :error ->
                           :one
@@ -5272,18 +5265,18 @@ defmodule Runic.Workflow do
   # so the convergence bound can be tested without a wall-clock threshold.
   @doc false
   def lineage_reachability(workflow, fact, target),
-    do: walk_lineage(workflow, [fact], target, MapSet.new())
+    do: walk_lineage(workflow, [fact], target, :sets.new(version: 2))
 
-  defp walk_lineage(_workflow, [], _target, seen), do: {false, MapSet.size(seen)}
+  defp walk_lineage(_workflow, [], _target, seen), do: {false, :sets.size(seen)}
 
   defp walk_lineage(workflow, [%{hash: hash} = fact | rest], target, seen) do
-    if MapSet.member?(seen, hash) do
+    if :sets.is_element(hash, seen) do
       walk_lineage(workflow, rest, target, seen)
     else
-      seen = MapSet.put(seen, hash)
+      seen = :sets.add_element(hash, seen)
 
       case lineage_step(workflow, fact, target) do
-        :match -> {true, MapSet.size(seen)}
+        :match -> {true, :sets.size(seen)}
         inputs -> walk_lineage(workflow, inputs ++ rest, target, seen)
       end
     end
@@ -5350,7 +5343,7 @@ defmodule Runic.Workflow do
   # joins without a Call ancestor retain their prior producer-only selection.
   @doc false
   def join_input_filter(workflow, join, fact) do
-    if call_flow_ancestor?(workflow.graph, [join], MapSet.new()) do
+    if call_flow_ancestor?(workflow.graph, [join], :sets.new(version: 2)) do
       root = local_root_ancestor_hash(workflow, fact)
       &same_local_root?(workflow, &1.v1, root)
     else
@@ -5367,11 +5360,11 @@ defmodule Runic.Workflow do
   defp call_flow_ancestor?(graph, [node | rest], seen, wanted) do
     id = Components.vertex_id_of(node)
 
-    if MapSet.member?(seen, id) do
+    if :sets.is_element(id, seen) do
       call_flow_ancestor?(graph, rest, seen, wanted)
     else
       parents = Enum.map(Multigraph.in_edges(graph, node, by: :flow), & &1.v1)
-      call_flow_ancestor?(graph, parents ++ rest, MapSet.put(seen, id), wanted)
+      call_flow_ancestor?(graph, parents ++ rest, :sets.add_element(id, seen), wanted)
     end
   end
 
@@ -5412,7 +5405,7 @@ defmodule Runic.Workflow do
   # Use its own hash as the local input boundary, so separate handoff facts do
   # not share a suppression scope merely because they have an external parent.
   defp local_root_ancestor_hash(workflow, fact),
-    do: local_root_ancestor_hash(workflow, fact, MapSet.new())
+    do: local_root_ancestor_hash(workflow, fact, :sets.new(version: 2))
 
   defp local_root_ancestor_hash(_workflow, %{ancestry: nil, hash: hash}, _seen), do: hash
 
@@ -5421,12 +5414,12 @@ defmodule Runic.Workflow do
          %{ancestry: {_, parent}, hash: hash},
          seen
        ) do
-    if MapSet.member?(seen, hash) do
+    if :sets.is_element(hash, seen) do
       nil
     else
       case Map.get(graph.vertices, parent) do
         fact when is_struct(fact, Fact) or is_struct(fact, FactRef) ->
-          local_root_ancestor_hash(workflow, fact, MapSet.put(seen, hash))
+          local_root_ancestor_hash(workflow, fact, :sets.add_element(hash, seen))
 
         nil ->
           hash
@@ -5435,7 +5428,7 @@ defmodule Runic.Workflow do
   end
 
   defp reachable_via_flow(graph, start_node) do
-    do_reachable_via_flow(graph, [start_node], MapSet.new(), [])
+    do_reachable_via_flow(graph, [start_node], :sets.new(version: 2), [])
   end
 
   defp do_reachable_via_flow(_graph, [], _visited, acc), do: acc
@@ -5443,10 +5436,10 @@ defmodule Runic.Workflow do
   defp do_reachable_via_flow(graph, [node | rest], visited, acc) do
     node_id = graph.vertex_identifier.(node)
 
-    if MapSet.member?(visited, node_id) do
+    if :sets.is_element(node_id, visited) do
       do_reachable_via_flow(graph, rest, visited, acc)
     else
-      visited = MapSet.put(visited, node_id)
+      visited = :sets.add_element(node_id, visited)
       children = for e <- Multigraph.out_edges(graph, node, by: :flow), do: e.v2
       do_reachable_via_flow(graph, children ++ rest, visited, [node | acc])
     end

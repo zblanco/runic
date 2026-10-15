@@ -28,7 +28,7 @@ defmodule Runic.ClosureTest do
     end
 
     test "metadata captures requires" do
-      require Logger
+      require Logger, warn: false
       metadata = ClosureMetadata.from_caller(__ENV__)
 
       assert Logger in metadata.requires

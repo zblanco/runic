@@ -32,7 +32,7 @@ defmodule Runic.RuleDSLTest do
         end
 
       assert %Rule{} = rule
-      assert is_binary(rule.name) or is_atom(rule.name)
+      assert is_binary(rule.name)
       assert %Runic.Identity{domain: :component_definition} = rule.hash
     end
 

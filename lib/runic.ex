@@ -293,11 +293,7 @@ defmodule Runic do
           )
 
         step_name =
-          if unquote(base_name) do
-            unquote(base_name)
-          else
-            unquote(default_component_name("step", "_")) <> "_#{step_hash}"
-          end
+          unquote(runtime_component_name(base_name, "step", quote(do: step_hash)))
 
         Step.new(
           work: unquote(final_work),
@@ -376,11 +372,7 @@ defmodule Runic do
           )
 
         step_name =
-          if unquote(base_name) do
-            unquote(base_name)
-          else
-            unquote(default_component_name("step", "_")) <> "_#{step_hash}"
-          end
+          unquote(runtime_component_name(base_name, "step", quote(do: step_hash)))
 
         Step.new(
           work: unquote(final_work),
@@ -617,11 +609,7 @@ defmodule Runic do
               )
 
             condition_name =
-              if unquote(base_name) do
-                unquote(base_name)
-              else
-                unquote(default_component_name("condition", "_")) <> "_#{condition_hash}"
-              end
+              unquote(runtime_component_name(base_name, "condition", quote(do: condition_hash)))
 
             Condition.new(
               work: unquote(final_work),
@@ -1301,9 +1289,7 @@ defmodule Runic do
         rule_hash = closure.hash
 
         rule_name =
-          if unquote(base_name),
-            do: unquote(base_name),
-            else: unquote(default_component_name("rule", "_")) <> "_#{rule_hash}"
+          unquote(runtime_component_name(base_name, "rule", quote(do: rule_hash)))
 
         %Rule{
           name: rule_name,
@@ -1440,9 +1426,7 @@ defmodule Runic do
         rule_hash = closure.hash
 
         rule_name =
-          if unquote(base_name),
-            do: unquote(base_name),
-            else: unquote(default_component_name("rule", "_")) <> "_#{rule_hash}"
+          unquote(runtime_component_name(base_name, "rule", quote(do: rule_hash)))
 
         %Rule{
           name: rule_name,
@@ -3700,9 +3684,7 @@ defmodule Runic do
         map_hash = closure.hash
 
         map_name =
-          if unquote(base_name),
-            do: unquote(base_name),
-            else: unquote(default_component_name("map", "_")) <> "_#{map_hash}"
+          unquote(runtime_component_name(base_name, "map", quote(do: map_hash)))
 
         map_pipeline =
           unquote(
@@ -3864,9 +3846,7 @@ defmodule Runic do
         reduce_hash = closure.hash
 
         reduce_name =
-          if unquote(base_name),
-            do: unquote(base_name),
-            else: unquote(default_component_name("reduce", "_")) <> "_#{reduce_hash}"
+          unquote(runtime_component_name(base_name, "reduce", quote(do: reduce_hash)))
 
         %Runic.Workflow.Reduce{
           name: reduce_name,
@@ -4003,9 +3983,7 @@ defmodule Runic do
           )
 
         accumulator_name =
-          if unquote(base_name),
-            do: unquote(base_name),
-            else: unquote(default_component_name("accumulator", "_")) <> "_#{accumulator_hash}"
+          unquote(runtime_component_name(base_name, "accumulator", quote(do: accumulator_hash)))
 
         %Accumulator{
           name: accumulator_name,
@@ -4049,6 +4027,7 @@ defmodule Runic do
         |> Workflow.add(counter)
         |> Workflow.add(threshold_rule, to: :counter)
   """
+  @spec state_of(term()) :: no_return()
   def state_of(component_name_or_hash), do: doc!([component_name_or_hash])
 
   @doc """
@@ -4068,6 +4047,7 @@ defmodule Runic do
           then(fn %{x: x} -> {:validated, x} end)
         end
   """
+  @spec step_ran?(term()) :: no_return()
   def step_ran?(component_name_or_hash), do: doc!([component_name_or_hash])
 
   @doc """
@@ -4087,6 +4067,7 @@ defmodule Runic do
           then(fn %{x: x} -> {:validated, x} end)
         end
   """
+  @spec step_ran?(term(), term()) :: no_return()
   def step_ran?(component_name_or_hash, fact_or_hash),
     do: doc!([component_name_or_hash, fact_or_hash])
 
@@ -4105,6 +4086,7 @@ defmodule Runic do
         then(fn %{x: x} -> {:process_batch, x} end)
       end
   """
+  @spec fact_count(term()) :: no_return()
   def fact_count(component_name_or_hash), do: doc!([component_name_or_hash])
 
   @doc """
@@ -4134,6 +4116,7 @@ defmodule Runic do
         then(fn %{x: x} -> {:latest, x, latest_value_of(:sensor)} end)
       end
   """
+  @spec latest_value_of(term()) :: no_return()
   def latest_value_of(component_name_or_hash), do: doc!([component_name_or_hash])
 
   @doc """
@@ -4152,6 +4135,7 @@ defmodule Runic do
         then(fn %{x: x} -> {:ok, x} end)
       end
   """
+  @spec latest_fact_of(term()) :: no_return()
   def latest_fact_of(component_name_or_hash), do: doc!([component_name_or_hash])
 
   @doc """
@@ -4180,6 +4164,7 @@ defmodule Runic do
         then(fn _bindings -> Enum.sum(all_values_of(:scores)) end)
       end
   """
+  @spec all_values_of(term()) :: no_return()
   def all_values_of(component_name_or_hash), do: doc!([component_name_or_hash])
 
   @doc """
@@ -4197,6 +4182,7 @@ defmodule Runic do
         then(fn %{x: x} -> {:has_events, x} end)
       end
   """
+  @spec all_facts_of(term()) :: no_return()
   def all_facts_of(component_name_or_hash), do: doc!([component_name_or_hash])
 
   @doc """
@@ -4237,6 +4223,7 @@ defmodule Runic do
 
       Runic.step(fn x -> x + context(:config).pool_size end, name: :pooled)
   """
+  @spec context(term()) :: no_return()
   def context(key), do: doc!([key])
 
   @doc """
@@ -4278,8 +4265,10 @@ defmodule Runic do
         name: :scaled
       )
   """
+  @spec context(term(), keyword()) :: no_return()
   def context(key, opts), do: doc!([key, opts])
 
+  @spec doc!(term()) :: no_return()
   defp doc!(_) do
     raise "these Runic meta APIs should not be invoked directly, " <>
             "they serve for documentation purposes only"
@@ -4332,6 +4321,18 @@ defmodule Runic do
       other ->
         other
     end)
+  end
+
+  # The caller can supply a name whose truthiness is known at compile time.
+  # Mark only this generated fallback as generated, not the caller's work.
+  defp runtime_component_name(base_name, component_kind, hash) do
+    quote generated: true do
+      if unquote(base_name) do
+        unquote(base_name)
+      else
+        unquote(default_component_name(component_kind, "_")) <> "_#{unquote(hash)}"
+      end
+    end
   end
 
   # Build a Closure struct from rewritten source AST and variable bindings
@@ -5117,9 +5118,7 @@ defmodule Runic do
         rule_hash = closure.hash
 
         rule_name =
-          if unquote(base_name),
-            do: unquote(base_name),
-            else: unquote(default_component_name("rule", "_")) <> "_#{rule_hash}"
+          unquote(runtime_component_name(base_name, "rule", quote(do: rule_hash)))
 
         %Rule{
           name: rule_name,
@@ -5237,9 +5236,7 @@ defmodule Runic do
         rule_hash = closure.hash
 
         rule_name =
-          if unquote(base_name),
-            do: unquote(base_name),
-            else: unquote(default_component_name("rule", "_")) <> "_#{rule_hash}"
+          unquote(runtime_component_name(base_name, "rule", quote(do: rule_hash)))
 
         %Rule{
           name: rule_name,
@@ -5687,31 +5684,6 @@ defmodule Runic do
     {quoted_workflow, condition_ast_hash, reaction_ast_hash}
   end
 
-  # matches: fn true -> _ end | fn nil -> _ end
-  defp workflow_of_rule({:fn, _, [{:->, _, [[lhs], rhs]}]} = _expression, 1 = _arity)
-       when lhs in [true, nil] do
-    condition_fun = fn _lhs -> true end
-    condition_ast_hash = Components.fact_hash(condition_fun)
-
-    condition = quote(do: Condition.new(unquote(condition_fun)))
-
-    reaction_fun = quote(do: fn _ -> unquote(rhs) end)
-    reaction_ast_hash = Components.fact_hash(reaction_fun)
-
-    reaction = quote(do: step(unquote(reaction_fun)))
-
-    workflow =
-      quote do
-        import Runic
-
-        Workflow.new()
-        |> Workflow.add_step(unquote(condition))
-        |> Workflow.add_step(unquote(condition), unquote(reaction))
-      end
-
-    {workflow, condition_ast_hash, reaction_ast_hash}
-  end
-
   defp workflow_of_rule(
          {:fn, head_meta, [{:->, clause_meta, [[lhs], _rhs]}]} = expression,
          1 = arity
@@ -5935,43 +5907,6 @@ defmodule Runic do
     {quoted_workflow, condition_ast_hash, reaction_ast_hash}
   end
 
-  # Literal match (true/nil): always-true condition, reaction gets meta_refs
-  defp workflow_of_rule_fn_with_meta(
-         {:fn, _, [{:->, _, [[lhs], _rhs]}]} = _original_expression,
-         1 = _arity,
-         meta_reaction,
-         reaction_meta_refs
-       )
-       when lhs in [true, nil] do
-    condition_fun = fn _lhs -> true end
-    condition_ast_hash = Components.fact_hash(condition_fun)
-
-    condition = quote(do: Condition.new(unquote(condition_fun)))
-
-    reaction_ast_hash = Components.fact_hash(meta_reaction)
-    escaped_meta_refs = escape_meta_refs(reaction_meta_refs)
-
-    reaction =
-      quote do
-        Step.new(
-          work: unquote(meta_reaction),
-          hash: unquote(identity_ast(reaction_ast_hash)),
-          meta_refs: unquote(escaped_meta_refs)
-        )
-      end
-
-    workflow =
-      quote do
-        import Runic
-
-        Workflow.new()
-        |> Workflow.add_step(unquote(condition))
-        |> Workflow.add_step(unquote(condition), unquote(reaction))
-      end
-
-    {workflow, condition_ast_hash, reaction_ast_hash}
-  end
-
   # Simple pattern match: condition from pattern, reaction gets meta_refs
   defp workflow_of_rule_fn_with_meta(
          {:fn, head_meta, [{:->, clause_meta, [[lhs], _rhs]}]} = _original_expression,
@@ -6019,13 +5954,6 @@ defmodule Runic do
       end
 
     {workflow, condition_ast_hash, reaction_ast_hash}
-  end
-
-  defp binds_of_guarded_anonymous(
-         {:fn, _meta, [{:->, _, [[lhs], _rhs]}]} = _quoted_fun_expression,
-         arity
-       ) do
-    binds_of_guarded_anonymous(lhs, arity)
   end
 
   defp binds_of_guarded_anonymous({:when, _meta, guarded_expression}, arity) do

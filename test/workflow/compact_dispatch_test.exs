@@ -34,7 +34,7 @@ defmodule Runic.Workflow.CompactDispatchTest do
   test "limited preparation invokes only the selected contexts and excludes in-flight work" do
     workflow = probe_workflow(100)
     descriptors = Workflow.activation_descriptors(workflow)
-    assert Enumerable.impl_for(descriptors) != nil
+    assert Enumerable.impl_for(descriptors) == Enumerable.Function
     refute_received {:prepared, _, _}
 
     selected = Enum.take(descriptors, 3)
