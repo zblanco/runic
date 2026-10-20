@@ -8,8 +8,9 @@ defmodule Runic.Runner.Store do
   ## Stream Semantics (Event-Sourced)
 
   The preferred interface uses `append/3` and `stream/2` for incremental
-  event persistence. Events are appended after each execution cycle and
-  streamed on recovery to rebuild workflow state via `Workflow.from_events/1`.
+  event persistence. Events are appended at durability boundaries and after
+  execution cycles. They are streamed on recovery to rebuild workflow state
+  via `Workflow.from_events/1`.
 
   Stores that implement `append/3` and `stream/2` get automatic
   event-sourced checkpointing and recovery from the Worker.
@@ -25,6 +26,13 @@ defmodule Runic.Runner.Store do
   or document its ambiguous-write behavior. The Worker retaining and resending
   a batch alone does not guarantee duplicate-free remote persistence.
 
+  Managed durable execution saves a versioned `%RunnableDispatched{}` attempt
+  admission before it gives that attempt to an executor. It also saves a
+  `%RetryScheduled{}` event before it starts a backoff timer. The lifecycle
+  events have stable `event_id` values. Adapters should enforce uniqueness for
+  these IDs when possible. Replay ignores duplicate versioned lifecycle events,
+  but the Store can still contain duplicates after an ambiguous write.
+
   `save/3` and `checkpoint/3` return `:ok` only after the complete log has been
   saved. Adapters should return operational failures as `{:error, reason}`;
   raised exceptions and exits follow normal OTP crash semantics instead.
@@ -38,9 +46,10 @@ defmodule Runic.Runner.Store do
   value writes followed by a failed append may leave unreferenced values; their
   retention is an adapter responsibility. No cross-callback transaction is assumed.
 
-  Checkpoint failure retains data only while the Worker is alive. Retry cadence,
-  admission limits, and memory bounds during outages belong to the application;
-  the Worker does not run a background retry loop or pause dispatch automatically.
+  A write failure retains data only while the Worker is alive. It also blocks
+  new dispatch until `checkpoint/2` receives a successful acknowledgement.
+  The Worker does not run a background Store retry loop. Retry cadence and
+  memory bounds during an outage belong to the application.
 
   `stream/2` must always return the full event stream for a workflow. Stores
   that support cursor-aware or windowed replay can additionally implement

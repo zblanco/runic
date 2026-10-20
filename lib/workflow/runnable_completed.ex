@@ -11,6 +11,8 @@ defmodule Runic.Workflow.RunnableCompleted do
   """
 
   @type t :: %__MODULE__{
+          version: pos_integer(),
+          event_id: Runic.Identity.t() | nil,
           runnable_id: term(),
           activation_id: Runic.Identity.t() | nil,
           attempt_id: Runic.Identity.t() | nil,
@@ -31,6 +33,8 @@ defmodule Runic.Workflow.RunnableCompleted do
     :result_fact,
     :completed_at,
     :attempt,
-    :duration_ms
+    :duration_ms,
+    version: 1,
+    event_id: nil
   ]
 end

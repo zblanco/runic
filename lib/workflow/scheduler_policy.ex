@@ -53,9 +53,20 @@ defmodule Runic.Workflow.SchedulerPolicy do
   exit fails closed with `{:retry_predicate_failed, reason, original_error}`
   and does not invoke fallback. No predicate runs after retries are exhausted.
 
-  These are bounded local retries, not durable retry scheduling. Function
-  predicates are omitted from lifecycle policy metadata; an MFA reference is
-  retained but does not by itself establish deployment-safe code compatibility.
+  Direct `PolicyDriver` execution uses bounded local retries. A managed Runner
+  Worker treats each durable attempt as a separate admitted unit. It saves the
+  admission and any absolute retry deadline before it starts the related work
+  or timer. `max_retries` is the number of retries after the first attempt, so
+  the maximum number of admitted attempts is `max_retries + 1`. An admitted
+  attempt with an unknown result consumes one attempt from this limit.
+
+  This limit does not make external effects exactly once. A process can stop
+  after an effect occurs but before the result is saved. Use an idempotency key
+  or an external transaction when the effect must not occur more than once.
+
+  Function predicates are omitted from lifecycle policy metadata. An MFA
+  reference is retained, but it does not establish deployment-safe code
+  compatibility by itself. Supply compatible runtime policy and code on resume.
 
   ## Example
 

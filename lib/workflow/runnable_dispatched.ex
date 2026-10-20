@@ -2,14 +2,21 @@ defmodule Runic.Workflow.RunnableDispatched do
   @moduledoc """
   Event recording that a runnable was dispatched for execution.
 
-  Captures the dispatch moment including the resolved policy (with non-serializable
-  fields like `fallback` stripped) and the attempt number.
+  In managed durable execution, this is an attempt-admission record. The Worker
+  saves it and requires Store acknowledgement before it gives the attempt to an
+  executor. Immediate execution emits it just before invocation.
+
+  It includes the resolved policy, with non-serializable fields such as
+  `fallback` removed, and the zero-based attempt number. `event_id` is stable
+  for one activation and attempt. Version 1 events use this admission contract.
 
   `order_key` is the stable causal admission order. It is separate from the
   event's actual dispatch and completion order.
   """
 
   @type t :: %__MODULE__{
+          version: pos_integer(),
+          event_id: Runic.Identity.t() | nil,
           runnable_id: term(),
           activation_id: Runic.Identity.t() | nil,
           attempt_id: Runic.Identity.t() | nil,
@@ -32,6 +39,8 @@ defmodule Runic.Workflow.RunnableDispatched do
     :input_fact,
     :dispatched_at,
     :policy,
-    :attempt
+    :attempt,
+    version: 1,
+    event_id: nil
   ]
 end

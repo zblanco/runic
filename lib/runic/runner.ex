@@ -119,6 +119,9 @@ defmodule Runic.Runner do
     A local PID selects owned execution: owner death cancels the Worker and
     its native work without persistence. Owned Workers are not restarted
     automatically. Supply the owner again when resuming.
+  - `:retry_time_source` - An MFA tuple that returns Unix time in milliseconds.
+    The default is `{System, :system_time, [:millisecond]}`. This option supports
+    controlled clocks in tests. Supply it again when resuming.
 
   Returns `{:ok, pid}` or `{:error, {:already_started, pid}}`.
   Initial event-stream persistence failures return
@@ -325,10 +328,13 @@ defmodule Runic.Runner do
   `{:error, :admission_stopped}`. Inspect `admission_status/2` before using
   `continue/2` to open a new automatic admission scope.
 
-  `:ok` acknowledges admission, not completion or persistence. An inline unit
-  may finish during the call. A Promise is one unit and may contain several
-  components. Manual mode is Worker-local configuration, not a durable pause
-  or human-approval record; pass `dispatch_mode: :manual` again when resuming.
+  `:ok` does not acknowledge completion. For durable runnable work, the Worker
+  saves attempt admission before executor dispatch. Check
+  `persistence_status/2` because `step/2` can still return `:ok` when that Store
+  write fails and no executor starts. An inline unit may finish during the call.
+  A Promise is one unit and may contain several components. Manual mode is
+  Worker-local configuration, not a durable pause or human-approval record;
+  pass `dispatch_mode: :manual` again when resuming.
   """
   def step(runner, workflow_id) do
     case lookup(runner, workflow_id) do
@@ -349,8 +355,10 @@ defmodule Runic.Runner do
   admission causes, but does not clear a persistence error or pending events.
 
   An uncertain unit remains ready. By calling `continue/2`, the caller accepts
-  that its external effects can run again. `stop/3` followed by `resume/3` also
-  starts a new scope; admission causes are not part of the persisted graph.
+  that its external effects can run again. For managed durable attempts,
+  recovery uses saved admissions before it allows another attempt. An unknown
+  final attempt stops admission. Other admission causes remain local to the
+  Worker.
   """
   def continue(runner, workflow_id) do
     case lookup(runner, workflow_id) do
@@ -362,7 +370,8 @@ defmodule Runic.Runner do
   @doc """
   Returns the current Worker's admission state.
 
-  The result is `{:ok, %{status: :open | :stopped, active_units: count, causes: causes}}`.
+  The result is
+  `{:ok, %{status: :open | :stopped, active_units: count, waiting_retries: count, causes: causes}}`.
   Each cause has `kind` (`:failed` or `:uncertain`), `unit` (`{:runnable, id}` or
   `{:promise, id}`), and `reason`. A failed cause is a returned node failure.
   An uncertain cause means the outer executor ended without a result. It does
@@ -370,9 +379,10 @@ defmodule Runic.Runner do
 
   A stopped scope accepts results from active units but admits no new units.
   `run/4` can add input while stopped. `continue/2` opens a new scope after all
-  active units drain. Causes are local to the Worker and are not replayed from
-  graph history. This state does not report persistence acknowledgement; use
-  `persistence_status/2` for that boundary.
+  active units drain. A durable unknown final attempt reconstructs an uncertain
+  cause from saved history. Other causes are local to the Worker. This state
+  does not report persistence acknowledgement; use `persistence_status/2` for
+  that boundary.
 
   Do not call this synchronously from a Worker callback or hook. Have the hook
   notify an observer process, which can query after the callback returns.

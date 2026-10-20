@@ -66,9 +66,17 @@ defmodule Runic.Runner.Worker do
 
   Computation completion (`on_complete` and `on_idle`) does not imply successful
   persistence. Failed writes retain pending data, invoke `on_persistence_error`,
-  and remain visible through `Runic.Runner.persistence_status/2`. Retry is driven
-  by the checkpoint strategy or explicit calls; applications must bound admission
-  and pending-buffer growth during an extended Store outage.
+  block new dispatch, and remain visible through
+  `Runic.Runner.persistence_status/2`. Retry is driven by explicit checkpoint
+  calls after a failure. Applications must bound pending-buffer growth during
+  an extended Store outage.
+
+  A durable attempt is sent to its executor only after the Store acknowledges
+  its `%RunnableDispatched{}` admission event. Retry waits use a saved absolute
+  Unix-millisecond deadline and do not hold an executor slot. A saved admission
+  with no saved result has an unknown outcome and consumes one attempt. These
+  rules bound attempts across Worker recovery. They do not provide exactly-once
+  external effects.
 
   Completion callbacks also run when a stopped admission scope has drained.
   The graph can still contain ready work. Callers can use
@@ -83,7 +91,19 @@ defmodule Runic.Runner.Worker do
   require Logger
 
   alias Runic.Workflow
-  alias Runic.Workflow.{Execution, Runnable, FactRef, FactResolver}
+
+  alias Runic.Workflow.{
+    Execution,
+    ExecutionUncertain,
+    FactRef,
+    FactResolver,
+    RetryScheduled,
+    Runnable,
+    RunnableCompleted,
+    RunnableDispatched,
+    RunnableFailed
+  }
+
   alias Runic.Workflow.Events.FactProduced
   alias Runic.Workflow.SchedulerPolicy
   alias Runic.Workflow.PolicyDriver
@@ -108,6 +128,7 @@ defmodule Runic.Runner.Worker do
     :scheduler_opts,
     :scheduler_state,
     :runnable_order,
+    :retry_time_source,
     dispatch_mode: :automatic,
     status: :idle,
     admission_causes: [],
@@ -126,7 +147,9 @@ defmodule Runic.Runner.Worker do
     current_execution_id: nil,
     hooks: %{},
     override_executors: %{},
-    promise_opts: []
+    promise_opts: [],
+    retry_waits: %{},
+    pending_admissions: %{}
   ]
 
   # --- Child Spec ---
@@ -257,6 +280,8 @@ defmodule Runic.Runner.Worker do
       scheduler_opts: scheduler_opts,
       scheduler_state: scheduler_state,
       runnable_order: Keyword.get(opts, :runnable_order),
+      retry_time_source:
+        Keyword.get(opts, :retry_time_source, {System, :system_time, [:millisecond]}),
       dispatch_mode: dispatch_mode(opts),
       hooks: hooks,
       promise_opts: promise_opts
@@ -401,6 +426,7 @@ defmodule Runic.Runner.Worker do
       %{
         status: if(state.admission_causes == [], do: :open, else: :stopped),
         active_units: map_size(state.active_tasks),
+        waiting_retries: map_size(state.retry_waits),
         causes: Enum.reverse(state.admission_causes)
       }}, state}
   end
@@ -480,6 +506,7 @@ defmodule Runic.Runner.Worker do
   def handle_call(:checkpoint, _from, state) do
     case do_checkpoint(state) do
       {:ok, state} ->
+        state = state |> activate_persisted_work() |> maybe_transition_to_idle()
         {:reply, :ok, store_current_execution_snapshot(state)}
 
       {:error, reason, state} ->
@@ -536,6 +563,29 @@ defmodule Runic.Runner.Worker do
     Process.demonitor(ref, [:flush])
     state = handle_task_result(ref, executed, events, state)
     {:noreply, state}
+  end
+
+  def handle_info(
+        {ref, {:retry, %Runnable{} = executed, delay_ms}},
+        %{active_tasks: tasks} = state
+      )
+      when is_reference(ref) and is_integer(delay_ms) and delay_ms >= 0 and
+             :erlang.map_get(ref, tasks) == executed.id do
+    Process.demonitor(ref, [:flush])
+    {:noreply, handle_task_retry(ref, executed, delay_ms, state)}
+  end
+
+  def handle_info({:retry_due, activation_id, event_id}, state) do
+    case Map.get(state.retry_waits, activation_id) do
+      %{event: %{event_id: ^event_id}, runnable: runnable, policy: policy} ->
+        state = %{state | retry_waits: Map.delete(state.retry_waits, activation_id)}
+        state = dispatch_durable_runnable(runnable, policy, state)
+        state = state |> dispatch_runnables() |> maybe_transition_to_idle()
+        {:noreply, state}
+
+      _other ->
+        {:noreply, state}
+    end
   end
 
   # Only the native sequential Task path reports member progress. The Promise
@@ -1078,7 +1128,162 @@ defmodule Runic.Runner.Worker do
     end
   end
 
+  defp handle_task_retry(ref, executed, delay_ms, state) do
+    state = release_executor(state, ref)
+    {_runnable_id, active_tasks} = Map.pop(state.active_tasks, ref)
+    {dispatch_time, dispatch_times} = Map.pop(state.dispatch_times, ref)
+    attempt = executed.attempt_number || 0
+    due_at = retry_now(state) + delay_ms
+
+    event =
+      RetryScheduled.new(executed, attempt, delay_ms, due_at, executed.error)
+
+    workflow = Workflow.append_runnable_events(state.workflow, [event])
+
+    runnable = %{
+      executed
+      | status: :pending,
+        result: nil,
+        events: nil,
+        hook_apply_fns: nil,
+        error: nil
+    }
+
+    state = %{
+      state
+      | active_tasks: active_tasks,
+        dispatch_times: dispatch_times
+    }
+
+    duration = if dispatch_time, do: System.monotonic_time(:millisecond) - dispatch_time, else: 0
+    state = notify_scheduler_complete(state, {:runnable, executed}, duration)
+
+    state =
+      state
+      |> collect_pending_events(workflow, [event])
+      |> put_retry_wait(
+        runnable,
+        SchedulerPolicy.resolve(runnable, workflow.scheduler_policies),
+        event
+      )
+
+    state =
+      case persist(state, :retry_schedule) do
+        {:ok, state} -> arm_retry_wait(state, Runnable.activation_id(runnable))
+        {:error, _reason, state} -> state
+      end
+
+    state |> dispatch_runnables() |> maybe_transition_to_idle()
+  end
+
+  defp put_pending_admission(state, runnable, policy) do
+    activation_id = Runnable.activation_id(runnable)
+
+    %{
+      state
+      | pending_admissions:
+          Map.put(state.pending_admissions, activation_id, %{runnable: runnable, policy: policy})
+    }
+  end
+
+  defp remove_pending_admission(state, activation_id) do
+    %{state | pending_admissions: Map.delete(state.pending_admissions, activation_id)}
+  end
+
+  defp put_retry_wait(state, runnable, policy, event) do
+    activation_id = Runnable.activation_id(runnable)
+
+    wait = %{runnable: runnable, policy: policy, event: event, timer_ref: nil}
+    %{state | retry_waits: Map.put(state.retry_waits, activation_id, wait)}
+  end
+
+  defp arm_retry_wait(state, activation_id) do
+    case Map.get(state.retry_waits, activation_id) do
+      %{timer_ref: nil, event: event} = wait ->
+        delay_ms = max(event.due_at - retry_now(state), 0)
+        message = {:retry_due, activation_id, event.event_id}
+
+        timer_ref =
+          if delay_ms == 0 do
+            send(self(), message)
+            :ready
+          else
+            Process.send_after(self(), message, delay_ms)
+          end
+
+        %{
+          state
+          | retry_waits: Map.put(state.retry_waits, activation_id, %{wait | timer_ref: timer_ref})
+        }
+
+      _other ->
+        state
+    end
+  end
+
+  defp activate_persisted_work(%{persistence: :saved} = state) do
+    state =
+      Enum.reduce(Map.keys(state.retry_waits), state, fn activation_id, acc ->
+        arm_retry_wait(acc, activation_id)
+      end)
+
+    state = dispatch_pending_admissions(state)
+    dispatch_runnables(state)
+  end
+
+  defp dispatch_pending_admissions(state) do
+    state.pending_admissions
+    |> Enum.sort_by(fn {activation_id, _pending} -> activation_id end)
+    |> Enum.reduce_while(state, fn {activation_id, pending}, acc ->
+      if map_size(acc.active_tasks) >= acc.max_concurrency do
+        {:halt, acc}
+      else
+        acc = remove_pending_admission(acc, activation_id)
+        {:cont, dispatch_admitted_runnable(acc, pending.runnable, pending.policy)}
+      end
+    end)
+  end
+
+  defp durable_policy?(%SchedulerPolicy{execution_mode: :durable}), do: true
+  defp durable_policy?(_policy), do: false
+
+  defp next_attempt(workflow, activation_id) do
+    workflow.runnable_events
+    |> Enum.filter(fn
+      %RunnableDispatched{activation_id: ^activation_id} -> true
+      _event -> false
+    end)
+    |> Enum.uniq_by(fn event -> event.attempt_id || {event.activation_id, event.attempt} end)
+    |> Enum.map(& &1.attempt)
+    |> Enum.max(fn -> -1 end)
+    |> Kernel.+(1)
+  end
+
+  defp retry_now(%{retry_time_source: {module, function, args}})
+       when is_atom(module) and is_atom(function) and is_list(args) do
+    case apply(module, function, args) do
+      value when is_integer(value) ->
+        value
+
+      value ->
+        raise ArgumentError, "retry time source must return an integer, got: #{inspect(value)}"
+    end
+  end
+
+  defp record_unknown_attempt(state, runnable) do
+    reason = {:attempt_outcome_unknown, runnable.attempt_id}
+    event = ExecutionUncertain.new({:runnable, runnable}, reason)
+    workflow = Workflow.append_runnable_events(state.workflow, [event])
+
+    state
+    |> collect_pending_events(workflow, [event])
+    |> stop_admission(:uncertain, {:runnable, runnable.id}, reason)
+    |> persist(:recovery)
+    |> persistence_state()
+  end
+
   defp dispatch_runnables(%__MODULE__{admission_causes: [_ | _]} = state), do: state
+  defp dispatch_runnables(%__MODULE__{persistence: {:error, _}} = state), do: state
   defp dispatch_runnables(%__MODULE__{dispatch_mode: :manual} = state), do: state
   defp dispatch_runnables(%__MODULE__{} = state), do: do_dispatch_runnables(state, :all)
   defp dispatch_one(%__MODULE__{} = state), do: do_dispatch_runnables(state, 1)
@@ -1094,6 +1299,12 @@ defmodule Runic.Runner.Worker do
         id -> id
       end)
 
+    held_activation_ids =
+      state.retry_waits
+      |> Map.keys()
+      |> MapSet.new()
+      |> MapSet.union(MapSet.new(Map.keys(state.pending_admissions)))
+
     promise_covered_hashes =
       state.active_promises
       |> Map.values()
@@ -1106,7 +1317,8 @@ defmodule Runic.Runner.Worker do
     candidates =
       Enum.reject(runnables, fn r ->
         MapSet.member?(active_runnable_ids, r.id) or
-          MapSet.member?(promise_covered_hashes, r.node.hash)
+          MapSet.member?(promise_covered_hashes, r.node.hash) or
+          MapSet.member?(held_activation_ids, Runnable.activation_id(r))
       end)
 
     candidates =
@@ -1173,6 +1385,8 @@ defmodule Runic.Runner.Worker do
 
     state = %{state | scheduler_state: scheduler_state}
 
+    units = expand_durable_promises(units, state.workflow.scheduler_policies)
+
     units = if limit == :all, do: units, else: Enum.take(units, limit)
 
     # Dispatch units until available slots are exhausted.
@@ -1183,16 +1397,15 @@ defmodule Runic.Runner.Worker do
       if available <= 0 or acc.admission_causes != [] do
         {:halt, acc}
       else
-        acc = notify_scheduler_dispatch(acc, unit)
-
         acc =
           case unit do
             {:runnable, runnable} ->
               policy = SchedulerPolicy.resolve(runnable, acc.workflow.scheduler_policies)
-              invoke_hook(acc.hooks, :on_dispatch, [runnable, acc])
               dispatch_single_runnable(runnable, policy, acc)
 
             {:promise, promise} ->
+              acc = notify_scheduler_dispatch(acc, unit)
+
               Enum.each(promise.runnables, fn r ->
                 invoke_hook(acc.hooks, :on_dispatch, [r, acc])
               end)
@@ -1200,8 +1413,25 @@ defmodule Runic.Runner.Worker do
               dispatch_promise(promise, acc)
           end
 
-        {:cont, acc}
+        if match?({:error, _}, acc.persistence), do: {:halt, acc}, else: {:cont, acc}
       end
+    end)
+  end
+
+  defp expand_durable_promises(units, policies) do
+    Enum.flat_map(units, fn
+      {:promise, promise} = unit ->
+        if Enum.any?(promise.runnables, fn runnable ->
+             policy = SchedulerPolicy.resolve(runnable, policies)
+             durable_policy?(policy) and policy.max_retries > 0
+           end) do
+          Enum.map(promise.runnables, &{:runnable, &1})
+        else
+          [unit]
+        end
+
+      unit ->
+        [unit]
     end)
   end
 
@@ -1218,8 +1448,61 @@ defmodule Runic.Runner.Worker do
   end
 
   defp dispatch_single_runnable(runnable, policy, state) do
-    work_fn = build_work_fn(runnable, policy)
+    if durable_policy?(policy) do
+      dispatch_durable_runnable(runnable, policy, state)
+    else
+      dispatch_ephemeral_runnable(runnable, policy, state)
+    end
+  end
 
+  defp dispatch_durable_runnable(runnable, policy, state) do
+    activation_id = Runnable.activation_id(runnable)
+    attempt = next_attempt(state.workflow, activation_id)
+
+    if attempt > policy.max_retries do
+      record_unknown_attempt(state, Runnable.for_attempt(runnable, attempt - 1))
+    else
+      runnable = Runnable.for_attempt(runnable, attempt)
+      event = PolicyDriver.admission_event(runnable, policy, attempt, retry_now(state))
+      workflow = Workflow.append_runnable_events(state.workflow, [event])
+
+      state =
+        state
+        |> collect_pending_events(workflow, [event])
+        |> put_pending_admission(runnable, policy)
+
+      case persist(state, :attempt_admission) do
+        {:ok, state} ->
+          state
+          |> remove_pending_admission(activation_id)
+          |> dispatch_admitted_runnable(runnable, policy)
+
+        {:error, _reason, state} ->
+          state
+      end
+    end
+  end
+
+  defp dispatch_ephemeral_runnable(runnable, policy, state) do
+    state = notify_runnable_dispatch(state, runnable)
+    dispatch_runnable(runnable, policy, state, fn -> execute_runnable(runnable, policy) end)
+  end
+
+  defp dispatch_admitted_runnable(state, runnable, policy) do
+    state = notify_runnable_dispatch(state, runnable)
+
+    dispatch_runnable(runnable, policy, state, fn ->
+      PolicyDriver.execute_attempt(runnable, policy, runnable.attempt_number || 0)
+    end)
+  end
+
+  defp notify_runnable_dispatch(state, runnable) do
+    state = notify_scheduler_dispatch(state, {:runnable, runnable})
+    invoke_hook(state.hooks, :on_dispatch, [runnable, state])
+    state
+  end
+
+  defp dispatch_runnable(runnable, policy, state, work_fn) do
     # Determine which executor to use: per-component override or default
     {executor, executor_state, executor_origin, state} = resolve_executor(policy, state)
 
@@ -1237,7 +1520,17 @@ defmodule Runic.Runner.Worker do
         # Execute synchronously in the Worker process.
         # Skip timeout enforcement for inline (per design doc); preserve retry/fallback.
         inline_policy = %{policy | timeout_ms: :infinity}
-        result = execute_runnable(runnable, inline_policy)
+
+        result =
+          if durable_policy?(policy) do
+            PolicyDriver.execute_attempt(
+              runnable,
+              inline_policy,
+              runnable.attempt_number || 0
+            )
+          else
+            execute_runnable(runnable, inline_policy)
+          end
 
         # Simulate the async completion path synchronously
         ref = make_ref()
@@ -1249,6 +1542,9 @@ defmodule Runic.Runner.Worker do
         }
 
         case result do
+          {:retry, %Runnable{} = executed, delay_ms} ->
+            handle_task_retry(ref, executed, delay_ms, state)
+
           {%Runnable{} = executed, events} when is_list(events) ->
             handle_task_result(ref, executed, events, state, false)
 
@@ -1268,12 +1564,6 @@ defmodule Runic.Runner.Worker do
             active_executors: Map.put(state.active_executors, handle, executor_origin),
             dispatch_times: Map.put(state.dispatch_times, handle, now)
         }
-    end
-  end
-
-  defp build_work_fn(runnable, policy) do
-    fn ->
-      execute_runnable(runnable, policy)
     end
   end
 
@@ -1712,7 +2002,9 @@ defmodule Runic.Runner.Worker do
 
   defp maybe_transition_to_idle(state), do: state
 
-  defp maybe_recover_work(%__MODULE__{workflow: workflow} = state, resumed) do
+  defp maybe_recover_work(%__MODULE__{} = state, resumed) do
+    state = if resumed, do: restore_retry_state(state), else: state
+    workflow = state.workflow
     pending_count = workflow |> Workflow.pending_runnables() |> length()
 
     cond do
@@ -1729,6 +2021,127 @@ defmodule Runic.Runner.Worker do
       true ->
         state
     end
+  end
+
+  defp restore_retry_state(state) do
+    {workflow, runnables} = Workflow.prepare_for_dispatch(state.workflow)
+    state = %{state | workflow: workflow}
+
+    Enum.reduce_while(runnables, state, fn runnable, acc ->
+      policy = SchedulerPolicy.resolve(runnable, acc.workflow.scheduler_policies)
+
+      cond do
+        match?({:error, _}, acc.persistence) ->
+          {:halt, acc}
+
+        not durable_policy?(policy) ->
+          {:cont, acc}
+
+        terminal_attempt?(acc.workflow, runnable) ->
+          {:cont, acc}
+
+        true ->
+          {:cont, restore_runnable_retry(acc, runnable, policy)}
+      end
+    end)
+  end
+
+  defp restore_runnable_retry(state, runnable, policy) do
+    activation_id = Runnable.activation_id(runnable)
+
+    case latest_admission(state.workflow, activation_id) do
+      nil ->
+        state
+
+      admission ->
+        case pending_retry_schedule(state.workflow, activation_id, admission.attempt) do
+          %RetryScheduled{} = event ->
+            state
+            |> put_retry_wait(runnable, policy, event)
+            |> arm_retry_wait(activation_id)
+
+          nil when admission.attempt < policy.max_retries ->
+            delay_ms = PolicyDriver.retry_delay(policy, admission.attempt)
+            due_at = retry_now(state) + delay_ms
+            attempted = Runnable.for_attempt(runnable, admission.attempt)
+            reason = {:attempt_outcome_unknown, admission.attempt_id}
+            event = RetryScheduled.new(attempted, admission.attempt, delay_ms, due_at, reason)
+            workflow = Workflow.append_runnable_events(state.workflow, [event])
+
+            state =
+              state
+              |> collect_pending_events(workflow, [event])
+              |> put_retry_wait(runnable, policy, event)
+
+            case persist(state, :retry_schedule) do
+              {:ok, state} -> arm_retry_wait(state, activation_id)
+              {:error, _reason, state} -> state
+            end
+
+          nil ->
+            case latest_uncertain_reason(state.workflow, runnable) do
+              {:ok, reason} ->
+                stop_admission(
+                  state,
+                  :uncertain,
+                  {:runnable, runnable.id},
+                  reason
+                )
+
+              :error ->
+                record_unknown_attempt(state, Runnable.for_attempt(runnable, admission.attempt))
+            end
+        end
+    end
+  end
+
+  defp latest_admission(workflow, activation_id) do
+    workflow.runnable_events
+    |> Enum.filter(fn
+      %RunnableDispatched{activation_id: ^activation_id} -> true
+      _event -> false
+    end)
+    |> Enum.uniq_by(fn event -> event.attempt_id || {event.activation_id, event.attempt} end)
+    |> Enum.max_by(& &1.attempt, fn -> nil end)
+  end
+
+  defp pending_retry_schedule(workflow, activation_id, attempt) do
+    workflow.runnable_events
+    |> Enum.filter(fn
+      %RetryScheduled{activation_id: ^activation_id, next_attempt: next_attempt}
+      when next_attempt > attempt ->
+        true
+
+      _event ->
+        false
+    end)
+    |> Enum.uniq_by(fn event -> event.event_id || {event.activation_id, event.next_attempt} end)
+    |> Enum.min_by(& &1.next_attempt, fn -> nil end)
+  end
+
+  defp terminal_attempt?(workflow, runnable) do
+    activation_id = Runnable.activation_id(runnable)
+
+    Enum.any?(workflow.runnable_events, fn
+      %RunnableCompleted{activation_id: ^activation_id} -> true
+      %RunnableFailed{activation_id: ^activation_id} -> true
+      _event -> false
+    end)
+  end
+
+  defp latest_uncertain_reason(workflow, runnable) do
+    activation_id = Runnable.activation_id(runnable)
+
+    workflow.runnable_events
+    |> Enum.reverse()
+    |> Enum.find_value(:error, fn
+      %ExecutionUncertain{members: members, reason: reason} ->
+        if Enum.any?(members || [], &(&1.activation_id == activation_id)),
+          do: {:ok, reason}
+
+      _event ->
+        nil
+    end)
   end
 
   defp recover_work(state, workflow, pending_count) do

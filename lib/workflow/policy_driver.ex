@@ -17,6 +17,7 @@ defmodule Runic.Workflow.PolicyDriver do
     * `%RunnableFailed{}` — emitted on permanent failure (retries exhausted)
   """
 
+  alias Runic.Identity
   alias Runic.Workflow.{Runnable, Invokable, Fact, SchedulerPolicy}
   alias Runic.Workflow.{RunnableDispatched, RunnableCompleted, RunnableFailed}
 
@@ -46,6 +47,95 @@ defmodule Runic.Workflow.PolicyDriver do
       {result, Enum.reverse(events)}
     else
       do_execute(runnable, policy, 0, opts)
+    end
+  end
+
+  @doc false
+  @spec execute_attempt(Runnable.t(), SchedulerPolicy.t(), non_neg_integer(), keyword()) ::
+          {Runnable.t(), list()} | {:retry, Runnable.t(), non_neg_integer()}
+  def execute_attempt(%Runnable{} = runnable, %SchedulerPolicy{} = policy, attempt, opts \\ [])
+      when is_integer(attempt) and attempt >= 0 and is_list(opts) do
+    runnable = Runnable.for_attempt(runnable, attempt)
+
+    case check_deadline(opts) do
+      :ok ->
+        start_time = System.monotonic_time(:millisecond)
+        result = execute_with_timeout(runnable, policy, opts)
+
+        case result.status do
+          :completed ->
+            duration = System.monotonic_time(:millisecond) - start_time
+            {result, [build_completed_event(result, attempt, duration)]}
+
+          :skipped ->
+            {result, []}
+
+          :failed ->
+            attempt_failure(result, policy, attempt, opts, start_time)
+        end
+
+      {:deadline_exceeded, remaining_ms} ->
+        failed = Runnable.fail(runnable, {:deadline_exceeded, remaining_ms})
+        {failed, [build_failed_event(failed, attempt + 1, :halt)]}
+    end
+  end
+
+  @doc false
+  @spec admission_event(Runnable.t(), SchedulerPolicy.t(), non_neg_integer(), integer()) ::
+          RunnableDispatched.t()
+  def admission_event(%Runnable{} = runnable, %SchedulerPolicy{} = policy, attempt, admitted_at)
+      when is_integer(attempt) and attempt >= 0 and is_integer(admitted_at) do
+    runnable
+    |> Runnable.for_attempt(attempt)
+    |> build_dispatched_event(policy, attempt, admitted_at)
+  end
+
+  @doc false
+  @spec retry_delay(SchedulerPolicy.t(), non_neg_integer()) :: non_neg_integer()
+  def retry_delay(%SchedulerPolicy{} = policy, attempt)
+      when is_integer(attempt) and attempt >= 0,
+      do: compute_delay(policy, attempt)
+
+  defp attempt_failure(result, policy, attempt, opts, start_time) do
+    case retry_decision(policy, result.error, attempt) do
+      :retry ->
+        {:retry, result, compute_delay(policy, attempt)}
+
+      :stop ->
+        attempt_terminal_result(result, policy, attempt, opts, start_time)
+
+      {:error, reason} ->
+        failed = Runnable.fail(result, {:retry_predicate_failed, reason, result.error})
+        {failed, [build_failed_event(failed, attempt + 1, :halt)]}
+    end
+  end
+
+  defp attempt_terminal_result(
+         result,
+         %SchedulerPolicy{fallback: nil} = policy,
+         attempt,
+         _opts,
+         _
+       ) do
+    failure_action = if policy.on_failure == :skip, do: :skip, else: :halt
+    failed_event = build_failed_event(result, attempt + 1, failure_action)
+    final = if policy.on_failure == :skip, do: skip_runnable(result), else: result
+    {final, [failed_event]}
+  end
+
+  defp attempt_terminal_result(result, policy, attempt, opts, start_time) do
+    fallback_result =
+      result
+      |> handle_fallback(result.error, policy, opts)
+      |> Runnable.for_attempt(attempt)
+
+    case fallback_result.status do
+      :completed ->
+        duration = System.monotonic_time(:millisecond) - start_time
+        {fallback_result, [build_completed_event(fallback_result, attempt, duration)]}
+
+      :failed ->
+        {fallback_result, [build_failed_event(fallback_result, attempt + 1, :halt)]}
     end
   end
 
@@ -184,24 +274,39 @@ defmodule Runic.Workflow.PolicyDriver do
   # ---------------------------------------------------------------------------
 
   defp build_dispatched_event(%Runnable{} = runnable, %SchedulerPolicy{} = policy, attempt) do
+    build_dispatched_event(runnable, policy, attempt, System.monotonic_time(:millisecond))
+  end
+
+  defp build_dispatched_event(
+         %Runnable{} = runnable,
+         %SchedulerPolicy{} = policy,
+         attempt,
+         dispatched_at
+       ) do
+    activation_id = Runnable.activation_id(runnable)
+
     %RunnableDispatched{
+      event_id: Identity.derive(:event, [activation_id, RunnableDispatched, 1, attempt]),
       runnable_id: runnable.id,
-      activation_id: runnable.activation_id,
+      activation_id: activation_id,
       attempt_id: runnable.attempt_id,
       node_name: Map.get(runnable.node, :name, runnable.node.hash),
       node_hash: runnable.node.hash,
       order_key: Runnable.order_key(runnable),
       input_fact: runnable.input_fact,
-      dispatched_at: System.monotonic_time(:millisecond),
+      dispatched_at: dispatched_at,
       policy: strip_non_serializable(policy),
       attempt: attempt
     }
   end
 
   defp build_completed_event(%Runnable{} = runnable, attempt, duration_ms) do
+    activation_id = Runnable.activation_id(runnable)
+
     %RunnableCompleted{
+      event_id: Identity.derive(:event, [activation_id, RunnableCompleted, 1, attempt]),
       runnable_id: runnable.id,
-      activation_id: runnable.activation_id,
+      activation_id: activation_id,
       attempt_id: runnable.attempt_id,
       node_hash: runnable.node.hash,
       order_key: Runnable.order_key(runnable),
@@ -213,9 +318,13 @@ defmodule Runic.Workflow.PolicyDriver do
   end
 
   defp build_failed_event(%Runnable{} = runnable, attempts, failure_action) do
+    activation_id = Runnable.activation_id(runnable)
+
     %RunnableFailed{
+      event_id:
+        Identity.derive(:event, [activation_id, RunnableFailed, 1, attempts, failure_action]),
       runnable_id: runnable.id,
-      activation_id: runnable.activation_id,
+      activation_id: activation_id,
       attempt_id: runnable.attempt_id,
       node_hash: runnable.node.hash,
       error: runnable.error,

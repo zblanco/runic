@@ -347,10 +347,15 @@ defmodule Runic.Runner.PersistenceFailureTest do
                scheduler: Runic.Runner.Scheduler.FlowBatch,
                scheduler_opts: [min_batch_size: 2],
                checkpoint_strategy: :manual,
-               hooks: [on_idle: fn state -> send(parent, {:idle, state.persistence}) end]
+               hooks: [
+                 on_complete: fn runnable, _duration, _state ->
+                   if Map.get(runnable.node, :name) == :sum,
+                     do: FailingStore.fail(ctx.store, :append)
+                 end,
+                 on_idle: fn state -> send(parent, {:idle, state.persistence}) end
+               ]
              )
 
-    FailingStore.fail(ctx.store, :append)
     assert :ok = Runner.run(runner, :wf, [1, 2, 3])
     assert_receive {:idle, {:error, {:persistence_failed, :storage_unavailable}}}, 5_000
     assert {:ok, original} = Runner.get_results(runner, :wf)

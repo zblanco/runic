@@ -13,7 +13,8 @@ Runic workflows are in-memory data structures. When the process running a workfl
 - **ETL pipelines** processing millions of records over hours
 - **Approval workflows** that pause for days waiting on human input
 
-Durable execution means: _the workflow can be stopped, crashed, or restarted and resume exactly where it left off_.
+Durable execution means that saved workflow progress can survive a Worker
+restart. It does not mean that external effects occur exactly once.
 
 Runic achieves this through three mechanisms:
 
@@ -57,13 +58,19 @@ Together these are sufficient to reconstruct both the workflow's structure and i
 
 ### Runnable Lifecycle Events
 
-When scheduler policies are used with `execution_mode: :durable`, three additional event types are captured:
+When scheduler policies are used with `execution_mode: :durable`, four lifecycle event types can be captured:
 
-- `%RunnableDispatched{}` — records that a runnable was sent for execution, including the resolved policy and attempt number
+- `%RunnableDispatched{}` — records a saved attempt admission, including the resolved policy and attempt number
 - `%RunnableCompleted{}` — records successful completion with duration and the produced fact
 - `%RunnableFailed{}` — records permanent failure (retries exhausted) with the error and failure action
+- `%RetryScheduled{}` — records an absolute Unix-millisecond retry deadline before the Worker starts a timer
 
-These events enable crash recovery: by comparing dispatched events against completed/failed events, you can identify _in-flight_ work that was interrupted.
+Version 1 lifecycle events have stable event IDs. Replay ignores duplicate
+lifecycle events with the same identity. An adapter should still deduplicate
+ambiguous append retries when possible.
+
+These events enable crash recovery. A dispatch without a completion or failure
+has an unknown result. It consumes one attempt from the configured limit.
 
 ```elixir
 alias Runic.Workflow.SchedulerPolicy
@@ -450,7 +457,8 @@ hooks: [
 ]
 ```
 
-The operation is `:build`, `:checkpoint`, or `:save`; `reason` is
+The operation is `:build`, `:attempt_admission`, `:retry_schedule`,
+`:checkpoint`, `:recovery`, or `:save`; `reason` is
 `{:persistence_failed, store_reason}`. Hook exceptions are logged. Do not
 synchronously call Worker APIs from its own hooks. Store `:stop` telemetry means
 the callback returned and includes `:operation` and `:result`; returned errors
@@ -569,26 +577,46 @@ confirm remote resource release.
 See [`examples/owned_execution.exs`](../examples/owned_execution.exs) for a small
 consumer example that uses only Runic. Run it with `mix run examples/owned_execution.exs`.
 
-**Retry and memory ownership:** Each scheduled or explicit checkpoint and final
-save makes one attempt; there is no background retry loop or built-in backoff.
-Later cycle checkpoints can retry retained data according to the chosen strategy.
-After a workflow becomes idle, retry is caller-driven. Dispatch continues after
-failed automatic saves, so buffers can grow during an outage. Applications must
-bound admitted work, observe errors/counts, and enforce their own memory limits
-and bounded retry/backoff policy. Retained events do not survive Worker death;
-application records may remain the recovery authority for unfinished batches.
+**Retry and memory ownership:** There is no background retry loop for Store
+writes. A failed write retains its batch while the Worker is alive and blocks
+new executor dispatch. After the Store recovers, call `checkpoint/2`. A
+successful acknowledgement saves the retained batch and starts work that was
+waiting for that boundary. Applications must observe write failures and use a
+bounded checkpoint retry policy. Unsaved events do not survive Worker death.
 
 **Adapter ownership:** Appends should atomically accept a complete ordered batch
-or fail without accepting any events. Ambiguous remote acknowledgements require
-adapter deduplication or an explicitly documented limitation; resending alone
-does not guarantee exactly-once persistence or external effects. Fact and payload
-writes must tolerate retries with the same key/value. Unreferenced values from
+or fail without accepting any events. Durable lifecycle events have stable event
+IDs. Ambiguous remote acknowledgements require adapter deduplication or an
+explicitly documented limitation. Replay deduplication protects workflow state,
+but it does not remove duplicate records from the Store. Fact and payload writes
+must tolerate retries with the same key and value. Unreferenced values from
 partially successful multi-callback saves are an adapter retention concern.
-Existing event formats and optional Store capabilities are unchanged.
+
+**Attempt limit:** For managed durable runnable work, the Worker saves a
+`RunnableDispatched` admission before it starts the executor. `max_retries` is
+the number of retries after the first attempt. Therefore, the total admission
+limit is `max_retries + 1`. If recovery finds an admitted attempt with no saved
+result, that attempt consumes budget. Recovery starts another attempt only when
+budget remains. If no budget remains, admission stops with
+`{:attempt_outcome_unknown, attempt_id}`.
+
+This rule prevents a restart from exceeding the configured attempt limit. It
+does not provide exactly-once effects. An attempt can change an external system
+and stop before Runic saves its result. Use an idempotency key or a transaction
+in the external system.
+
+**Retry deadlines:** Before a backoff wait starts, the Worker saves a
+`RetryScheduled` event with an absolute Unix-millisecond `due_at` value. Waiting
+does not hold an executor slot. On resume, an expired deadline runs at once. A
+forward system-clock change can make a retry run early in elapsed-time terms. A
+backward change can delay it. Use the default system clock in production. Tests
+can pass `retry_time_source: {Module, :function, args}` and must pass it again on
+resume.
 
 ### Crash Recovery with `resume/3`
 
-When a Worker crashes (or the VM restarts), the Runner can resume from persisted state:
+When a Worker crashes, the Runner can resume from persisted state. VM restart
+recovery requires a Store that survives the VM. The default ETS Store does not.
 
 ```elixir
 # The original Worker crashed or the VM restarted...
@@ -596,7 +624,7 @@ When a Worker crashes (or the VM restarts), the Runner can resume from persisted
 # Resume loads the log from the store, rebuilds the workflow, and starts a new Worker
 {:ok, _pid} = Runic.Runner.resume(MyApp.Runner, "order-123")
 
-# If the workflow had durable-mode policies, pending_runnables are re-dispatched automatically
+# Durable work resumes within its saved attempt budget.
 ```
 
 Under the hood, `resume/3`:
@@ -604,10 +632,15 @@ Under the hood, `resume/3`:
 1. Calls `Store.load/2` to retrieve the persisted event log
 2. Calls `Workflow.from_log/1` to rebuild the workflow graph and state
 3. Starts a new Worker with the restored workflow
-4. The Worker calls `Workflow.pending_runnables/1` to find in-flight work
-5. Re-plans and re-dispatches any pending runnables
+4. The Worker restores saved retry deadlines and admitted attempts
+5. It retries unknown work only when the saved policy and runtime policy allow it
 
-This is why `execution_mode: :durable` matters: without it, the lifecycle events that track dispatched-vs-completed work aren't captured, and in-flight recovery isn't possible.
+Supply compatible application code, component registries, and runtime policy on
+resume. Persisted policy metadata omits function values. A saved MFA reference
+also requires the same callable module and function in the new release.
+
+This is why `execution_mode: :durable` matters. Without it, the lifecycle events
+that bound recovery attempts are not captured.
 
 ### Store Adapters
 

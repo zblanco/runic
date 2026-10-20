@@ -19,6 +19,7 @@ defmodule Runic.Workflow.Events do
   alias Runic.Workflow.Events.JoinEdgeRelabeled
   alias Runic.Workflow.Events.FanOutFactEmitted
   alias Runic.Workflow.Events.FanInCompleted
+  alias Runic.Workflow.RetryScheduled
 
   @type event ::
           FactProduced.t()
@@ -33,6 +34,7 @@ defmodule Runic.Workflow.Events do
           | JoinEdgeRelabeled.t()
           | FanOutFactEmitted.t()
           | FanInCompleted.t()
+          | RetryScheduled.t()
 
   @doc "Returns a `Runic.Workflow.Events.FactProduced` struct with its default field values."
   defdelegate fact_produced(), to: FactProduced, as: :__struct__

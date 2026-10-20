@@ -110,8 +110,8 @@ defmodule Runic.Runner.ChildInvocationTest do
     assert Process.alive?(worker)
     FailingStore.recover(ctx.store)
     # Finish public output and then stop/resume. Accepted child work does not repeat.
-    drain(worker, 1)
     assert :ok = Runner.checkpoint(ctx.runner, :wf)
+    drain(worker, 1)
     assert :ok = Runner.stop(ctx.runner, :wf)
     {:ok, _} = Runner.resume(ctx.runner, :wf)
     {:ok, restored} = Runner.get_workflow(ctx.runner, :wf)

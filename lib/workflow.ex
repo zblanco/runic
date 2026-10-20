@@ -247,6 +247,7 @@ defmodule Runic.Workflow do
   alias Runic.Workflow.RunnableDispatched
   alias Runic.Workflow.RunnableCompleted
   alias Runic.Workflow.RunnableFailed
+  alias Runic.Workflow.RetryScheduled
   alias Runic.Workflow.ExecutionUncertain
   alias Runic.Workflow.Execution
   alias Runic.Workflow.Private
@@ -551,9 +552,8 @@ defmodule Runic.Workflow do
   @doc """
   Appends runnable lifecycle events to the workflow's event accumulator.
 
-  Used by schedulers to record `%RunnableDispatched{}`, `%RunnableCompleted{}`,
-  and `%RunnableFailed{}` events produced by `PolicyDriver.execute/3` with
-  `emit_events: true`.
+  Used by schedulers and the managed Runner to record `%RunnableDispatched{}`,
+  `%RunnableCompleted{}`, `%RunnableFailed{}`, and `%RetryScheduled{}` events.
   """
   @spec append_runnable_events(t(), list()) :: t()
   def append_runnable_events(%__MODULE__{} = workflow, events) when is_list(events) do
@@ -2157,15 +2157,19 @@ defmodule Runic.Workflow do
   end
 
   defp apply_log_event(wrk, %RunnableDispatched{} = event) do
-    %{wrk | runnable_events: wrk.runnable_events ++ [event]}
+    append_replayed_runnable_event(wrk, event)
   end
 
   defp apply_log_event(wrk, %RunnableCompleted{} = event) do
-    %{wrk | runnable_events: wrk.runnable_events ++ [event]}
+    append_replayed_runnable_event(wrk, event)
   end
 
   defp apply_log_event(wrk, %RunnableFailed{} = event) do
-    %{wrk | runnable_events: wrk.runnable_events ++ [event]}
+    append_replayed_runnable_event(wrk, event)
+  end
+
+  defp apply_log_event(wrk, %RetryScheduled{} = event) do
+    append_replayed_runnable_event(wrk, event)
   end
 
   defp apply_log_event(wrk, %ExecutionUncertain{} = event) do
@@ -2237,6 +2241,7 @@ defmodule Runic.Workflow do
                RunnableDispatched,
                RunnableCompleted,
                RunnableFailed,
+               RetryScheduled,
                ExecutionUncertain
              ] ->
           apply_log_event(workflow, event)
@@ -5039,6 +5044,14 @@ defmodule Runic.Workflow do
 
     if checked.status != runnable.status do
       lifecycle = %RunnableFailed{
+        event_id:
+          Runic.Identity.derive(:event, [
+            Runnable.activation_id(checked),
+            RunnableFailed,
+            1,
+            (checked.attempt_number || 0) + 1,
+            :halt
+          ]),
         runnable_id: checked.id,
         activation_id: Runnable.activation_id(checked),
         attempt_id: checked.attempt_id,
@@ -5138,6 +5151,32 @@ defmodule Runic.Workflow do
   """
   @spec enable_event_emission(t()) :: t()
   def enable_event_emission(%__MODULE__{} = wf), do: %{wf | emit_events: true}
+
+  defp runnable_event_identity(%{event_id: %Runic.Identity{} = event_id}), do: event_id
+
+  defp runnable_event_identity(%RunnableDispatched{} = event),
+    do: {RunnableDispatched, event.activation_id || event.runnable_id, event.attempt}
+
+  defp runnable_event_identity(%RunnableCompleted{} = event),
+    do: {RunnableCompleted, event.activation_id || event.runnable_id, event.attempt}
+
+  defp runnable_event_identity(%RunnableFailed{} = event),
+    do:
+      {RunnableFailed, event.activation_id || event.runnable_id, event.attempts,
+       event.failure_action}
+
+  defp runnable_event_identity(%RetryScheduled{} = event),
+    do: {RetryScheduled, event.activation_id || event.runnable_id, event.next_attempt}
+
+  defp runnable_event_identity(event), do: {:event_term, event}
+
+  defp append_replayed_runnable_event(workflow, event) do
+    identity = runnable_event_identity(event)
+
+    if Enum.any?(workflow.runnable_events, &(runnable_event_identity(&1) == identity)),
+      do: workflow,
+      else: append_runnable_events(workflow, [event])
+  end
 
   @doc """
   Disables event emission on the workflow.

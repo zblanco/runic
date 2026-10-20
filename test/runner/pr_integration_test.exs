@@ -17,9 +17,9 @@ defmodule Runic.Runner.PRIntegrationTest do
   for release_error <- [false, true] do
     test "persistence failure retains results across release failure #{release_error}", ctx do
       {:ok, worker} = start_worker(ctx.runner, single(), release_error: unquote(release_error))
-      FailingStore.fail(ctx.store, :append)
       :ok = Runner.run(ctx.runner, :wf, 1)
       assert_receive {:executor_result, ^worker, handle, result}, 1_000
+      FailingStore.fail(ctx.store, :append)
       deliver(worker, handle, result)
       assert_receive {:executor_released, ^handle}, 1_000
 

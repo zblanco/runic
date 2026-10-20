@@ -11,6 +11,8 @@ defmodule Runic.Workflow.RunnableFailed do
   """
 
   @type t :: %__MODULE__{
+          version: pos_integer(),
+          event_id: Runic.Identity.t() | nil,
           runnable_id: term(),
           activation_id: Runic.Identity.t() | nil,
           attempt_id: Runic.Identity.t() | nil,
@@ -31,6 +33,8 @@ defmodule Runic.Workflow.RunnableFailed do
     :error,
     :failed_at,
     :attempts,
-    :failure_action
+    :failure_action,
+    version: 1,
+    event_id: nil
   ]
 end
