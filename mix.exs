@@ -2,7 +2,7 @@ defmodule Runic.MixProject do
   use Mix.Project
 
   @repo_url "https://github.com/zblanco/runic"
-  @version "0.1.0-alpha.12"
+  @version "0.1.0-alpha.13"
 
   def project do
     [
