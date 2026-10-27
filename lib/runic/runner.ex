@@ -653,6 +653,7 @@ defmodule Runic.Runner do
   """
   def resume(runner, workflow_id, opts \\ []) do
     {store_mod, store_state} = get_store(runner)
+    store_state = Runic.Runner.Store.for_workflow(store_mod, workflow_id, store_state)
 
     if Runic.Runner.Store.supports_stream?(store_mod) do
       rehydration = Keyword.get(opts, :rehydration, :full)

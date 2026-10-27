@@ -14,6 +14,17 @@ defmodule Runic.Runner.Store do
   Stores that implement `append/3` and `stream/2` get automatic
   event-sourced checkpointing and recovery from the Worker.
 
+  ## Workflow-Scoped State
+
+  A Runner initializes one shared Store state. Adapters that route different
+  workflows to different resources can implement `for_workflow/2` to derive
+  an opaque state for one workflow. The Runner uses that derived state for all
+  callbacks during workflow execution and recovery.
+
+  `for_workflow/2` should only add workflow context to the shared state. It
+  should be fast and deterministic, and it should not perform storage I/O.
+  Adapters that do not implement it continue to receive the shared state.
+
   ## Write Acknowledgements and Retries
 
   `append/3` must acknowledge the entire ordered batch with `{:ok, cursor}`;
@@ -71,6 +82,8 @@ defmodule Runic.Runner.Store do
   - **Snapshots** (`save_snapshot/4`, `load_snapshot/2`): Point-in-time
     workflow snapshots for faster recovery (replay from snapshot + events
     after cursor instead of full replay).
+  - **Workflow-scoped state** (`for_workflow/2`): Derives callback state for one
+    workflow from the shared Runner Store state.
   - **Fact storage** (`save_fact/3`, `load_fact/2`): Content-addressed fact
     value storage for hybrid rehydration without loading all values into memory.
   - **Payload storage** (`save_payload/3`, `load_payload/2`): Immutable encoded
@@ -92,6 +105,9 @@ defmodule Runic.Runner.Store do
   @callback init_store(opts :: keyword()) :: {:ok, state()} | {:error, term()}
   @callback save(workflow_id(), log(), state()) :: :ok | {:error, term()}
   @callback load(workflow_id(), state()) :: {:ok, log()} | {:error, :not_found | term()}
+
+  # Workflow-scoped callback state (optional)
+  @callback for_workflow(workflow_id(), state()) :: state()
 
   # Stream semantics (optional — event-sourced)
   @callback append(workflow_id(), events :: [event()], state()) ::
@@ -125,6 +141,7 @@ defmodule Runic.Runner.Store do
   @callback exists?(workflow_id(), state()) :: boolean()
 
   @optional_callbacks [
+    for_workflow: 2,
     append: 3,
     stream: 2,
     stream: 3,
@@ -139,6 +156,14 @@ defmodule Runic.Runner.Store do
     list: 1,
     exists?: 2
   ]
+
+  @doc "Returns the Store state for one workflow."
+  @spec for_workflow(module(), workflow_id(), state()) :: state()
+  def for_workflow(store_mod, workflow_id, state) do
+    if function_exported?(store_mod, :for_workflow, 2),
+      do: store_mod.for_workflow(workflow_id, state),
+      else: state
+  end
 
   @doc """
   Returns true if the store module supports event-sourced stream semantics.
