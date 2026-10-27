@@ -180,6 +180,7 @@ defmodule Runic.Runner.Worker do
     workflow = maybe_apply_resume_options(workflow, opts, resumed)
 
     {store_mod, store_state} = Runic.Runner.get_store(runner)
+    store_state = Runic.Runner.Store.for_workflow(store_mod, workflow_id, store_state)
 
     workflow =
       if Runic.Runner.Store.supports_stream?(store_mod) do
